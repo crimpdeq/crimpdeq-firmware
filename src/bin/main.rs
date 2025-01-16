@@ -21,7 +21,7 @@ use esp_hal::{
 use esp_println::println;
 use esp_wifi::{ble::controller::BleConnector, init};
 
-// use tindeq::progressor::{DataPoint, ResponseCode, MAX_PAYLOAD_SIZE};
+use tindeq::progressor::ControlOpCode;
 
 extern crate alloc;
 
@@ -149,6 +149,31 @@ fn main() -> ! {
 
         let mut control_point_write = |_, data: &[u8]| {
             println!("Control Point Received: 0x{:x?}", data);
+
+            match ControlOpCode::from(data[0]) {
+                ControlOpCode::TareScale => {
+                    println!("TareScale");
+                }
+                ControlOpCode::StartMeasurement => {
+                    println!("StartMeasurement");
+                }
+                ControlOpCode::StopMeasurement => {
+                    println!("StopMeasurement");
+                }
+                ControlOpCode::GetAppVersion => {
+                    println!("GetAppVersion");
+                }
+                ControlOpCode::Shutdown => {
+                    println!("Shutdown");
+                }
+                ControlOpCode::SampleBattery => {
+                    println!("SampleBattery");
+                }
+                ControlOpCode::GetProgressorId => {
+                    println!("GetProgressorId");
+                    // Notify the data_point with the progressor id
+                }
+            }
         };
 
         let mut service_change_read = |_offset: usize, data: &mut [u8]| {
@@ -246,7 +271,7 @@ fn main() -> ! {
                         srv.get_characteristic_value(data_point_notify_enable_handle, 0, &mut cccd)
                     {
                         // if notifications enabled
-                        if cccd[0] == 1 {
+                        if cccd[0] == &1 {
                             notification = Some(NotificationData::new(data_point_handle, &data));
                         }
                     }

@@ -3,6 +3,10 @@ runner = "espflash flash --monitor"
 
 [env]
 ESP_LOG="INFO"
+ADVERTISED_NAME = "Progressor_2639"
+DEVICE_ID = "42"
+DEVICE_VERSION_NUMBER = "1.2.3.4"
+CALIBRATION_CURVE = "FFFFFFFFFFFFFFFF00000000"
 
 [build]
 rustflags = [
