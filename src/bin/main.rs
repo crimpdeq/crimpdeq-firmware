@@ -2,11 +2,13 @@
 #![no_main]
 
 use bleps::{
-    ad_structure::{
-        create_advertising_data, AdStructure, BR_EDR_NOT_SUPPORTED, LE_GENERAL_DISCOVERABLE,
-    },
+    // ad_structure::{
+    //     create_advertising_data, AdStructure, BR_EDR_NOT_SUPPORTED, LE_GENERAL_DISCOVERABLE,
+    // },
     attribute_server::{AttributeServer, NotificationData, WorkResult},
-    gatt, Ble, HciConnector,
+    gatt,
+    Ble,
+    HciConnector,
 };
 use esp_backtrace as _;
 use esp_hal::{
@@ -19,14 +21,7 @@ use esp_hal::{
 use esp_println::println;
 use esp_wifi::{ble::controller::BleConnector, init};
 
-use tindeq::progressor::{DataPoint, ResponseCode, MAX_PAYLOAD_SIZE};
-
-/// Progressor Primary Service UUID
-const SERVICE_UUID: &str = "7e4e1701-1ea6-40c9-9dcc-13d34ffead57";
-/// Progressor Data Point Characteristic UUID
-const DATA_POINT_UUID: &str = "7e4e1702-1ea6-40c9-9dcc-13d34ffead57";
-/// Progressor Control Point Characteristic UUID
-const CONTROL_POINT_UUID: &str = "7e4e1703-1ea6-40c9-9dcc-13d34ffead57";
+// use tindeq::progressor::{DataPoint, ResponseCode, MAX_PAYLOAD_SIZE};
 
 extern crate alloc;
 
@@ -161,6 +156,7 @@ fn main() -> ! {
             17
         };
 
+        // TODO: Avoid using the gatt! macro, replace the uuids with constants and improve the values
         let device_name = b"Progressor_2639";
         let appearance = b"[0] Unknown";
         let ppcp_val = b"Connection Interval: 50.00ms - 65.00ms, Max Latency:6ms, Suppervision Timeout Multiplier: 400ms";
@@ -168,46 +164,61 @@ fn main() -> ! {
         let ccc_vla = b"Notifications and indications disabled";
         gatt!([
             service {
+                // Generic Access
                 uuid: "1800",
                 characteristics: [
+                    // Device Name
                     characteristic {
                         uuid: "2a00",
                         value: device_name,
                     },
+                    // Appearance
                     characteristic {
                         uuid: "2a01",
                         value: appearance,
                     },
+                    // Peripheral Preferred Connection Parameters
                     characteristic {
                         uuid: "2a04",
                         value: ppcp_val,
                     },
+                    // Central Address Resolution
                     characteristic {
                         uuid: "2aa6",
                         value: car_val,
                     },
                 ],
             },
+            // Generic Attribute
             service {
                 uuid: "1801",
-                characteristics: [characteristic {
-                    uuid: "2a05",
-                    read: service_change_read,
-                    descriptors: [descriptor {
-                        uuid: "2902",
-                        value: ccc_vla,
-                    },],
-                },],
+                characteristics: [
+                    // Service Changed
+                    characteristic {
+                        uuid: "2a05",
+                        read: service_change_read,
+                        descriptors: [
+                            // Client Characteristic Configuration
+                            descriptor {
+                                uuid: "2902",
+                                value: ccc_vla,
+                            },
+                        ],
+                    },
+                ],
             },
             service {
+                // Progressor Primary
                 uuid: "7e4e1701-1ea6-40c9-9dcc-13d34ffead57",
                 characteristics: [
+                    // Progressor Data Point
                     characteristic {
                         name: "data_point",
                         uuid: "7e4e1702-1ea6-40c9-9dcc-13d34ffead57",
                         notify: true,
                         read: data_point_read,
                     },
+                    /// Progressor Control Point
                     characteristic {
                         name: "control_point",
                         uuid: "7e4e1703-1ea6-40c9-9dcc-13d34ffead57",
