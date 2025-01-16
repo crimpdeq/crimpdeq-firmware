@@ -64,14 +64,15 @@ fn main() -> ! {
     // Fake data
     let weigth: f32 = 20.4;
     let timestamp: u32 = 123456;
-    let value: [u8; 8] = unsafe {
-        let weigth_bytes = core::mem::transmute::<f32, [u8; 4]>(weigth);
-        let timestamp_bytes = core::mem::transmute::<u32, [u8; 4]>(timestamp);
+    let var_name = {
+        let weigth_bytes = weigth.to_le_bytes();
+        let timestamp_bytes = timestamp.to_le_bytes();
         let mut value = [0; 8];
         value[..4].copy_from_slice(&weigth_bytes);
         value[4..].copy_from_slice(&timestamp_bytes);
         value
     };
+    let value: [u8; 8] = var_name;
     let mut data: [u8; 10] = [
         0x01, 8, value[0], value[1], value[2], value[3], value[4], value[5], value[6], counter,
     ];
@@ -89,6 +90,7 @@ fn main() -> ! {
             "ble.cmd_set_le_advertising_parameters: {:?}",
             ble.cmd_set_le_advertising_parameters()
         );
+        // Todo: See diferences between this and the one below
         // println!(
         //     " ble.cmd_set_le_advertising_data: {:?}",
         //     ble.cmd_set_le_advertising_data(
@@ -145,17 +147,17 @@ fn main() -> ! {
 
         println!("started advertising");
 
-        let mut rf5 = |_offset: usize, data: &mut [u8]| {
-            data[..20].copy_from_slice(&b"Hello Bare-Metal BLE"[..]);
+        let mut data_point_read = |_offset: usize, data: &mut [u8]| {
+            data[..20].copy_from_slice(&b"Data Point Read"[..]);
             17
         };
 
-        let mut wf6 = |offset: usize, data: &[u8]| {
-            println!("CONTROL_POINT RECEIVED: {} 0x{:x?}", offset, data);
+        let mut control_point_write = |_, data: &[u8]| {
+            println!("Control Point Received: 0x{:x?}", data);
         };
 
-        let mut rf7 = |_offset: usize, data: &mut [u8]| {
-            data[..20].copy_from_slice(&b"Hello Bare-Metal BLE"[..]);
+        let mut service_change_read = |_offset: usize, data: &mut [u8]| {
+            data[..20].copy_from_slice(&b"Service Change Read"[..]);
             17
         };
 
@@ -190,7 +192,7 @@ fn main() -> ! {
                 uuid: "1801",
                 characteristics: [characteristic {
                     uuid: "2a05",
-                    read: rf7,
+                    read: service_change_read,
                     descriptors: [descriptor {
                         uuid: "2902",
                         value: ccc_vla,
@@ -204,13 +206,13 @@ fn main() -> ! {
                         name: "data_point",
                         uuid: "7e4e1702-1ea6-40c9-9dcc-13d34ffead57",
                         notify: true,
-                        read: rf5,
+                        read: data_point_read,
                     },
                     characteristic {
                         name: "control_point",
                         uuid: "7e4e1703-1ea6-40c9-9dcc-13d34ffead57",
-                        // read: rf6,
-                        write: wf6,
+                        write: control_point_write,
+                        // TODO: Is ther a WriteNoResponse?
                     },
                 ],
             },
