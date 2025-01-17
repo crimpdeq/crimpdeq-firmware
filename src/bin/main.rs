@@ -90,11 +90,7 @@ const ADVERTISING_DATA: &[u8] = &[
 ];
 
 pub const MEASURE_COMMAND_CHANNEL_SIZE: usize = 50;
-pub type MeasurementsChannel = Channel<NoopRawMutex, ResponseCode, MEASURE_COMMAND_CHANNEL_SIZE>;
-pub type MeasurementsReceiver =
-    Receiver<'static, NoopRawMutex, ResponseCode, MEASURE_COMMAND_CHANNEL_SIZE>;
-pub type MeasurementsSender =
-    Sender<'static, NoopRawMutex, ResponseCode, MEASURE_COMMAND_CHANNEL_SIZE>;
+pub type DataPointChannel = Channel<NoopRawMutex, DataPoint, MEASURE_COMMAND_CHANNEL_SIZE>;
 
 // HAVE A STATIC BOOL THAT ENABLES/DISABLES A TASK THAT READS THE WEIGTH
 static WEIGTH_TASK_ENABLED: Mutex<RefCell<bool>> = Mutex::new(RefCell::new(false));
@@ -124,11 +120,10 @@ async fn main(spawner: Spawner) -> ! {
 
     let connector = BleConnector::new(init, peripherals.BT);
 
-    let ch: &MeasurementsChannel = make_static!(MeasurementsChannel, Channel::new());
-    let rx: &MeasurementsReceiver = make_static!(MeasurementsReceiver, ch.receiver());
+    let channel: &DataPointChannel = make_static!(DataPointChannel, Channel::new());
 
-    spawner.spawn(bt_task(connector, *rx)).unwrap();
-    spawner.spawn(measurement_task(ch)).unwrap();
+    spawner.spawn(bt_task(connector, channel)).unwrap();
+    spawner.spawn(measurement_task(channel)).unwrap();
 
     loop {
         Timer::after(Duration::from_millis(10)).await;
@@ -136,7 +131,7 @@ async fn main(spawner: Spawner) -> ! {
 }
 
 #[embassy_executor::task]
-async fn bt_task(connector: BleConnector<'static>, channel: MeasurementsReceiver) {
+async fn bt_task(connector: BleConnector<'static>, channel: &'static DataPointChannel) {
     let now = || time::now().duration_since_epoch().to_millis();
     let mut ble = Ble::new(connector, now);
     loop {
@@ -201,6 +196,14 @@ async fn bt_task(connector: BleConnector<'static>, channel: MeasurementsReceiver
                 }
                 ControlOpCode::GetAppVersion => {
                     println!("GetAppVersion");
+                    // Notify the data_point with the app version
+                    let response =
+                        ResponseCode::AppVersion(env!("DEVICE_VERSION_NUMBER").as_bytes());
+                    let data_point = DataPoint::new(response);
+                    if channel.try_send(data_point).is_err() {
+                        println!("Failed to send data point");
+                    }
+                    println!("Sent GetAppVersion");
                 }
                 ControlOpCode::Shutdown => {
                     println!("Shutdown");
@@ -211,6 +214,12 @@ async fn bt_task(connector: BleConnector<'static>, channel: MeasurementsReceiver
                 ControlOpCode::GetProgressorId => {
                     println!("GetProgressorId");
                     // Notify the data_point with the progressor id
+                    let response = ResponseCode::ProgressorId(env!("DEVICE_ID").parse().unwrap());
+                    let data_point = DataPoint::new(response);
+                    if channel.try_send(data_point).is_err() {
+                        println!("Failed to send data point");
+                    }
+                    println!("Sent GetAppVersion");
                 }
             }
         };
@@ -297,9 +306,8 @@ async fn bt_task(connector: BleConnector<'static>, channel: MeasurementsReceiver
         let mut server = AttributeServer::new(&mut ble, &mut gatt_attributes, &mut rng);
 
         let mut notifier = || async {
-            let measurement = channel.receive().await;
-            let data_point = DataPoint::new(measurement);
-            let data: &[u8] = bytes_of(&data_point);
+            let data_point = channel.receive().await;
+            let data = bytes_of(&data_point);
             NotificationData::new(data_point_handle, data)
         };
         server.run(&mut notifier).await.unwrap();
@@ -307,7 +315,7 @@ async fn bt_task(connector: BleConnector<'static>, channel: MeasurementsReceiver
 }
 
 #[embassy_executor::task]
-async fn measurement_task(channel: &'static MeasurementsChannel) {
+async fn measurement_task(channel: &'static DataPointChannel) {
     let mut counter = 0;
     loop {
         let enabled = critical_section::with(|cs| *WEIGTH_TASK_ENABLED.borrow_ref(cs));
@@ -320,8 +328,8 @@ async fn measurement_task(channel: &'static MeasurementsChannel) {
             let weigth = counter as f32 / 10.0;
             let timestamp = (time::now().duration_since_epoch()).to_micros() as u32;
             let measurement = ResponseCode::WeigthtMeasurement(weigth, timestamp);
-
-            channel.send(measurement).await;
+            let data_point = DataPoint::new(measurement);
+            channel.send(data_point).await;
         }
         // Freq is 80Hz so ~13ms
         Timer::after(Duration::from_millis(13)).await;
