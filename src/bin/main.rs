@@ -10,13 +10,14 @@ use bleps::{
     Ble,
     HciConnector,
 };
+use bytemuck::bytes_of;
 use esp_backtrace as _;
 use esp_hal::{
     clock::CpuClock,
-    entry,
     gpio::{Input, Pull},
-    time,
+    main, time,
     timer::timg::TimerGroup,
+    Config,
 };
 use esp_println::println;
 use esp_wifi::{ble::controller::BleConnector, init};
@@ -31,13 +32,10 @@ const SCAN_RESPONSE_DATA: &[u8] = &[
     0x4e, 0x7e, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 ];
 
-#[entry]
+#[main]
 fn main() -> ! {
-    let peripherals = esp_hal::init({
-        let mut config = esp_hal::Config::default();
-        config.cpu_clock = CpuClock::max();
-        config
-    });
+    let config = Config::default().with_cpu_clock(CpuClock::max());
+    let peripherals = esp_hal::init(config);
 
     esp_println::logger::init_logger_from_env();
 
