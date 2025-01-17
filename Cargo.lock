@@ -50,6 +50,7 @@ checksum = "8f68f53c83ab957f72c32642f3868eec03eb974d1fb82e453128456482613d36"
 [[package]]
 name = "bleps"
 version = "0.1.0"
+source = "git+https://github.com/SergioGasquez/bleps?branch=feat%2Fasync-scan-rsp#4b1eec20f5ffd0b40783e46b5d2fb598fc0d47bc"
 dependencies = [
  "bitfield 0.14.0",
  "bleps-dedup",
@@ -65,6 +66,7 @@ dependencies = [
 [[package]]
 name = "bleps-dedup"
 version = "0.1.0"
+source = "git+https://github.com/SergioGasquez/bleps?branch=feat%2Fasync-scan-rsp#4b1eec20f5ffd0b40783e46b5d2fb598fc0d47bc"
 dependencies = [
  "darling",
  "proc-macro-error",
@@ -76,6 +78,7 @@ dependencies = [
 [[package]]
 name = "bleps-macros"
 version = "0.1.0"
+source = "git+https://github.com/SergioGasquez/bleps?branch=feat%2Fasync-scan-rsp#4b1eec20f5ffd0b40783e46b5d2fb598fc0d47bc"
 dependencies = [
  "litrs 0.2.3",
  "proc-macro2",
@@ -810,7 +813,7 @@ dependencies = [
 [[package]]
 name = "loadcell"
 version = "0.3.0"
-source = "git+https://github.com/DaneSlattery/hx711#8db73fe4884bbad7f3a88f2b40a821c3bfae2ee6"
+source = "git+https://github.com/DaneSlattery/hx711?rev=8db73fe4884bbad7f3a88f2b40a821c3bfae2ee6#8db73fe4884bbad7f3a88f2b40a821c3bfae2ee6"
 dependencies = [
  "critical-section",
  "embedded-hal 1.0.0",
