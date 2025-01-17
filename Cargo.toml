@@ -1,5 +1,5 @@
 [package]
-name = "tindeq"
+name    = "tindeq"
 version = "0.1.0"
 edition = "2021"
 
@@ -8,45 +8,32 @@ name = "tindeq"
 path = "./src/bin/main.rs"
 
 [dependencies]
+arrayvec = { version = "0.7.6", default-features = false }
+bleps = { git = "https://github.com/bjoernQ/bleps", package = "bleps", rev = "793f248c8bdd9b114a8f84868052939d12ed7da4", features = [
+    "async",
+    "macros",
+] }
+bytemuck = "1.21.0"
+bytemuck_derive = "1.8.1"
+critical-section = "1.2.0"
+embedded-io = "0.6.1"
+esp-alloc = { version = "0.6.0" }
 esp-backtrace = { version = "0.15.0", features = [
     "esp32c6",
     "exception-handler",
     "panic-handler",
     "println",
-]}
-
-esp-hal = { version = "0.23.1", features = [
-    "esp32c6",
 ] }
+esp-hal = { version = "0.23.1", features = ["esp32c6"] }
 esp-println = { version = "0.13.0", features = ["esp32c6", "log"] }
-log = { version = "0.4.21" }
-esp-alloc = { version = "0.6.0" }
-embedded-io = "0.6.1"
-esp-wifi = { version = "0.12.0", default-features=false, features = [
-    "esp32c6",
-    "utils",
+esp-wifi = { version = "0.12.0", default-features = false, features = [
     "ble",
     "esp-alloc",
+    "esp32c6",
     "log",
 ] }
 heapless = { version = "0.8.0", default-features = false }
-smoltcp = { version = "0.12.0", default-features = false, features = [
-    "medium-ethernet",
-    "multicast",
-    "proto-dhcpv4",
-    "proto-dns",
-    "proto-ipv4",
-    "socket-dns",
-    "socket-raw",
-    "socket-tcp",
-    "socket-udp",
-    "socket-icmp",
-] }
-bleps = { git = "https://github.com/bjoernQ/bleps", package = "bleps", rev = "a5148d8ae679e021b78f53fd33afb8bb35d0b62e", features = [ "macros", "async"] }
-critical-section = "1.2.0"
-bytemuck = "1.21.0"
-bytemuck_derive = "1.8.1"
-arrayvec = { version = "0.7", default-features = false }
+log = { version = "0.4.21" }
 
 [profile.dev]
 # Rust debug is too slow.
@@ -54,10 +41,10 @@ arrayvec = { version = "0.7", default-features = false }
 opt-level = "s"
 
 [profile.release]
-codegen-units = 1        # LLVM can perform better optimizations using a single thread
-debug = 2
+codegen-units    = 1     # LLVM can perform better optimizations using a single thread
+debug            = 2
 debug-assertions = false
-incremental = false
-lto = 'fat'
-opt-level = 's'
-overflow-checks = false
+incremental      = false
+lto              = 'fat'
+opt-level        = 's'
+overflow-checks  = false

@@ -43,12 +43,6 @@ checksum = "f798d2d157e547aa99aab0967df39edd0b70307312b6f8bd2848e6abe40896e0"
 
 [[package]]
 name = "bitflags"
-version = "1.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
-
-[[package]]
-name = "bitflags"
 version = "2.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f68f53c83ab957f72c32642f3868eec03eb974d1fb82e453128456482613d36"
@@ -56,7 +50,7 @@ checksum = "8f68f53c83ab957f72c32642f3868eec03eb974d1fb82e453128456482613d36"
 [[package]]
 name = "bleps"
 version = "0.1.0"
-source = "git+https://github.com/bjoernQ/bleps?rev=a5148d8ae679e021b78f53fd33afb8bb35d0b62e#a5148d8ae679e021b78f53fd33afb8bb35d0b62e"
+source = "git+https://github.com/bjoernQ/bleps?rev=793f248c8bdd9b114a8f84868052939d12ed7da4#793f248c8bdd9b114a8f84868052939d12ed7da4"
 dependencies = [
  "bitfield 0.14.0",
  "bleps-dedup",
@@ -72,7 +66,7 @@ dependencies = [
 [[package]]
 name = "bleps-dedup"
 version = "0.1.0"
-source = "git+https://github.com/bjoernQ/bleps?rev=a5148d8ae679e021b78f53fd33afb8bb35d0b62e#a5148d8ae679e021b78f53fd33afb8bb35d0b62e"
+source = "git+https://github.com/bjoernQ/bleps?rev=793f248c8bdd9b114a8f84868052939d12ed7da4#793f248c8bdd9b114a8f84868052939d12ed7da4"
 dependencies = [
  "darling",
  "proc-macro-error",
@@ -84,7 +78,7 @@ dependencies = [
 [[package]]
 name = "bleps-macros"
 version = "0.1.0"
-source = "git+https://github.com/bjoernQ/bleps?rev=a5148d8ae679e021b78f53fd33afb8bb35d0b62e#a5148d8ae679e021b78f53fd33afb8bb35d0b62e"
+source = "git+https://github.com/bjoernQ/bleps?rev=793f248c8bdd9b114a8f84868052939d12ed7da4#793f248c8bdd9b114a8f84868052939d12ed7da4"
 dependencies = [
  "litrs 0.2.3",
  "proc-macro2",
@@ -431,7 +425,7 @@ checksum = "a573175c540fd1d21a9cf07b0dee286b5a8f4cfde4b35da0f4f4657de7942c45"
 dependencies = [
  "basic-toml",
  "bitfield 0.17.0",
- "bitflags 2.8.0",
+ "bitflags",
  "bytemuck",
  "cfg-if",
  "chrono",
@@ -550,7 +544,6 @@ dependencies = [
  "portable-atomic",
  "portable_atomic_enum",
  "rand_core",
- "smoltcp",
 ]
 
 [[package]]
@@ -777,12 +770,6 @@ name = "log"
 version = "0.4.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04cbf5b083de1c7e0222a7a51dbfdba1cbe1c6ab0b15e29fff3f6c077fd9cd9f"
-
-[[package]]
-name = "managed"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ca88d725a0a943b096803bd34e73a4437208b6077654cc4ecb2947a5f91618d"
 
 [[package]]
 name = "memchr"
@@ -1056,19 +1043,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "smoltcp"
-version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dad095989c1533c1c266d9b1e8d70a1329dd3723c3edac6d03bbd67e7bf6f4bb"
-dependencies = [
- "bitflags 1.3.2",
- "byteorder",
- "cfg-if",
- "heapless",
- "managed",
-]
-
-[[package]]
 name = "stable_deref_trait"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1150,7 +1124,6 @@ dependencies = [
  "esp-wifi",
  "heapless",
  "log",
- "smoltcp",
 ]
 
 [[package]]
