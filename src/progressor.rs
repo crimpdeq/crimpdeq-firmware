@@ -21,13 +21,6 @@ fn to_le_bytes_without_trailing_zeros<T: Into<u64>>(input: T) -> ArrayVec<u8, 8>
     out
 }
 
-pub struct ControlPoint {
-    op_code: ControlOpCode,
-    length: u8,
-    // TODO: Update the length (n)
-    value: [u8; 20],
-}
-
 /// Progressor Commands
 pub enum ControlOpCode {
     /// Command used to zero weight when no load is applied
