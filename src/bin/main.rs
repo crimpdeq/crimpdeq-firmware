@@ -9,15 +9,14 @@ use bleps::{
 };
 use bytemuck::bytes_of;
 use embassy_executor::Spawner;
-use embassy_sync::{
-    blocking_mutex::raw::NoopRawMutex,
-    channel::{Channel, Receiver, Sender},
-};
+use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
 use embassy_time::{Duration, Timer};
 use esp_alloc as _;
 use esp_backtrace as _;
 use esp_hal::{
     clock::CpuClock,
+    delay::Delay,
+    gpio::{Input, Level, Output, Pull},
     rng::Rng,
     time,
     timer::{systimer::SystemTimer, timg::TimerGroup},
@@ -25,6 +24,7 @@ use esp_hal::{
 };
 use esp_println::println;
 use esp_wifi::{ble::controller::BleConnector, init, EspWifiController};
+use loadcell::{hx711, LoadCell};
 
 use tindeq::progressor::{ControlOpCode, DataPoint, ResponseCode};
 
@@ -115,6 +115,10 @@ async fn main(spawner: Spawner) -> ! {
         .unwrap()
     );
 
+    let sck = Output::new(peripherals.GPIO5, Level::Low);
+    let dt = Input::new(peripherals.GPIO4, Pull::None);
+    let delay = Delay::new();
+
     let systimer = SystemTimer::new(peripherals.SYSTIMER);
     esp_hal_embassy::init(systimer.alarm0);
 
@@ -123,7 +127,9 @@ async fn main(spawner: Spawner) -> ! {
     let channel: &DataPointChannel = make_static!(DataPointChannel, Channel::new());
 
     spawner.spawn(bt_task(connector, channel)).unwrap();
-    spawner.spawn(measurement_task(channel)).unwrap();
+    spawner
+        .spawn(measurement_task(channel, sck, dt, delay))
+        .unwrap();
 
     loop {
         Timer::after(Duration::from_millis(10)).await;
@@ -315,17 +321,22 @@ async fn bt_task(connector: BleConnector<'static>, channel: &'static DataPointCh
 }
 
 #[embassy_executor::task]
-async fn measurement_task(channel: &'static DataPointChannel) {
-    let mut counter = 0;
+async fn measurement_task(
+    channel: &'static DataPointChannel,
+    sck: Output<'static>,
+    dt: Input<'static>,
+    delay: Delay,
+) {
+    let mut load_sensor = hx711::HX711::new(sck, dt, delay);
+    load_sensor.tare(16);
+    load_sensor.set_scale(1.0);
+
     loop {
         let enabled = critical_section::with(|cs| *WEIGTH_TASK_ENABLED.borrow_ref(cs));
 
-        if enabled {
-            println!("Measuring weigth");
-            // TODO Measure the weigth
-            // Fake data
-            counter += 1;
-            let weigth = counter as f32 / 10.0;
+        if enabled && load_sensor.is_ready() {
+            let weigth = load_sensor.read_scaled().unwrap() / 1000.0;
+            println!("Measuring weigth: {}", weigth);
             let timestamp = (time::now().duration_since_epoch()).to_micros() as u32;
             let measurement = ResponseCode::WeigthtMeasurement(weigth, timestamp);
             let data_point = DataPoint::new(measurement);
