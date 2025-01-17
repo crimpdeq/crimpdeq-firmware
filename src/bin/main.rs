@@ -5,25 +5,19 @@ use core::cell::RefCell;
 use critical_section::Mutex;
 
 use bleps::{
-    async_attribute_server::AttributeServer,
-    asynch::Ble,
-    att::Att,
-    attribute_server::{NotificationData, WorkResult},
-    gatt,
+    async_attribute_server::AttributeServer, asynch::Ble, attribute_server::NotificationData, gatt,
 };
 use bytemuck::bytes_of;
 use embassy_executor::Spawner;
 use embassy_sync::{
     blocking_mutex::raw::NoopRawMutex,
-    channel::{self, Channel, Receiver, Sender},
+    channel::{Channel, Receiver, Sender},
 };
 use embassy_time::{Duration, Timer};
 use esp_alloc as _;
 use esp_backtrace as _;
 use esp_hal::{
     clock::CpuClock,
-    gpio::{Input, Pull},
-    peripheral,
     rng::Rng,
     time,
     timer::{systimer::SystemTimer, timg::TimerGroup},
@@ -127,11 +121,6 @@ async fn main(spawner: Spawner) -> ! {
 
     let systimer = SystemTimer::new(peripherals.SYSTIMER);
     esp_hal_embassy::init(systimer.alarm0);
-
-    // To be deleted
-    let button = Input::new(peripherals.GPIO9, Pull::Down);
-    let pin_ref = RefCell::new(button);
-    let pin_ref = &pin_ref;
 
     let connector = BleConnector::new(init, peripherals.BT);
 
@@ -309,42 +298,17 @@ async fn bt_task(connector: BleConnector<'static>, channel: MeasurementsReceiver
 
         let mut notifier = || async {
             let measurement = channel.receive().await;
-            // let timestamp = (time::now().duration_since_epoch()).to_micros() as u32;
-            // let measurement = ResponseCode::WeigthtMeasurement(23.1f32, timestamp);
             let data_point = DataPoint::new(measurement);
             let data: &[u8] = bytes_of(&data_point);
             NotificationData::new(data_point_handle, data)
         };
         server.run(&mut notifier).await.unwrap();
-
-        // if let Ok(measurement) = channel.try_receive() {
-        //     println!("Received measurement");
-        //     // let timestamp = (time::now().duration_since_epoch()).to_micros() as u32;
-        //     // let measurement = ResponseCode::WeigthtMeasurement(23.1f32, timestamp);
-        //     let data_point = DataPoint::new(measurement);
-        //     let data: &[u8] = bytes_of(&data_point);
-        //     let notification = Some(NotificationData::new(data_point_handle, data));
-
-        //     match server.do_work_with_notification(notification).await {
-        //         Ok(res) => {
-        //             if let WorkResult::GotDisconnected = res {
-        //                 break;
-        //             }
-        //         }
-        //         Err(err) => {
-        //             println!("{:?}", err);
-        //         }
-        //     }
-        // }
-
-        // Timer::after(Duration::from_millis(10)).await;
     }
 }
 
 #[embassy_executor::task]
 async fn measurement_task(channel: &'static MeasurementsChannel) {
     let mut counter = 0;
-    let mut weigth = 0.0f32;
     loop {
         let enabled = critical_section::with(|cs| *WEIGTH_TASK_ENABLED.borrow_ref(cs));
 
@@ -353,7 +317,7 @@ async fn measurement_task(channel: &'static MeasurementsChannel) {
             // TODO Measure the weigth
             // Fake data
             counter += 1;
-            weigth = counter as f32 / 10.0;
+            let weigth = counter as f32 / 10.0;
             let timestamp = (time::now().duration_since_epoch()).to_micros() as u32;
             let measurement = ResponseCode::WeigthtMeasurement(weigth, timestamp);
 
