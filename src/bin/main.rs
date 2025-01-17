@@ -107,8 +107,6 @@ async fn main(_spawner: Spawner) -> ! {
     let button = Input::new(peripherals.GPIO9, Pull::Down);
     let pin_ref = RefCell::new(button);
     let pin_ref = &pin_ref;
-    let mut debounce_cnt = 500;
-    let mut counter: u8 = 0;
 
     let mut bluetooth = peripherals.BT;
     let connector = BleConnector::new(init, &mut bluetooth);
@@ -278,18 +276,18 @@ async fn main(_spawner: Spawner) -> ! {
                 pin_ref.borrow_mut().wait_for_rising_edge().await;
                 {
                     // Fake data
-                    let mut counter = (&*counter).borrow_mut();
+                    let mut counter = (*counter).borrow_mut();
                     *counter += 1;
-                    let mut weigth = (&*weigth).borrow_mut();
+                    let mut weigth = (*weigth).borrow_mut();
                     *weigth = *counter as f32 + (*counter as f32 / 10.0);
-                    let mut timestamp = (&*timestamp).borrow_mut();
+                    let mut timestamp = (*timestamp).borrow_mut();
                     *timestamp = time::now().duration_since_epoch().to_micros() as u32;
                 }
                 let measurement =
                     ResponseCode::WeigthtMeasurement(*weigth.borrow(), *timestamp.borrow());
                 let data_point = DataPoint::new(measurement);
                 let data = bytes_of(&data_point);
-                NotificationData::new(data_point_handle, &data)
+                NotificationData::new(data_point_handle, data)
             }
         };
 
