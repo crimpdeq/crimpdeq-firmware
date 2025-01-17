@@ -22,7 +22,7 @@ use esp_hal::{
 use esp_println::println;
 use esp_wifi::{ble::controller::BleConnector, init};
 
-use tindeq::progressor::ControlOpCode;
+use tindeq::progressor::{ControlOpCode, DataPoint, ResponseCode};
 
 extern crate alloc;
 
@@ -53,22 +53,6 @@ fn main() -> ! {
     let button = Input::new(peripherals.GPIO9, Pull::Down);
     let mut debounce_cnt = 500;
     let mut counter: u8 = 0;
-
-    // Fake data
-    let weigth: f32 = 20.4;
-    let timestamp: u32 = 123456;
-    let var_name = {
-        let weigth_bytes = weigth.to_le_bytes();
-        let timestamp_bytes = timestamp.to_le_bytes();
-        let mut value = [0; 8];
-        value[..4].copy_from_slice(&weigth_bytes);
-        value[4..].copy_from_slice(&timestamp_bytes);
-        value
-    };
-    let value: [u8; 8] = var_name;
-    let mut data: [u8; 10] = [
-        0x01, 8, value[0], value[1], value[2], value[3], value[4], value[5], value[6], counter,
-    ];
 
     let mut bluetooth = peripherals.BT;
 
@@ -261,16 +245,22 @@ fn main() -> ! {
             if button.is_low() && debounce_cnt > 0 {
                 debounce_cnt -= 1;
                 if debounce_cnt == 0 {
+                    // Fake data
+                    let weigth = counter as f32 + (counter as f32 / 10.0);
+                    let timestamp = time::now().duration_since_epoch().to_micros() as u32;
+                    let measurement = ResponseCode::WeigthtMeasurement(weigth, timestamp);
+                    let data_point = DataPoint::new(measurement);
+                    let measurement_data = bytes_of(&data_point);
                     counter += 1;
-                    data[9] = counter;
 
                     let mut cccd = [0u8; 1];
                     if let Some(1) =
                         srv.get_characteristic_value(data_point_notify_enable_handle, 0, &mut cccd)
                     {
                         // if notifications enabled
-                        if cccd[0] == &1 {
-                            notification = Some(NotificationData::new(data_point_handle, &data));
+                        if cccd[0] == 1 {
+                            notification =
+                                Some(NotificationData::new(data_point_handle, measurement_data));
                         }
                     }
                 }

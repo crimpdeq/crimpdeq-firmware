@@ -79,11 +79,6 @@ impl DataPoint {
             response_code: response_code.op_code(),
         }
     }
-
-    /// Converts the DataPoint to a byte slice (`&[u8]`).
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.value[..self.length as usize]
-    }
 }
 
 impl From<ResponseCode> for DataPoint {
