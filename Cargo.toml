@@ -40,7 +40,7 @@ esp-wifi = { version = "0.12.0", default-features = false, features = [
 heapless = { version = "0.8.0", default-features = false }
 log = "0.4.21"
 static_cell = { version = "2.1.0", features = ["nightly"] }
-loadcell ={ git = "https://github.com/DaneSlattery/hx711", rev = "8db73fe4884bbad7f3a88f2b40a821c3bfae2ee6" }
+loadcell = { git = "https://github.com/DaneSlattery/hx711", rev = "8db73fe4884bbad7f3a88f2b40a821c3bfae2ee6" }
 
 
 [profile.dev]

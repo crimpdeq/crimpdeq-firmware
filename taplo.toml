@@ -1,0 +1,11 @@
+include = [
+    ".cargo/config.toml",
+    "Cargo.toml",
+    "rust-toolchain.toml",
+    "rustfmt.toml",
+]
+
+[formatting]
+align_entries  = true
+reorder_keys   = true
+reorder_arrays = true

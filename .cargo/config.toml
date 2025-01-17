@@ -2,17 +2,18 @@
 runner = "espflash flash --monitor"
 
 [env]
-ESP_LOG="INFO"
-ADVERTISED_NAME = "Progressor_2639"
-DEVICE_ID = "42"
+ESP_LOG               = "INFO"
+ADVERTISED_NAME       = "Progressor_2639"
+DEVICE_ID             = "42"
 DEVICE_VERSION_NUMBER = "1.2.3.4"
-CALIBRATION_CURVE = "FFFFFFFFFFFFFFFF00000000"
+CALIBRATION_CURVE     = "FFFFFFFFFFFFFFFF00000000"
 
 [build]
 rustflags = [
   # Required to obtain backtraces (e.g. when using the "esp-backtrace" crate.)
   # NOTE: May negatively impact performance of produced code
-  "-C", "force-frame-pointers",
+  "-C",
+  "force-frame-pointers",
 ]
 
 target = "riscv32imac-unknown-none-elf"
