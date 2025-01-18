@@ -5,7 +5,13 @@ use core::cell::RefCell;
 use critical_section::Mutex;
 
 use bleps::{
-    async_attribute_server::AttributeServer, asynch::Ble, attribute_server::NotificationData, gatt,
+    ad_structure::{
+        create_advertising_data, AdStructure, BR_EDR_NOT_SUPPORTED, LE_GENERAL_DISCOVERABLE,
+    },
+    async_attribute_server::AttributeServer,
+    asynch::Ble,
+    attribute_server::NotificationData,
+    gatt,
 };
 use bytemuck::bytes_of;
 use embassy_executor::Spawner;
@@ -52,41 +58,6 @@ const SCAN_RESPONSE_DATA: &[u8] = &[
     18, // Length
     17, 0x07, 0x57, 0xad, 0xfe, 0x4f, 0xd3, 0x13, 0xcc, 0x9d, 0xc9, 0x40, 0xa6, 0x1e, 0x01, 0x17,
     0x4e, 0x7e, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-];
-
-const ADVERTISING_DATA: &[u8] = &[
-    20, // Length
-    2,
-    0x01,
-    0x02 | 0x04, // LE General Discoverable Mode, BR/EDR Not Supported
-    ("Progressor_2639".len() + 1) as u8,
-    0x9,
-    b'P',
-    b'r',
-    b'o',
-    b'g',
-    b'r',
-    b'e',
-    b's',
-    b's',
-    b'o',
-    b'r',
-    b'_',
-    b'2',
-    b'6',
-    b'3',
-    b'9',
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
 ];
 
 pub const MEASURE_COMMAND_CHANNEL_SIZE: usize = 50;
@@ -146,23 +117,17 @@ async fn bt_task(connector: BleConnector<'static>, channel: &'static DataPointCh
             "ble.cmd_set_le_advertising_parameters: {:?}",
             ble.cmd_set_le_advertising_parameters().await
         );
-        // Todo: See diferences between this and the one below
-        // println!(
-        //     " ble.cmd_set_le_advertising_data: {:?}",
-        //     ble.cmd_set_le_advertising_data(
-        //         create_advertising_data(&[
-        //             AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
-        //             AdStructure::CompleteLocalName("Progressor_2639"),
-        //         ])
-        //         .unwrap()
-        //     )
-        // );
         println!(
-            "ble.cmd_set_le_advertising_data: {:?}",
-            ble.cmd_set_le_advertising_data(Data::new(ADVERTISING_DATA))
-                .await
+            " ble.cmd_set_le_advertising_data: {:?}",
+            ble.cmd_set_le_advertising_data(
+                create_advertising_data(&[
+                    AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
+                    AdStructure::CompleteLocalName(env!("DEVICE_NAME")),
+                ])
+                .unwrap()
+            )
+            .await
         );
-
         println!(
             "ble.cmd_set_le_scan_rsp_data: {:?}",
             ble.cmd_set_le_scan_rsp_data(Data::new(SCAN_RESPONSE_DATA))
@@ -236,7 +201,7 @@ async fn bt_task(connector: BleConnector<'static>, channel: &'static DataPointCh
         };
 
         // TODO: Avoid using the gatt! macro, replace the uuids with constants and improve the values
-        let device_name = b"Progressor_2639";
+        let device_name = b"Progressor_7125";
         let appearance = b"[0] Unknown";
         let ppcp_val = b"Connection Interval: 50.00ms - 65.00ms, Max Latency:6ms, Suppervision Timeout Multiplier: 400ms";
         let car_val = b"Address resolution supported";
