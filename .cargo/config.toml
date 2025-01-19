@@ -10,6 +10,8 @@ ESP_LOG               = "INFO"
 
 [build]
 rustflags = [
+  "-C",
+  "link-arg=-Tlinkall.x",
   # Required to obtain backtraces (e.g. when using the "esp-backtrace" crate.)
   # NOTE: May negatively impact performance of produced code
   "-C",
