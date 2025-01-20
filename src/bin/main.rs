@@ -201,7 +201,7 @@ async fn bt_task(connector: BleConnector<'static>, channel: &'static DataPointCh
         };
 
         // TODO: Avoid using the gatt! macro, replace the uuids with constants and improve the values
-        let device_name = b"Progressor_7125";
+        let device_name = env!("DEVICE_NAME").as_bytes();
         let appearance = b"[0] Unknown";
         let ppcp_val = b"Connection Interval: 50.00ms - 65.00ms, Max Latency:6ms, Suppervision Timeout Multiplier: 400ms";
         let car_val = b"Address resolution supported";
