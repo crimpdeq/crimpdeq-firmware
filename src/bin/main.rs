@@ -293,14 +293,23 @@ async fn measurement_task(
     delay: Delay,
 ) {
     let mut load_sensor = hx711::HX711::new(sck, dt, delay);
-    load_sensor.tare(16);
-    load_sensor.set_scale(1.0);
+    const SAMPLES: usize = 16;
+    load_sensor.tare(SAMPLES);
+
+    load_sensor.set_scale(1.26);
 
     loop {
         let enabled = critical_section::with(|cs| *WEIGTH_TASK_ENABLED.borrow_ref(cs));
 
         if enabled && load_sensor.is_ready() {
-            let weigth = load_sensor.read_scaled().unwrap() / 1000.0;
+            let mut weigth: f32 = 0.0;
+            for _ in 0..20 {
+                let reading = load_sensor.read_scaled();
+                if let Ok(x) = reading {
+                    weigth += x;
+                }
+            }
+            weigth /= 20000.0;
             println!("Measuring weigth: {}", weigth);
             let timestamp = (time::now().duration_since_epoch()).to_micros() as u32;
             let measurement = ResponseCode::WeigthtMeasurement(weigth, timestamp);
@@ -308,6 +317,6 @@ async fn measurement_task(
             channel.send(data_point).await;
         }
         // Freq is 80Hz so ~13ms
-        Timer::after(Duration::from_millis(13)).await;
+        Timer::after(Duration::from_millis(10)).await;
     }
 }
