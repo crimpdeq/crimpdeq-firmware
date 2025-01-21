@@ -14,6 +14,8 @@ use bleps::{
     gatt,
 };
 use bytemuck::bytes_of;
+use defmt::{debug, error, info};
+use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
 use embassy_time::{Duration, Timer};
@@ -28,10 +30,10 @@ use esp_hal::{
     timer::{systimer::SystemTimer, timg::TimerGroup},
     Config,
 };
+use esp_println as _;
 use esp_wifi::{ble::controller::BleConnector, init, EspWifiController};
 use loadcell::{hx711, LoadCell};
 
-use log::{debug, error, info};
 use tindeq::progressor::{ControlOpCode, DataPoint, ResponseCode};
 
 // // When you are okay with using a nightly compiler it's better to use https://docs.rs/static_cell/2.1.0/static_cell/macro.make_static.html
@@ -70,8 +72,6 @@ static WEIGTH_TASK_ENABLED: Mutex<RefCell<bool>> = Mutex::new(RefCell::new(false
 async fn main(spawner: Spawner) -> ! {
     let config = Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
-
-    esp_println::logger::init_logger_from_env();
 
     esp_alloc::heap_allocator!(72 * 1024);
 
@@ -142,7 +142,7 @@ async fn bt_task(connector: BleConnector<'static>, channel: &'static DataPointCh
         };
 
         let mut control_point_write = |_, data: &[u8]| {
-            debug!("Control Point Received: 0x{:x?}", data);
+            debug!("Control Point Received: 0x{:?}", data);
 
             match ControlOpCode::from(data[0]) {
                 ControlOpCode::TareScale => {

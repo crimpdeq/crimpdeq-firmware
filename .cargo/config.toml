@@ -1,11 +1,12 @@
 [target.riscv32imc-unknown-none-elf]
-runner = "espflash flash --monitor"
+runner = "probe-rs run"
+# runner = "espflash flash --monitor"
 
 [env]
+DEFMT_LOG             = "info"
 DEVICE_ID             = "42"
 DEVICE_NAME           = "Progressor_7125"
 DEVICE_VERSION_NUMBER = "1.2.3.4"
-ESP_LOG               = "INFO"
 
 [build]
 rustflags = [
@@ -15,6 +16,9 @@ rustflags = [
   # NOTE: May negatively impact performance of produced code
   "-C",
   "force-frame-pointers",
+  # Defmt support
+  "-C",
+  "link-arg=-Tdefmt.x",
 ]
 
 target = "riscv32imc-unknown-none-elf"
