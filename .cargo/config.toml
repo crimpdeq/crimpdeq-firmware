@@ -1,7 +1,8 @@
-[target.riscv32imac-unknown-none-elf]
+[target.riscv32imc-unknown-none-elf]
 runner = "espflash flash --monitor"
 
 [env]
+DEVICE_ID             = "42"
 DEVICE_NAME           = "Progressor_7125"
 DEVICE_VERSION_NUMBER = "1.2.3.4"
 ESP_LOG               = "INFO"
@@ -16,7 +17,7 @@ rustflags = [
   "force-frame-pointers",
 ]
 
-target = "riscv32imac-unknown-none-elf"
+target = "riscv32imc-unknown-none-elf"
 
 [unstable]
 build-std = ["alloc", "core"]

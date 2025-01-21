@@ -23,18 +23,18 @@ embassy-time = "0.4.0"
 embedded-io = "0.6.1"
 esp-alloc = "0.6.0"
 esp-backtrace = { version = "0.15.0", features = [
-    "esp32c6",
+    "esp32c3",
     "exception-handler",
     "panic-handler",
     "println",
 ] }
-esp-hal = { version = "0.23.1", features = ["esp32c6", "unstable"] }
-esp-hal-embassy = { version = "0.6.0", features = ["esp32c6"] }
-esp-println = { version = "0.13.0", features = ["esp32c6", "log"] }
+esp-hal = { version = "0.23.1", features = ["esp32c3", "unstable"] }
+esp-hal-embassy = { version = "0.6.0", features = ["esp32c3"] }
+esp-println = { version = "0.13.0", features = ["esp32c3", "log"] }
 esp-wifi = { version = "0.12.0", default-features = false, features = [
     "ble",
     "esp-alloc",
-    "esp32c6",
+    "esp32c3",
     "log",
 ] }
 heapless = { version = "0.8.0", default-features = false }
