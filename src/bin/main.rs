@@ -243,7 +243,7 @@ async fn bt_task(connector: BleConnector<'static>, channel: &'static DataPointCh
                         name: "control_point",
                         uuid: "7e4e1703-1ea6-40c9-9dcc-13d34ffead57",
                         write: control_point_write,
-                        // TODO: Is ther a WriteNoResponse?
+                        // TODO: Is there a WriteNoResponse?
                     },
                 ],
             },
