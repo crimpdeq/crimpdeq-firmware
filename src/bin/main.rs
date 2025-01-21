@@ -28,10 +28,10 @@ use esp_hal::{
     timer::{systimer::SystemTimer, timg::TimerGroup},
     Config,
 };
-use esp_println::println;
 use esp_wifi::{ble::controller::BleConnector, init, EspWifiController};
 use loadcell::{hx711, LoadCell};
 
+use log::{debug, error, info};
 use tindeq::progressor::{ControlOpCode, DataPoint, ResponseCode};
 
 // // When you are okay with using a nightly compiler it's better to use https://docs.rs/static_cell/2.1.0/static_cell/macro.make_static.html
@@ -112,33 +112,29 @@ async fn bt_task(connector: BleConnector<'static>, channel: &'static DataPointCh
     let now = || time::now().duration_since_epoch().to_millis();
     let mut ble = Ble::new(connector, now);
     loop {
-        println!("ble.init: {:?}", ble.init().await);
-        println!(
-            "ble.cmd_set_le_advertising_parameters: {:?}",
-            ble.cmd_set_le_advertising_parameters().await
-        );
-        println!(
-            " ble.cmd_set_le_advertising_data: {:?}",
-            ble.cmd_set_le_advertising_data(
-                create_advertising_data(&[
-                    AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
-                    AdStructure::CompleteLocalName(env!("DEVICE_NAME")),
-                ])
-                .unwrap()
-            )
+        info!("Starting BLE");
+        debug!("Initializing BLE");
+        ble.init().await.unwrap();
+        debug!("Setting advertising parameters");
+        ble.cmd_set_le_advertising_parameters().await.unwrap();
+        debug!("Setting advertising data");
+        ble.cmd_set_le_advertising_data(
+            create_advertising_data(&[
+                AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
+                AdStructure::CompleteLocalName(env!("DEVICE_NAME")),
+            ])
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        debug!("Setting scan response data");
+        ble.cmd_set_le_scan_rsp_data(Data::new(SCAN_RESPONSE_DATA))
             .await
-        );
-        println!(
-            "ble.cmd_set_le_scan_rsp_data: {:?}",
-            ble.cmd_set_le_scan_rsp_data(Data::new(SCAN_RESPONSE_DATA))
-                .await
-        );
-        println!(
-            "ble.cmd_set_le_advertise_enable: {:?}",
-            ble.cmd_set_le_advertise_enable(true).await
-        );
+            .unwrap();
+        debug!("Setting advertising enable");
+        ble.cmd_set_le_advertise_enable(true).await.unwrap();
 
-        println!("Started advertising");
+        info!("Started advertising");
 
         let mut data_point_read = |_offset: usize, data: &mut [u8]| {
             data[..20].copy_from_slice(&b"Data Point Read"[..]);
@@ -146,14 +142,14 @@ async fn bt_task(connector: BleConnector<'static>, channel: &'static DataPointCh
         };
 
         let mut control_point_write = |_, data: &[u8]| {
-            println!("Control Point Received: 0x{:x?}", data);
+            debug!("Control Point Received: 0x{:x?}", data);
 
             match ControlOpCode::from(data[0]) {
                 ControlOpCode::TareScale => {
-                    println!("TareScale");
+                    debug!("TareScale");
                 }
                 ControlOpCode::StartMeasurement => {
-                    println!("StartMeasurement");
+                    debug!("StartMeasurement");
 
                     critical_section::with(|cs| {
                         *WEIGTH_TASK_ENABLED.borrow_ref_mut(cs) = true;
@@ -163,34 +159,34 @@ async fn bt_task(connector: BleConnector<'static>, channel: &'static DataPointCh
                     critical_section::with(|cs| {
                         *WEIGTH_TASK_ENABLED.borrow_ref_mut(cs) = false;
                     });
-                    println!("StopMeasurement");
+                    debug!("StopMeasurement");
                 }
                 ControlOpCode::GetAppVersion => {
-                    println!("GetAppVersion");
+                    debug!("GetAppVersion");
                     // Notify the data_point with the app version
                     let response =
                         ResponseCode::AppVersion(env!("DEVICE_VERSION_NUMBER").as_bytes());
                     let data_point = DataPoint::new(response);
                     if channel.try_send(data_point).is_err() {
-                        println!("Failed to send data point");
+                        error!("Failed to send data point");
                     }
-                    println!("Sent GetAppVersion");
+                    debug!("Sent GetAppVersion");
                 }
                 ControlOpCode::Shutdown => {
-                    println!("Shutdown");
+                    debug!("Shutdown");
                 }
                 ControlOpCode::SampleBattery => {
-                    println!("SampleBattery");
+                    debug!("SampleBattery");
                 }
                 ControlOpCode::GetProgressorId => {
-                    println!("GetProgressorId");
+                    debug!("GetProgressorId");
                     // Notify the data_point with the progressor id
                     let response = ResponseCode::ProgressorId(env!("DEVICE_ID").parse().unwrap());
                     let data_point = DataPoint::new(response);
                     if channel.try_send(data_point).is_err() {
-                        println!("Failed to send data point");
+                        error!("Failed to send data point");
                     }
-                    println!("Sent GetAppVersion");
+                    debug!("Sent GetAppVersion");
                 }
             }
         };
@@ -310,7 +306,7 @@ async fn measurement_task(
                 }
             }
             weigth /= 20000.0;
-            println!("Measuring weigth: {}", weigth);
+            debug!("Measuring weigth: {}", weigth);
             let timestamp = (time::now().duration_since_epoch()).to_micros() as u32;
             let measurement = ResponseCode::WeigthtMeasurement(weigth, timestamp);
             let data_point = DataPoint::new(measurement);
