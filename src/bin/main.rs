@@ -126,11 +126,6 @@ async fn bt_task(connector: BleConnector<'static>, channel: &'static DataPointCh
 
         info!("Started advertising");
 
-        let mut data_point_read = |_offset: usize, data: &mut [u8]| {
-            data[..20].copy_from_slice(&b"Data Point Read"[..]);
-            17
-        };
-
         let mut control_point_write = |_, data: &[u8]| {
             let op_copde = ControlOpCode::from(data[0]);
             info!("Control Point Received: {:?}", op_copde);
@@ -173,10 +168,9 @@ async fn bt_task(connector: BleConnector<'static>, channel: &'static DataPointCh
             }
         };
 
-        let mut service_change_read = |_offset: usize, data: &mut [u8]| {
-            data[..20].copy_from_slice(&b"Service Change Read"[..]);
-            17
-        };
+        // TODO: Are this required, they are not used
+        let mut service_change_read = |_, _data: &mut [u8]| 0;
+        let mut data_point_read = |_, _data: &mut [u8]| 0;
 
         // TODO: Avoid using the gatt! macro, replace the uuids with constants and improve the values
         let device_name = env!("DEVICE_NAME").as_bytes();
