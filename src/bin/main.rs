@@ -36,23 +36,13 @@ use loadcell::{hx711, LoadCell};
 
 use tindeq::progressor::{ControlOpCode, DataPoint, ResponseCode};
 
-// // When you are okay with using a nightly compiler it's better to use https://docs.rs/static_cell/2.1.0/static_cell/macro.make_static.html
+// When you are okay with using a nightly compiler it's better to use https://docs.rs/static_cell/2.1.0/static_cell/macro.make_static.html
 macro_rules! mk_static {
     ($t:ty,$val:expr) => {{
         static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
         #[deny(unused_attributes)]
         let x = STATIC_CELL.uninit().write(($val));
         x
-    }};
-}
-
-#[macro_export]
-macro_rules! make_static {
-    ($t:ty, $val:expr) => ($crate::make_static!($t, $val,));
-    ($t:ty, $val:expr, $(#[$m:meta])*) => {{
-        $(#[$m])*
-        static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
-        STATIC_CELL.init_with(|| $val)
     }};
 }
 
@@ -95,7 +85,7 @@ async fn main(spawner: Spawner) -> ! {
 
     let connector = BleConnector::new(init, peripherals.BT);
 
-    let channel: &DataPointChannel = make_static!(DataPointChannel, Channel::new());
+    let channel = mk_static!(DataPointChannel, Channel::new());
 
     spawner.spawn(bt_task(connector, channel)).unwrap();
     spawner
