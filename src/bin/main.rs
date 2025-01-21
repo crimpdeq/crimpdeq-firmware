@@ -151,6 +151,7 @@ async fn bt_task(connector: BleConnector<'static>, channel: &'static DataPointCh
                     // Notify the data_point with the app version
                     let response =
                         ResponseCode::AppVersion(env!("DEVICE_VERSION_NUMBER").as_bytes());
+                    debug!("AppVersion: {:?}", response);
                     let data_point = DataPoint::new(response);
                     if channel.try_send(data_point).is_err() {
                         error!("Failed to send data point");
@@ -162,6 +163,7 @@ async fn bt_task(connector: BleConnector<'static>, channel: &'static DataPointCh
                 ControlOpCode::GetProgressorId => {
                     // Notify the data_point with the progressor id
                     let response = ResponseCode::ProgressorId(env!("DEVICE_ID").parse().unwrap());
+                    debug!("ProgressorId: {:?}", response);
                     let data_point = DataPoint::new(response);
                     if channel.try_send(data_point).is_err() {
                         error!("Failed to send data point");
@@ -287,13 +289,12 @@ async fn measurement_task(
                 }
             }
             weigth /= 20000.0;
-            debug!("Measuring weigth: {}", weigth);
             let timestamp = (time::now().duration_since_epoch()).to_micros() as u32;
             let measurement = ResponseCode::WeigthtMeasurement(weigth, timestamp);
+            debug!("Sending measurement: {:?}", measurement);
             let data_point = DataPoint::new(measurement);
             channel.send(data_point).await;
         }
-        // Freq is 80Hz so ~13ms
         Timer::after(Duration::from_millis(10)).await;
     }
 }

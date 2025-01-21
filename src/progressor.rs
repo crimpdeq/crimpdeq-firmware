@@ -89,6 +89,18 @@ impl DataPoint {
     }
 }
 
+impl Format for DataPoint {
+    fn format(&self, fmt: defmt::Formatter) {
+        defmt::write!(
+            fmt,
+            "Code: {:?}, Length: {}, Data: {:?}",
+            self.response_code,
+            self.length,
+            &self.value[0..self.length as usize]
+        );
+    }
+}
+
 impl From<ResponseCode> for DataPoint {
     fn from(response_code: ResponseCode) -> Self {
         Self {
@@ -112,6 +124,30 @@ pub enum ResponseCode {
     AppVersion(&'static [u8]),
     ProgressorId(u64),
     CalibrationCurve(CalibrationCurve),
+}
+
+impl Format for ResponseCode {
+    fn format(&self, fmt: defmt::Formatter) {
+        match self {
+            ResponseCode::SampleBatteryVoltage(voltage) => {
+                defmt::write!(fmt, "SampleBatteryVoltage: {}", voltage)
+            }
+            ResponseCode::WeigthtMeasurement(weigth, timestamp) => {
+                defmt::write!(
+                    fmt,
+                    "WeigthtMeasurement: Weigth: {}, Timestamp: {}",
+                    weigth,
+                    timestamp
+                )
+            }
+            ResponseCode::LowPowerWarning => defmt::write!(fmt, "LowPowerWarning"),
+            ResponseCode::AppVersion(version) => defmt::write!(fmt, "AppVersion: {:?}", version),
+            ResponseCode::ProgressorId(id) => defmt::write!(fmt, "ProgressorId({})", id),
+            ResponseCode::CalibrationCurve(curve) => {
+                defmt::write!(fmt, "CalibrationCurve: {:?}", curve)
+            }
+        }
+    }
 }
 
 impl ResponseCode {
