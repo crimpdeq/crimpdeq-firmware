@@ -142,15 +142,12 @@ async fn bt_task(connector: BleConnector<'static>, channel: &'static DataPointCh
         };
 
         let mut control_point_write = |_, data: &[u8]| {
-            debug!("Control Point Received: 0x{:?}", data);
+            let op_copde = ControlOpCode::from(data[0]);
+            info!("Control Point Received: {:?}", op_copde);
 
-            match ControlOpCode::from(data[0]) {
-                ControlOpCode::TareScale => {
-                    debug!("TareScale");
-                }
+            match op_copde {
+                ControlOpCode::TareScale => {}
                 ControlOpCode::StartMeasurement => {
-                    debug!("StartMeasurement");
-
                     critical_section::with(|cs| {
                         *WEIGTH_TASK_ENABLED.borrow_ref_mut(cs) = true;
                     });
@@ -159,10 +156,8 @@ async fn bt_task(connector: BleConnector<'static>, channel: &'static DataPointCh
                     critical_section::with(|cs| {
                         *WEIGTH_TASK_ENABLED.borrow_ref_mut(cs) = false;
                     });
-                    debug!("StopMeasurement");
                 }
                 ControlOpCode::GetAppVersion => {
-                    debug!("GetAppVersion");
                     // Notify the data_point with the app version
                     let response =
                         ResponseCode::AppVersion(env!("DEVICE_VERSION_NUMBER").as_bytes());
@@ -172,14 +167,9 @@ async fn bt_task(connector: BleConnector<'static>, channel: &'static DataPointCh
                     }
                     debug!("Sent GetAppVersion");
                 }
-                ControlOpCode::Shutdown => {
-                    debug!("Shutdown");
-                }
-                ControlOpCode::SampleBattery => {
-                    debug!("SampleBattery");
-                }
+                ControlOpCode::Shutdown => {}
+                ControlOpCode::SampleBattery => {}
                 ControlOpCode::GetProgressorId => {
-                    debug!("GetProgressorId");
                     // Notify the data_point with the progressor id
                     let response = ResponseCode::ProgressorId(env!("DEVICE_ID").parse().unwrap());
                     let data_point = DataPoint::new(response);
@@ -274,6 +264,7 @@ async fn bt_task(connector: BleConnector<'static>, channel: &'static DataPointCh
 
         let mut notifier = || async {
             let data_point = channel.receive().await;
+            debug!("Notifying data point: {:?}", data_point);
             let data = bytes_of(&data_point);
             NotificationData::new(data_point_handle, data)
         };

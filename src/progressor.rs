@@ -1,5 +1,6 @@
 use arrayvec::ArrayVec;
 use bytemuck_derive::{Pod, Zeroable};
+use defmt::Format;
 
 pub const MAX_PAYLOAD_SIZE: usize = 12;
 pub(crate) type CalibrationCurve = [u8; 12];
@@ -48,6 +49,20 @@ impl From<u8> for ControlOpCode {
             0x70 => ControlOpCode::GetProgressorId,
             0x6B => ControlOpCode::GetAppVersion,
             _ => panic!("Invalid OpCode"),
+        }
+    }
+}
+
+impl Format for ControlOpCode {
+    fn format(&self, fmt: defmt::Formatter) {
+        match self {
+            ControlOpCode::TareScale => defmt::write!(fmt, "TareScale"),
+            ControlOpCode::StartMeasurement => defmt::write!(fmt, "StartMeasurement"),
+            ControlOpCode::StopMeasurement => defmt::write!(fmt, "StopMeasurement"),
+            ControlOpCode::GetAppVersion => defmt::write!(fmt, "GetAppVersion"),
+            ControlOpCode::Shutdown => defmt::write!(fmt, "Shutdown"),
+            ControlOpCode::SampleBattery => defmt::write!(fmt, "SampleBattery"),
+            ControlOpCode::GetProgressorId => defmt::write!(fmt, "GetProgressorId"),
         }
     }
 }
