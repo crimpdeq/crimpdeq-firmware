@@ -1,26 +1,7 @@
-use arrayvec::ArrayVec;
 use bytemuck_derive::{Pod, Zeroable};
 use defmt::Format;
 
 pub const MAX_PAYLOAD_SIZE: usize = 12;
-pub(crate) type CalibrationCurve = [u8; 12];
-
-// TODO: Can we avoid ArrayVec and rewrite this fn
-/// Convert an integer into an array of bytes with any zeros on the MSB side trimmed
-fn to_le_bytes_without_trailing_zeros<T: Into<u64>>(input: T) -> ArrayVec<u8, 8> {
-    let input = input.into();
-    if input == 0 {
-        return ArrayVec::try_from([0_u8].as_slice()).unwrap();
-    }
-    let mut out: ArrayVec<u8, 8> = input
-        .to_le_bytes()
-        .into_iter()
-        .rev()
-        .skip_while(|&i| i == 0)
-        .collect();
-    out.reverse();
-    out
-}
 
 /// Progressor Commands
 pub enum ControlOpCode {
@@ -34,7 +15,9 @@ pub enum ControlOpCode {
     Shutdown = 0x6E,
     /// Measures the battery voltage in milivolts
     SampleBattery = 0x6F,
+    /// Get the Progressor ID
     GetProgressorId = 0x70,
+    /// Get the application version
     GetAppVersion = 0x6B,
 }
 
@@ -121,9 +104,10 @@ pub enum ResponseCode {
     WeigthtMeasurement(f32, u32),
     /// Low power warning indicating that the battery is empty. The Progressor will turn itself off after sending this warning
     LowPowerWarning,
+    /// Response to [OpCode::GetAppVersion] command
     AppVersion(&'static [u8]),
-    ProgressorId(u64),
-    CalibrationCurve(CalibrationCurve),
+    /// Response to [OpCode::GetProgressorId] command
+    ProgressorId(u8),
 }
 
 impl Format for ResponseCode {
@@ -143,9 +127,6 @@ impl Format for ResponseCode {
             ResponseCode::LowPowerWarning => defmt::write!(fmt, "LowPowerWarning"),
             ResponseCode::AppVersion(version) => defmt::write!(fmt, "AppVersion: {:?}", version),
             ResponseCode::ProgressorId(id) => defmt::write!(fmt, "ProgressorId({})", id),
-            ResponseCode::CalibrationCurve(curve) => {
-                defmt::write!(fmt, "CalibrationCurve: {:?}", curve)
-            }
         }
     }
 }
@@ -155,8 +136,7 @@ impl ResponseCode {
         match self {
             ResponseCode::SampleBatteryVoltage(..)
             | ResponseCode::AppVersion(..)
-            | ResponseCode::ProgressorId(..)
-            | ResponseCode::CalibrationCurve(..) => 0x00,
+            | ResponseCode::ProgressorId(..) => 0x00,
             ResponseCode::WeigthtMeasurement(..) => 0x01,
             ResponseCode::LowPowerWarning => 0x04,
         }
@@ -168,8 +148,7 @@ impl ResponseCode {
             ResponseCode::WeigthtMeasurement(..) => 8,
             ResponseCode::LowPowerWarning => 0,
             ResponseCode::AppVersion(version) => version.len() as u8,
-            ResponseCode::CalibrationCurve(curve) => curve.len() as u8,
-            ResponseCode::ProgressorId(id) => to_le_bytes_without_trailing_zeros(*id).len() as u8,
+            ResponseCode::ProgressorId(..) => 1,
         }
     }
 
@@ -185,13 +164,11 @@ impl ResponseCode {
             }
             ResponseCode::LowPowerWarning => (),
             ResponseCode::ProgressorId(id) => {
-                let bytes = to_le_bytes_without_trailing_zeros(*id);
-                value[0..bytes.len()].copy_from_slice(&bytes);
+                value[0..1].copy_from_slice(&[*id]);
             }
             ResponseCode::AppVersion(version) => {
                 value[0..version.len()].copy_from_slice(version);
             }
-            ResponseCode::CalibrationCurve(curve) => value = *curve,
         };
         value
     }

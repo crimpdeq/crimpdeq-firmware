@@ -1,9 +1,6 @@
 #![no_std]
 #![no_main]
 
-use core::cell::RefCell;
-use critical_section::Mutex;
-
 use bleps::{
     ad_structure::{
         create_advertising_data, AdStructure, BR_EDR_NOT_SUPPORTED, LE_GENERAL_DISCOVERABLE,
@@ -14,6 +11,8 @@ use bleps::{
     gatt,
 };
 use bytemuck::bytes_of;
+use core::cell::RefCell;
+use critical_section::Mutex;
 use defmt::{debug, error, info};
 use defmt_rtt as _;
 use embassy_executor::Spawner;
@@ -173,9 +172,9 @@ async fn bt_task(connector: BleConnector<'static>, channel: &'static DataPointCh
         // TODO: Avoid using the gatt! macro, replace the uuids with constants and improve the values
         let device_name = env!("DEVICE_NAME").as_bytes();
         let appearance = b"[0] Unknown";
-        let ppcp_val = b"Connection Interval: 50.00ms - 65.00ms, Max Latency:6ms, Suppervision Timeout Multiplier: 400ms";
-        let car_val = b"Address resolution supported";
-        let ccc_vla = b"Notifications and indications disabled";
+        let ppcp = b"Connection Interval: 50.00ms - 65.00ms, Max Latency:6ms, Suppervision Timeout Multiplier: 400ms";
+        let car = b"Address resolution supported";
+        let ccc = b"Notifications and indications disabled";
         gatt!([
             service {
                 // Generic Access
@@ -194,12 +193,12 @@ async fn bt_task(connector: BleConnector<'static>, channel: &'static DataPointCh
                     // Peripheral Preferred Connection Parameters
                     characteristic {
                         uuid: "2a04",
-                        value: ppcp_val,
+                        value: ppcp,
                     },
                     // Central Address Resolution
                     characteristic {
                         uuid: "2aa6",
-                        value: car_val,
+                        value: car,
                     },
                 ],
             },
@@ -215,7 +214,7 @@ async fn bt_task(connector: BleConnector<'static>, channel: &'static DataPointCh
                             // Client Characteristic Configuration
                             descriptor {
                                 uuid: "2902",
-                                value: ccc_vla,
+                                value: ccc,
                             },
                         ],
                     },
