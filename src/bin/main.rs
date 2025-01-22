@@ -36,7 +36,6 @@ use loadcell::{hx711, LoadCell};
 
 use tindeq::progressor::{ControlOpCode, DataPoint, ResponseCode};
 
-// When you are okay with using a nightly compiler it's better to use https://docs.rs/static_cell/2.1.0/static_cell/macro.make_static.html
 macro_rules! mk_static {
     ($t:ty,$val:expr) => {{
         static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
@@ -48,14 +47,15 @@ macro_rules! mk_static {
 
 const SCAN_RESPONSE_DATA: &[u8] = &[
     18, // Length
-    17, 0x07, 0x57, 0xad, 0xfe, 0x4f, 0xd3, 0x13, 0xcc, 0x9d, 0xc9, 0x40, 0xa6, 0x1e, 0x01, 0x17,
-    0x4e, 0x7e, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    17, // AD_FLAG_LE_LIMITED_DISCOVERABLE | SIMUL_LE_BR_HOST
+    0x07, 0x57, 0xad, 0xfe, 0x4f, 0xd3, 0x13, 0xcc, 0x9d, 0xc9, 0x40, 0xa6, 0x1e, 0x01, 0x17, 0x4e,
+    0x7e, //UUID
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Padding
 ];
 
 pub const MEASURE_COMMAND_CHANNEL_SIZE: usize = 50;
 pub type DataPointChannel = Channel<NoopRawMutex, DataPoint, MEASURE_COMMAND_CHANNEL_SIZE>;
 
-// HAVE A STATIC BOOL THAT ENABLES/DISABLES A TASK THAT READS THE WEIGTH
 static WEIGTH_TASK_ENABLED: Mutex<RefCell<bool>> = Mutex::new(RefCell::new(false));
 
 #[esp_hal_embassy::main]
@@ -143,7 +143,6 @@ async fn bt_task(connector: BleConnector<'static>, channel: &'static DataPointCh
                     });
                 }
                 ControlOpCode::GetAppVersion => {
-                    // Notify the data_point with the app version
                     let response =
                         ResponseCode::AppVersion(env!("DEVICE_VERSION_NUMBER").as_bytes());
                     debug!("AppVersion: {:?}", response);
@@ -156,7 +155,6 @@ async fn bt_task(connector: BleConnector<'static>, channel: &'static DataPointCh
                 ControlOpCode::Shutdown => {}
                 ControlOpCode::SampleBattery => {}
                 ControlOpCode::GetProgressorId => {
-                    // Notify the data_point with the progressor id
                     let response = ResponseCode::ProgressorId(env!("DEVICE_ID").parse().unwrap());
                     debug!("ProgressorId: {:?}", response);
                     let data_point = DataPoint::new(response);
@@ -267,13 +265,12 @@ async fn measurement_task(
 ) {
     let mut load_sensor = hx711::HX711::new(sck, dt, delay);
     const SAMPLES: usize = 16;
+    const CALIBRATION: f32 = 1.26;
     load_sensor.tare(SAMPLES);
-
-    load_sensor.set_scale(1.26);
+    load_sensor.set_scale(CALIBRATION);
 
     loop {
         let enabled = critical_section::with(|cs| *WEIGTH_TASK_ENABLED.borrow_ref(cs));
-
         if enabled && load_sensor.is_ready() {
             let mut weigth: f32 = 0.0;
             for _ in 0..20 {
@@ -289,6 +286,9 @@ async fn measurement_task(
             let data_point = DataPoint::new(measurement);
             channel.send(data_point).await;
         }
+        // On average, 20 measurements take 300 microseconds (0.3ms)
+        // Tindeq can sample at 80Hz (12.5ms)
+        // So, we can sleep for 10ms
         Timer::after(Duration::from_millis(10)).await;
     }
 }
