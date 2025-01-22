@@ -1,4 +1,4 @@
-name: Continuous Integration
+name: Rust CI
 
 on:
   push:
@@ -9,11 +9,10 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 jobs:
   rust-checks:
-    name: Rust Checks
+    name: Rust Check | ${{ matrix.action.command }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
