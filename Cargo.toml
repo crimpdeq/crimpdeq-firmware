@@ -32,7 +32,7 @@ esp-backtrace = { version = "0.15.0", features = [
     "exception-handler",
     "panic-handler",
 ] }
-esp-hal = { version = "0.23.1", features = ["defmt", "esp32c3", "unstable"] }
+esp-hal = { version = "0.23.1", features = ["defmt", "esp32c3"] }
 esp-hal-embassy = { version = "0.6.0", features = ["defmt", "esp32c3"] }
 esp-println = { version = "0.13.0", features = ["esp32c3", "log"] }
 esp-wifi = { version = "0.12.0", default-features = false, features = [
@@ -43,7 +43,7 @@ esp-wifi = { version = "0.12.0", default-features = false, features = [
 ] }
 heapless = { version = "0.8.0", default-features = false }
 loadcell = { git = "https://github.com/DaneSlattery/hx711", rev = "8db73fe4884bbad7f3a88f2b40a821c3bfae2ee6" }
-static_cell = { version = "2.1.0", features = ["nightly"] }
+static_cell = "2.1.0"
 
 [profile.dev]
 # Rust debug is too slow.
