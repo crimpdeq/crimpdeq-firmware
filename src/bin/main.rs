@@ -9,11 +9,12 @@ use bleps::{
     asynch::Ble,
     attribute_server::NotificationData,
     gatt,
+    no_rng::NoRng,
 };
 use bytemuck::bytes_of;
 use core::cell::RefCell;
 use critical_section::Mutex;
-use defmt::{debug, error, info};
+use defmt::{debug, error, info, warn};
 use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
@@ -55,7 +56,24 @@ const SCAN_RESPONSE_DATA: &[u8] = &[
 pub const MEASURE_COMMAND_CHANNEL_SIZE: usize = 50;
 pub type DataPointChannel = Channel<NoopRawMutex, DataPoint, MEASURE_COMMAND_CHANNEL_SIZE>;
 
-static WEIGTH_TASK_ENABLED: Mutex<RefCell<bool>> = Mutex::new(RefCell::new(false));
+/// Status of the weigth measurement task
+#[derive(Copy, Debug, Clone, PartialEq)]
+pub enum MeasurementTaskStatus {
+    /// Measurements are enabled
+    Enabled,
+    /// Measurements are disabled
+    Disabled,
+    /// Taring the scale
+    Tare,
+}
+
+/// Static tracking the state of the measurement task
+static MEASUREMENT_TASK_STATUS: Mutex<RefCell<MeasurementTaskStatus>> =
+    Mutex::new(RefCell::new(MeasurementTaskStatus::Disabled));
+/// Static tracking the weigth value to tare
+static TARE_VALUE: Mutex<RefCell<f32>> = Mutex::new(RefCell::new(0.0));
+/// Static tracking if the scale is tared
+static TARED: Mutex<RefCell<bool>> = Mutex::new(RefCell::new(false));
 
 #[esp_hal_embassy::main]
 async fn main(spawner: Spawner) -> ! {
@@ -101,6 +119,12 @@ async fn bt_task(connector: BleConnector<'static>, channel: &'static DataPointCh
     let now = || time::now().duration_since_epoch().to_millis();
     let mut ble = Ble::new(connector, now);
     loop {
+        // Reset tared, tared_val and status
+        critical_section::with(|cs| {
+            *TARE_VALUE.borrow_ref_mut(cs) = 0.0;
+            *TARED.borrow_ref_mut(cs) = false;
+            *MEASUREMENT_TASK_STATUS.borrow_ref_mut(cs) = MeasurementTaskStatus::Disabled;
+        });
         info!("Starting BLE");
         debug!("Initializing BLE");
         ble.init().await.unwrap();
@@ -132,13 +156,31 @@ async fn bt_task(connector: BleConnector<'static>, channel: &'static DataPointCh
             match op_copde {
                 ControlOpCode::TareScale => {}
                 ControlOpCode::StartMeasurement => {
-                    critical_section::with(|cs| {
-                        *WEIGTH_TASK_ENABLED.borrow_ref_mut(cs) = true;
-                    });
+                    let tared = critical_section::with(|cs| *TARED.borrow_ref(cs));
+                    if !tared {
+                        critical_section::with(|cs| {
+                            *MEASUREMENT_TASK_STATUS.borrow_ref_mut(cs) =
+                                MeasurementTaskStatus::Tare;
+                        });
+                    } else {
+                        critical_section::with(|cs| {
+                            *MEASUREMENT_TASK_STATUS.borrow_ref_mut(cs) =
+                                MeasurementTaskStatus::Enabled;
+                        });
+                    }
                 }
                 ControlOpCode::StopMeasurement => {
+                    let tared = critical_section::with(|cs| *TARED.borrow_ref(cs));
+                    if !tared {
+                        let tare_val = critical_section::with(|cs| *TARE_VALUE.borrow_ref(cs));
+                        info!("Device tared: {}", tare_val);
+                        critical_section::with(|cs| {
+                            *TARED.borrow_ref_mut(cs) = true;
+                        });
+                    }
                     critical_section::with(|cs| {
-                        *WEIGTH_TASK_ENABLED.borrow_ref_mut(cs) = false;
+                        *MEASUREMENT_TASK_STATUS.borrow_ref_mut(cs) =
+                            MeasurementTaskStatus::Disabled;
                     });
                 }
                 ControlOpCode::GetAppVersion => {
@@ -242,7 +284,7 @@ async fn bt_task(connector: BleConnector<'static>, channel: &'static DataPointCh
             },
         ]);
 
-        let mut rng = bleps::no_rng::NoRng;
+        let mut rng = NoRng;
         let mut server = AttributeServer::new(&mut ble, &mut gatt_attributes, &mut rng);
 
         let mut notifier = || async {
@@ -269,8 +311,13 @@ async fn measurement_task(
     load_sensor.set_scale(CALIBRATION);
 
     loop {
-        let enabled = critical_section::with(|cs| *WEIGTH_TASK_ENABLED.borrow_ref(cs));
-        if enabled && load_sensor.is_ready() {
+        let status = critical_section::with(|cs| *MEASUREMENT_TASK_STATUS.borrow_ref(cs));
+        if status == MeasurementTaskStatus::Disabled {
+            Timer::after(Duration::from_millis(13)).await;
+            continue;
+        }
+        let tare_value = critical_section::with(|cs| *TARE_VALUE.borrow_ref(cs));
+        if load_sensor.is_ready() {
             let mut weigth: f32 = 0.0;
             for _ in 0..20 {
                 let reading = load_sensor.read_scaled();
@@ -279,6 +326,13 @@ async fn measurement_task(
                 }
             }
             weigth /= 20000.0;
+            if status == MeasurementTaskStatus::Enabled {
+                weigth -= tare_value;
+            } else if status == MeasurementTaskStatus::Tare {
+                critical_section::with(|cs| {
+                    *TARE_VALUE.borrow_ref_mut(cs) = weigth;
+                });
+            }
             let timestamp = (time::now().duration_since_epoch()).to_micros() as u32;
             let measurement = ResponseCode::WeigthtMeasurement(weigth, timestamp);
             debug!("Sending measurement: {:?}", measurement);

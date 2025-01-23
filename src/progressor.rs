@@ -1,6 +1,7 @@
 use bytemuck_derive::{Pod, Zeroable};
 use defmt::Format;
 
+/// DataPoint max data size
 pub const MAX_PAYLOAD_SIZE: usize = 12;
 
 /// Progressor Commands
