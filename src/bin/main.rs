@@ -14,10 +14,10 @@ use bleps::{
 use bytemuck::bytes_of;
 use core::cell::RefCell;
 use critical_section::Mutex;
-use defmt::{debug, error, info, warn};
+use defmt::{debug, error, info};
 use defmt_rtt as _;
 use embassy_executor::Spawner;
-use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
+use embassy_sync::channel::Channel;
 use embassy_time::{Duration, Timer};
 use esp_alloc as _;
 use esp_backtrace as _;
@@ -34,7 +34,9 @@ use esp_println as _;
 use esp_wifi::{ble::controller::BleConnector, init, EspWifiController};
 use loadcell::{hx711, LoadCell};
 
-use tindeq::progressor::{ControlOpCode, DataPoint, ResponseCode};
+use tindeq::progressor::{
+    ControlOpCode, DataPoint, DataPointChannel, ResponseCode, SCAN_RESPONSE_DATA,
+};
 
 macro_rules! mk_static {
     ($t:ty,$val:expr) => {{
@@ -45,20 +47,9 @@ macro_rules! mk_static {
     }};
 }
 
-const SCAN_RESPONSE_DATA: &[u8] = &[
-    18, // Length
-    17, // AD_FLAG_LE_LIMITED_DISCOVERABLE | SIMUL_LE_BR_HOST
-    0x07, 0x57, 0xad, 0xfe, 0x4f, 0xd3, 0x13, 0xcc, 0x9d, 0xc9, 0x40, 0xa6, 0x1e, 0x01, 0x17, 0x4e,
-    0x7e, //UUID
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Padding
-];
-
-pub const MEASURE_COMMAND_CHANNEL_SIZE: usize = 50;
-pub type DataPointChannel = Channel<NoopRawMutex, DataPoint, MEASURE_COMMAND_CHANNEL_SIZE>;
-
 /// Status of the weigth measurement task
 #[derive(Copy, Debug, Clone, PartialEq)]
-pub enum MeasurementTaskStatus {
+enum MeasurementTaskStatus {
     /// Measurements are enabled
     Enabled,
     /// Measurements are disabled
@@ -74,12 +65,15 @@ static MEASUREMENT_TASK_STATUS: Mutex<RefCell<MeasurementTaskStatus>> =
 static TARE_VALUE: Mutex<RefCell<f32>> = Mutex::new(RefCell::new(0.0));
 /// Static tracking if the scale is tared
 static TARED: Mutex<RefCell<bool>> = Mutex::new(RefCell::new(false));
+// Calibration value. Obtained measuring a few known weights and adjusting the value
+const CALIBRATION: f32 = 1.26;
 
 #[esp_hal_embassy::main]
 async fn main(spawner: Spawner) -> ! {
     let config = Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
 
+    // Allocate 72KB of heap memory
     esp_alloc::heap_allocator!(72 * 1024);
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
@@ -93,24 +87,30 @@ async fn main(spawner: Spawner) -> ! {
         .unwrap()
     );
 
+    // Load cell pins
     let sck = Output::new(peripherals.GPIO5, Level::Low);
     let dt = Input::new(peripherals.GPIO4, Pull::None);
     let delay = Delay::new();
 
+    // Initialize embassy
     let systimer = SystemTimer::new(peripherals.SYSTIMER);
     esp_hal_embassy::init(systimer.alarm0);
 
+    // BLE Connector
     let connector = BleConnector::new(init, peripherals.BT);
 
+    // Data point channel
     let channel = mk_static!(DataPointChannel, Channel::new());
 
+    // Spawn tasks
     spawner.spawn(bt_task(connector, channel)).unwrap();
     spawner
         .spawn(measurement_task(channel, sck, dt, delay))
         .unwrap();
 
+    // Wait forever
     loop {
-        Timer::after(Duration::from_millis(10)).await;
+        Timer::after(Duration::from_millis(50)).await;
     }
 }
 
@@ -119,7 +119,7 @@ async fn bt_task(connector: BleConnector<'static>, channel: &'static DataPointCh
     let now = || time::now().duration_since_epoch().to_millis();
     let mut ble = Ble::new(connector, now);
     loop {
-        // Reset tared, tared_val and status
+        // Reset the state of the measurement task
         critical_section::with(|cs| {
             *TARE_VALUE.borrow_ref_mut(cs) = 0.0;
             *TARED.borrow_ref_mut(cs) = false;
@@ -149,6 +149,7 @@ async fn bt_task(connector: BleConnector<'static>, channel: &'static DataPointCh
 
         info!("Started advertising");
 
+        // Service/Characteristics Read/Write methods
         let mut control_point_write = |_, data: &[u8]| {
             let op_copde = ControlOpCode::from(data[0]);
             info!("Control Point Received: {:?}", op_copde);
@@ -206,7 +207,6 @@ async fn bt_task(connector: BleConnector<'static>, channel: &'static DataPointCh
                 }
             }
         };
-
         // TODO: Are this required, they are not used
         let mut service_change_read = |_, _data: &mut [u8]| 0;
         let mut data_point_read = |_, _data: &mut [u8]| 0;
@@ -305,10 +305,9 @@ async fn measurement_task(
     delay: Delay,
 ) {
     let mut load_sensor = hx711::HX711::new(sck, dt, delay);
-    const SAMPLES: usize = 16;
-    const CALIBRATION: f32 = 1.26;
-    load_sensor.tare(SAMPLES);
+    load_sensor.tare(16);
     load_sensor.set_scale(CALIBRATION);
+    // TODO: Investigate taring with load_sensor.set_offset
 
     loop {
         let status = critical_section::with(|cs| *MEASUREMENT_TASK_STATUS.borrow_ref(cs));

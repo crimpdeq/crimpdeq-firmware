@@ -1,8 +1,23 @@
 use bytemuck_derive::{Pod, Zeroable};
 use defmt::Format;
+use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
+
+/// Size of the channel used to send data points
+const DATA_POINT_COMMAND_CHANNEL_SIZE: usize = 50;
+/// Channel used to send data points
+pub type DataPointChannel = Channel<NoopRawMutex, DataPoint, DATA_POINT_COMMAND_CHANNEL_SIZE>;
 
 /// DataPoint max data size
 pub const MAX_PAYLOAD_SIZE: usize = 12;
+
+/// Progressor BLE Scanning Response
+pub const SCAN_RESPONSE_DATA: &[u8] = &[
+    18, // Length
+    17, // AD_FLAG_LE_LIMITED_DISCOVERABLE | SIMUL_LE_BR_HOST
+    0x07, 0x57, 0xad, 0xfe, 0x4f, 0xd3, 0x13, 0xcc, 0x9d, 0xc9, 0x40, 0xa6, 0x1e, 0x01, 0x17, 0x4e,
+    0x7e, //UUID
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Padding
+];
 
 /// Progressor Commands
 pub enum ControlOpCode {
