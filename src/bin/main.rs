@@ -63,10 +63,7 @@ enum MeasurementTaskStatus {
 /// Static tracking the state of the measurement task
 static MEASUREMENT_TASK_STATUS: Mutex<RefCell<MeasurementTaskStatus>> =
     Mutex::new(RefCell::new(MeasurementTaskStatus::Disabled));
-/// Static tracking the weigth value to tare
-static TARE_VALUE: Mutex<RefCell<f32>> = Mutex::new(RefCell::new(0.0));
-/// Static tracking if the scale is tared
-static TARED: Mutex<RefCell<bool>> = Mutex::new(RefCell::new(false));
+
 // Calibration value. Obtained measuring a few known weights and adjusting the value
 const CALIBRATION: f32 = 1.26;
 
@@ -123,8 +120,6 @@ async fn bt_task(connector: BleConnector<'static>, channel: &'static DataPointCh
     loop {
         // Reset the state of the measurement task
         critical_section::with(|cs| {
-            *TARE_VALUE.borrow_ref_mut(cs) = 0.0;
-            *TARED.borrow_ref_mut(cs) = false;
             *MEASUREMENT_TASK_STATUS.borrow_ref_mut(cs) = MeasurementTaskStatus::Disabled;
         });
         info!("Starting BLE");
@@ -159,28 +154,11 @@ async fn bt_task(connector: BleConnector<'static>, channel: &'static DataPointCh
             match op_copde {
                 ControlOpCode::TareScale => {}
                 ControlOpCode::StartMeasurement => {
-                    let tared = critical_section::with(|cs| *TARED.borrow_ref(cs));
-                    if !tared {
-                        critical_section::with(|cs| {
-                            *MEASUREMENT_TASK_STATUS.borrow_ref_mut(cs) =
-                                MeasurementTaskStatus::Tare;
-                        });
-                    } else {
-                        critical_section::with(|cs| {
-                            *MEASUREMENT_TASK_STATUS.borrow_ref_mut(cs) =
-                                MeasurementTaskStatus::Enabled;
-                        });
-                    }
+                    critical_section::with(|cs| {
+                        *MEASUREMENT_TASK_STATUS.borrow_ref_mut(cs) = MeasurementTaskStatus::Tare;
+                    });
                 }
                 ControlOpCode::StopMeasurement => {
-                    let tared = critical_section::with(|cs| *TARED.borrow_ref(cs));
-                    if !tared {
-                        let tare_val = critical_section::with(|cs| *TARE_VALUE.borrow_ref(cs));
-                        info!("Device tared: {}", tare_val);
-                        critical_section::with(|cs| {
-                            *TARED.borrow_ref_mut(cs) = true;
-                        });
-                    }
                     critical_section::with(|cs| {
                         *MEASUREMENT_TASK_STATUS.borrow_ref_mut(cs) =
                             MeasurementTaskStatus::Disabled;
@@ -306,10 +284,8 @@ async fn measurement_task(
     data_pin: Input<'static>,
     delay: Delay,
 ) {
-    let mut load_sensor = Hx711::new(data_pin, clock_pin, delay);
-    load_sensor.tare(16).await;
-    load_sensor.set_scale(CALIBRATION);
-    // TODO: Investigate taring with load_sensor.set_offset
+    let mut load_cell = Hx711::new(data_pin, clock_pin, delay);
+    load_cell.set_scale(CALIBRATION);
 
     loop {
         let status = critical_section::with(|cs| *MEASUREMENT_TASK_STATUS.borrow_ref(cs));
@@ -317,17 +293,17 @@ async fn measurement_task(
             Timer::after(Duration::from_millis(13)).await;
             continue;
         }
-        let tare_value = critical_section::with(|cs| *TARE_VALUE.borrow_ref(cs));
-        let mut weigth = load_sensor.get_measurement().await;
 
-        if status == MeasurementTaskStatus::Enabled {
-            weigth -= tare_value;
-        } else if status == MeasurementTaskStatus::Tare {
-            // load_sensor.set_offset(weigth);
+        let weigth = if status == MeasurementTaskStatus::Tare {
+            load_cell.tare(16).await;
             critical_section::with(|cs| {
-                *TARE_VALUE.borrow_ref_mut(cs) = weigth;
+                *MEASUREMENT_TASK_STATUS.borrow_ref_mut(cs) = MeasurementTaskStatus::Enabled;
             });
-        }
+            0.0
+        } else {
+            load_cell.get_measurement().await
+        };
+
         let timestamp = (time::now().duration_since_epoch()).to_micros() as u32;
         let measurement = ResponseCode::WeigthtMeasurement(weigth, timestamp);
         debug!("Sending measurement: {:?}", measurement);

@@ -167,13 +167,14 @@ impl<'d> Hx711<'d> {
     pub async fn get_measurement(&mut self) -> f32 {
         self.wait_for_ready().await;
 
-        let mut weigth = 0.0;
+        let mut weight = 0.0;
         for _ in 0..20 {
-            let reading = self.read_scaled();
-            if let Some(x) = reading {
-                weigth += x;
+            if let Some(x) = self.read_scaled() {
+                // Don't take absolute value - keep the sign
+                weight += x;
             }
         }
-        weigth / 20000.0
+        // Divide by 20000.0 to convert to kg
+        weight / 20000.0
     }
 }
