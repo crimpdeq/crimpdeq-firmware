@@ -32,11 +32,13 @@ use esp_hal::{
 };
 use esp_println as _;
 use esp_wifi::{ble::controller::BleConnector, init, EspWifiController};
-use loadcell::{hx711, LoadCell};
+// use loadcell::{hx711, LoadCell};
 
 use tindeq::progressor::{
     ControlOpCode, DataPoint, DataPointChannel, ResponseCode, SCAN_RESPONSE_DATA,
 };
+
+use tindeq::hx711::Hx711;
 
 macro_rules! mk_static {
     ($t:ty,$val:expr) => {{
@@ -88,8 +90,8 @@ async fn main(spawner: Spawner) -> ! {
     );
 
     // Load cell pins
-    let sck = Output::new(peripherals.GPIO5, Level::Low);
-    let dt = Input::new(peripherals.GPIO4, Pull::None);
+    let clock_pin = Output::new(peripherals.GPIO5, Level::Low);
+    let data_pin = Input::new(peripherals.GPIO4, Pull::None);
     let delay = Delay::new();
 
     // Initialize embassy
@@ -105,7 +107,7 @@ async fn main(spawner: Spawner) -> ! {
     // Spawn tasks
     spawner.spawn(bt_task(connector, channel)).unwrap();
     spawner
-        .spawn(measurement_task(channel, sck, dt, delay))
+        .spawn(measurement_task(channel, clock_pin, data_pin, delay))
         .unwrap();
 
     // Wait forever
@@ -300,12 +302,12 @@ async fn bt_task(connector: BleConnector<'static>, channel: &'static DataPointCh
 #[embassy_executor::task]
 async fn measurement_task(
     channel: &'static DataPointChannel,
-    sck: Output<'static>,
-    dt: Input<'static>,
+    clock_pin: Output<'static>,
+    data_pin: Input<'static>,
     delay: Delay,
 ) {
-    let mut load_sensor = hx711::HX711::new(sck, dt, delay);
-    load_sensor.tare(16);
+    let mut load_sensor = Hx711::new(data_pin, clock_pin, delay);
+    load_sensor.tare(16).await;
     load_sensor.set_scale(CALIBRATION);
     // TODO: Investigate taring with load_sensor.set_offset
 
@@ -316,28 +318,21 @@ async fn measurement_task(
             continue;
         }
         let tare_value = critical_section::with(|cs| *TARE_VALUE.borrow_ref(cs));
-        if load_sensor.is_ready() {
-            let mut weigth: f32 = 0.0;
-            for _ in 0..20 {
-                let reading = load_sensor.read_scaled();
-                if let Ok(x) = reading {
-                    weigth += x;
-                }
-            }
-            weigth /= 20000.0;
-            if status == MeasurementTaskStatus::Enabled {
-                weigth -= tare_value;
-            } else if status == MeasurementTaskStatus::Tare {
-                critical_section::with(|cs| {
-                    *TARE_VALUE.borrow_ref_mut(cs) = weigth;
-                });
-            }
-            let timestamp = (time::now().duration_since_epoch()).to_micros() as u32;
-            let measurement = ResponseCode::WeigthtMeasurement(weigth, timestamp);
-            debug!("Sending measurement: {:?}", measurement);
-            let data_point = DataPoint::new(measurement);
-            channel.send(data_point).await;
+        let mut weigth = load_sensor.get_measurement().await;
+
+        if status == MeasurementTaskStatus::Enabled {
+            weigth -= tare_value;
+        } else if status == MeasurementTaskStatus::Tare {
+            // load_sensor.set_offset(weigth);
+            critical_section::with(|cs| {
+                *TARE_VALUE.borrow_ref_mut(cs) = weigth;
+            });
         }
+        let timestamp = (time::now().duration_since_epoch()).to_micros() as u32;
+        let measurement = ResponseCode::WeigthtMeasurement(weigth, timestamp);
+        debug!("Sending measurement: {:?}", measurement);
+        let data_point = DataPoint::new(measurement);
+        channel.send(data_point).await;
         // On average, 20 measurements take 300 microseconds (0.3ms)
         // Tindeq can sample at 80Hz (12.5ms)
         // So, we can sleep for 10ms

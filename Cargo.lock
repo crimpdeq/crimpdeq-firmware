@@ -946,15 +946,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "loadcell"
-version = "0.3.0"
-source = "git+https://github.com/DaneSlattery/hx711?rev=8db73fe4884bbad7f3a88f2b40a821c3bfae2ee6#8db73fe4884bbad7f3a88f2b40a821c3bfae2ee6"
-dependencies = [
- "critical-section",
- "embedded-hal 1.0.0",
-]
-
-[[package]]
 name = "lock_api"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1360,6 +1351,8 @@ dependencies = [
  "embassy-futures",
  "embassy-sync",
  "embassy-time",
+ "embedded-hal 1.0.0",
+ "embedded-hal-async",
  "esp-alloc",
  "esp-backtrace",
  "esp-hal",
@@ -1367,7 +1360,6 @@ dependencies = [
  "esp-println",
  "esp-wifi",
  "heapless",
- "loadcell",
  "static_cell",
 ]
 

@@ -1,3 +1,8 @@
+/// Progressor data types
+///
+/// See [Tindeq API documentation] for more information
+///
+/// [Tindeq API documentation]: https://tindeq.com/progressor_api/
 use bytemuck_derive::{Pod, Zeroable};
 use defmt::Format;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
