@@ -12088,7 +12088,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" ""
+		(property "Footprint" "Capacitor_SMD:C_0603_1608Metric"
 			(at 41.6052 153.67 0)
 			(effects
 				(font
@@ -12366,7 +12366,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" ""
+		(property "Footprint" "Capacitor_SMD:C_0603_1608Metric"
 			(at 58.1152 127 0)
 			(effects
 				(font
@@ -12837,7 +12837,7 @@
 				)
 			)
 		)
-		(property "Footprint" "Espressif:ESP32-C3-MINI-1"
+		(property "Footprint" "PCM_Espressif:ESP32-C3-MINI-1"
 			(at 85.09 86.36 0)
 			(effects
 				(font
@@ -13236,7 +13236,7 @@
 				)
 			)
 		)
-		(property "Footprint" ""
+		(property "Footprint" "Capacitor_SMD:C_0603_1608Metric"
 			(at 77.47 157.7848 0)
 			(effects
 				(font
@@ -15454,7 +15454,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" ""
+		(property "Footprint" "Capacitor_SMD:C_0603_1608Metric"
 			(at 59.3852 140.97 0)
 			(effects
 				(font
@@ -16256,7 +16256,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" ""
+		(property "Footprint" "Capacitor_SMD:C_0603_1608Metric"
 			(at 41.6052 166.37 0)
 			(effects
 				(font
@@ -17196,7 +17196,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Rust_Board:SOD-882"
+		(property "Footprint" "Diode_SMD:D_SOD-882"
 			(at 25.4 87.63 0)
 			(effects
 				(font
