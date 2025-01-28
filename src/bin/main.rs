@@ -34,11 +34,10 @@ use esp_println as _;
 use esp_wifi::{ble::controller::BleConnector, init, EspWifiController};
 // use loadcell::{hx711, LoadCell};
 
-use tindeq::progressor::{
-    ControlOpCode, DataPoint, DataPointChannel, ResponseCode, SCAN_RESPONSE_DATA,
+use crimpdeq::{
+    hx711::Hx711,
+    progressor::{ControlOpCode, DataPoint, DataPointChannel, ResponseCode, SCAN_RESPONSE_DATA},
 };
-
-use tindeq::hx711::Hx711;
 
 macro_rules! mk_static {
     ($t:ty,$val:expr) => {{
@@ -309,8 +308,8 @@ async fn measurement_task(
         debug!("Sending measurement: {:?}", measurement);
         let data_point = DataPoint::new(measurement);
         channel.send(data_point).await;
-        // On average, 20 measurements take 300 microseconds (0.3ms)
-        // Tindeq can sample at 80Hz (12.5ms)
+        // On average, measurements take 300 microseconds (0.3ms)
+        // Tindeq can receive samples at 80Hz (12.5ms)
         // So, we can sleep for 10ms
         Timer::after(Duration::from_millis(10)).await;
     }
