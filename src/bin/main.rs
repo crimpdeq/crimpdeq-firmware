@@ -24,7 +24,7 @@ use esp_backtrace as _;
 use esp_hal::{
     clock::CpuClock,
     delay::Delay,
-    gpio::{Input, Level, Output, Pull},
+    gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull},
     rng::Rng,
     time,
     timer::{systimer::SystemTimer, timg::TimerGroup},
@@ -72,10 +72,10 @@ async fn main(spawner: Spawner) -> ! {
     let peripherals = esp_hal::init(config);
 
     // Allocate 72KB of heap memory
-    esp_alloc::heap_allocator!(72 * 1024);
+    esp_alloc::heap_allocator!(size: 72 * 1024);
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
-    let init = &*mk_static!(
+    let esp_wifi_ctrl = &*mk_static!(
         EspWifiController<'static>,
         init(
             timg0.timer0,
@@ -86,8 +86,11 @@ async fn main(spawner: Spawner) -> ! {
     );
 
     // Load cell pins
-    let clock_pin = Output::new(peripherals.GPIO5, Level::Low);
-    let data_pin = Input::new(peripherals.GPIO4, Pull::None);
+    let clock_pin = Output::new(peripherals.GPIO5, Level::Low, OutputConfig::default());
+    let data_pin = Input::new(
+        peripherals.GPIO4,
+        InputConfig::default().with_pull(Pull::None),
+    );
     let delay = Delay::new();
 
     // Initialize embassy
@@ -95,7 +98,7 @@ async fn main(spawner: Spawner) -> ! {
     esp_hal_embassy::init(systimer.alarm0);
 
     // BLE Connector
-    let connector = BleConnector::new(init, peripherals.BT);
+    let connector = BleConnector::new(esp_wifi_ctrl, peripherals.BT);
 
     // Data point channel
     let channel = mk_static!(DataPointChannel, Channel::new());
@@ -114,7 +117,7 @@ async fn main(spawner: Spawner) -> ! {
 
 #[embassy_executor::task]
 async fn bt_task(connector: BleConnector<'static>, channel: &'static DataPointChannel) {
-    let now = || time::now().duration_since_epoch().to_millis();
+    let now = || time::Instant::now().duration_since_epoch().as_millis();
     let mut ble = Ble::new(connector, now);
     loop {
         // Reset the state of the measurement task
@@ -303,7 +306,7 @@ async fn measurement_task(
             load_cell.get_measurement().await
         };
 
-        let timestamp = (time::now().duration_since_epoch()).to_micros() as u32;
+        let timestamp = (time::Instant::now().duration_since_epoch()).as_micros() as u32;
         let measurement = ResponseCode::WeigthtMeasurement(weigth, timestamp);
         debug!("Sending measurement: {:?}", measurement);
         let data_point = DataPoint::new(measurement);

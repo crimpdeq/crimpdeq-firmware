@@ -39,6 +39,7 @@ esp-hal-embassy = { version = "0.6.0", features = ["defmt", "esp32c3"] }
 esp-println = { version = "0.13.0", features = ["esp32c3", "log"] }
 esp-wifi = { version = "0.12.0", default-features = false, features = [
     "ble",
+    "builtin-scheduler",
     "defmt",
     "esp-alloc",
     "esp32c3",
@@ -58,3 +59,12 @@ incremental      = false
 lto              = 'fat'
 opt-level        = 's'
 overflow-checks  = false
+
+
+[patch.crates-io]
+esp-alloc       = { git = "https://github.com/esp-rs/esp-hal/", package = "esp-alloc", rev = "0138d462b79afef806eb7788f62ca0728a097511" }
+esp-backtrace   = { git = "https://github.com/esp-rs/esp-hal/", package = "esp-backtrace", rev = "0138d462b79afef806eb7788f62ca0728a097511" }
+esp-hal         = { git = "https://github.com/esp-rs/esp-hal/", package = "esp-hal", rev = "0138d462b79afef806eb7788f62ca0728a097511" }
+esp-hal-embassy = { git = "https://github.com/esp-rs/esp-hal/", package = "esp-hal-embassy", rev = "0138d462b79afef806eb7788f62ca0728a097511" }
+esp-println     = { git = "https://github.com/esp-rs/esp-hal/", package = "esp-println", rev = "0138d462b79afef806eb7788f62ca0728a097511" }
+esp-wifi        = { git = "https://github.com/esp-rs/esp-hal/", package = "esp-wifi", rev = "0138d462b79afef806eb7788f62ca0728a097511" }
