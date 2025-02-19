@@ -34,7 +34,7 @@ esp-backtrace = { version = "0.15.0", features = [
     "exception-handler",
     "panic-handler",
 ] }
-esp-hal = { version = "0.23.1", features = ["defmt", "esp32c3"] }
+esp-hal = { version = "0.23.1", features = ["defmt", "esp32c3", "unstable"] }
 esp-hal-embassy = { version = "0.6.0", features = ["defmt", "esp32c3"] }
 esp-println = { version = "0.13.0", features = ["esp32c3", "log"] }
 esp-wifi = { version = "0.12.0", default-features = false, features = [
@@ -62,9 +62,9 @@ overflow-checks  = false
 
 
 [patch.crates-io]
-esp-alloc       = { git = "https://github.com/esp-rs/esp-hal/", package = "esp-alloc", rev = "0138d462b79afef806eb7788f62ca0728a097511" }
-esp-backtrace   = { git = "https://github.com/esp-rs/esp-hal/", package = "esp-backtrace", rev = "0138d462b79afef806eb7788f62ca0728a097511" }
-esp-hal         = { git = "https://github.com/esp-rs/esp-hal/", package = "esp-hal", rev = "0138d462b79afef806eb7788f62ca0728a097511" }
-esp-hal-embassy = { git = "https://github.com/esp-rs/esp-hal/", package = "esp-hal-embassy", rev = "0138d462b79afef806eb7788f62ca0728a097511" }
-esp-println     = { git = "https://github.com/esp-rs/esp-hal/", package = "esp-println", rev = "0138d462b79afef806eb7788f62ca0728a097511" }
-esp-wifi        = { git = "https://github.com/esp-rs/esp-hal/", package = "esp-wifi", rev = "0138d462b79afef806eb7788f62ca0728a097511" }
+esp-alloc       = { git = "https://github.com/esp-rs/esp-hal/", package = "esp-alloc", rev = "1a40e3419bb86f17e1a8bf93cb115c9df297b3ba" }
+esp-backtrace   = { git = "https://github.com/esp-rs/esp-hal/", package = "esp-backtrace", rev = "1a40e3419bb86f17e1a8bf93cb115c9df297b3ba" }
+esp-hal         = { git = "https://github.com/esp-rs/esp-hal/", package = "esp-hal", rev = "1a40e3419bb86f17e1a8bf93cb115c9df297b3ba" }
+esp-hal-embassy = { git = "https://github.com/esp-rs/esp-hal/", package = "esp-hal-embassy", rev = "1a40e3419bb86f17e1a8bf93cb115c9df297b3ba" }
+esp-println     = { git = "https://github.com/esp-rs/esp-hal/", package = "esp-println", rev = "1a40e3419bb86f17e1a8bf93cb115c9df297b3ba" }
+esp-wifi        = { git = "https://github.com/esp-rs/esp-hal/", package = "esp-wifi", rev = "1a40e3419bb86f17e1a8bf93cb115c9df297b3ba" }
