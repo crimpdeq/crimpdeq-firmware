@@ -151,18 +151,15 @@ dependencies = [
  "defmt",
  "defmt-rtt",
  "embassy-executor",
- "embassy-futures",
  "embassy-sync",
  "embassy-time",
  "embedded-hal 1.0.0",
- "embedded-hal-async",
  "esp-alloc",
  "esp-backtrace",
  "esp-hal",
  "esp-hal-embassy",
  "esp-println",
  "esp-wifi",
- "heapless",
  "static_cell",
 ]
 
