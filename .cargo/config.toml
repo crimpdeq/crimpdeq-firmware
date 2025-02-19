@@ -1,6 +1,5 @@
 [target.riscv32imc-unknown-none-elf]
-runner = "probe-rs run"
-# runner = "espflash flash --monitor"
+runner = "probe-rs run --no-location"
 
 [env]
 DEFMT_LOG             = "info"            # Use "off" to disbale defmt logging
