@@ -56,7 +56,13 @@ enum MeasurementTaskStatus {
     /// Measurements are disabled
     Disabled,
     /// Taring the scale
+    ///
+    /// Used in ClimbHarder App
     Tare,
+    /// Soft taring the scale (substract the current weight)
+    ///
+    /// Used in Tindeq App
+    SoftTare,
 }
 
 /// Static tracking the state of the measurement task
@@ -154,10 +160,15 @@ async fn bt_task(connector: BleConnector<'static>, channel: &'static DataPointCh
             info!("Control Point Received: {:?}", op_copde);
 
             match op_copde {
-                ControlOpCode::TareScale => {}
-                ControlOpCode::StartMeasurement => {
+                ControlOpCode::TareScale => {
                     critical_section::with(|cs| {
                         *MEASUREMENT_TASK_STATUS.borrow_ref_mut(cs) = MeasurementTaskStatus::Tare;
+                    });
+                }
+                ControlOpCode::StartMeasurement => {
+                    critical_section::with(|cs| {
+                        *MEASUREMENT_TASK_STATUS.borrow_ref_mut(cs) =
+                            MeasurementTaskStatus::SoftTare;
                     });
                 }
                 ControlOpCode::StopMeasurement => {
@@ -295,8 +306,13 @@ async fn measurement_task(
             Timer::after(Duration::from_millis(13)).await;
             continue;
         }
+        if status == MeasurementTaskStatus::Tare {
+            load_cell.tare(16).await;
+            Timer::after(Duration::from_millis(13)).await;
+            continue;
+        }
 
-        let weigth = if status == MeasurementTaskStatus::Tare {
+        let weigth = if status == MeasurementTaskStatus::SoftTare {
             load_cell.tare(16).await;
             critical_section::with(|cs| {
                 *MEASUREMENT_TASK_STATUS.borrow_ref_mut(cs) = MeasurementTaskStatus::Enabled;
