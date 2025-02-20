@@ -79,7 +79,7 @@ impl<'d> Hx711<'d> {
     }
 
     /// Returns true if the load cell amplifier has a value ready to be read.
-    pub fn is_ready(&mut self) -> bool {
+    fn is_ready(&mut self) -> bool {
         self.data.is_low()
     }
 
@@ -155,7 +155,7 @@ impl<'d> Hx711<'d> {
     }
 
     /// Reads a raw value from the HX711, subtracting the tare offset.
-    pub fn read(&mut self) -> Option<i32> {
+    fn read(&mut self) -> Option<i32> {
         if !self.is_ready() {
             return None;
         }
