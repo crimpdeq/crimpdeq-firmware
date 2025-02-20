@@ -11,9 +11,9 @@ use esp_hal::{
 };
 
 /// Obtained calibration factor
-const CALIBRATION_FACTOR: f32 = 1.322;
+const CALIBRATION_FACTOR: f32 = 1.3153;
 /// Obtained calibration offset
-const CALIBRATION_OFFSET: f32 = -3.89;
+const CALIBRATION_OFFSET: f32 = -3.867;
 
 /// The HX711 has different amplifier gain settings.
 /// The choice of gain settings is controlled by writing a fixed number of
