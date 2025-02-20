@@ -2,7 +2,7 @@
 runner = "probe-rs run --no-location"
 
 [env]
-DEFMT_LOG             = "debug"           # Use "off" to disbale defmt logging
+DEFMT_LOG             = "info"            # Use "off" to disbale defmt logging
 DEVICE_ID             = "42"
 DEVICE_NAME           = "Progressor_7125"
 DEVICE_VERSION_NUMBER = "1.2.3.4"
