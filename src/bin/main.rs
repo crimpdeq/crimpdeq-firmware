@@ -68,6 +68,8 @@ enum MeasurementTaskStatus {
 /// Static tracking the state of the measurement task
 static MEASUREMENT_TASK_STATUS: Mutex<RefCell<MeasurementTaskStatus>> =
     Mutex::new(RefCell::new(MeasurementTaskStatus::Disabled));
+/// Static tracking if the device was tared/soft tared
+static DEVICE_TARED: Mutex<RefCell<bool>> = Mutex::new(RefCell::new(false));
 
 // Calibration value. Obtained measuring a few known weights and adjusting the value
 const CALIBRATION: f32 = 1.26;
@@ -166,15 +168,26 @@ async fn bt_task(connector: BleConnector<'static>, channel: &'static DataPointCh
                     });
                 }
                 ControlOpCode::StartMeasurement => {
+                    let device_tared = critical_section::with(|cs| *DEVICE_TARED.borrow_ref(cs));
+                    if device_tared {
                     critical_section::with(|cs| {
                         *MEASUREMENT_TASK_STATUS.borrow_ref_mut(cs) =
+                                MeasurementTaskStatus::Enabled;
+                        });
+                    } else {
+                        critical_section::with(|cs| {
+                            *(MEASUREMENT_TASK_STATUS).borrow_ref_mut(cs) =
                             MeasurementTaskStatus::SoftTare;
                     });
+                    }
                 }
                 ControlOpCode::StopMeasurement => {
                     critical_section::with(|cs| {
                         *MEASUREMENT_TASK_STATUS.borrow_ref_mut(cs) =
                             MeasurementTaskStatus::Disabled;
+                    });
+                    critical_section::with(|cs| {
+                        *DEVICE_TARED.borrow_ref_mut(cs) = false;
                     });
                 }
                 ControlOpCode::GetAppVersion => {
@@ -308,6 +321,9 @@ async fn measurement_task(
         }
         if status == MeasurementTaskStatus::Tare {
             load_cell.tare(16).await;
+            critical_section::with(|cs| {
+                *DEVICE_TARED.borrow_ref_mut(cs) = true;
+            });
             Timer::after(Duration::from_millis(13)).await;
             continue;
         }
@@ -316,6 +332,9 @@ async fn measurement_task(
             load_cell.tare(16).await;
             critical_section::with(|cs| {
                 *MEASUREMENT_TASK_STATUS.borrow_ref_mut(cs) = MeasurementTaskStatus::Enabled;
+            });
+            critical_section::with(|cs| {
+                *DEVICE_TARED.borrow_ref_mut(cs) = true;
             });
             0.0
         } else {
