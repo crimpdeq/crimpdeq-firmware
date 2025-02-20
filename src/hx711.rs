@@ -5,8 +5,10 @@
 /// [loadcell]: https://crates.io/crates/loadcell
 use defmt::info;
 use embedded_hal::delay::DelayNs;
-use esp_hal::delay::Delay;
-use esp_hal::gpio::{Input, Output};
+use esp_hal::{
+    delay::Delay,
+    gpio::{Input, Output},
+};
 
 /// The HX711 has different amplifier gain settings.
 /// The choice of gain settings is controlled by writing a fixed number of
