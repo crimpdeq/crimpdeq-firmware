@@ -163,8 +163,8 @@ impl<'d> Hx711<'d> {
         Some(self.read_raw() - self.tare_value)
     }
 
-    /// Reads a scaled value from the HX711.
-    pub fn read_scaled(&mut self) -> Option<f32> {
+    /// Reads a calibrated value from the HX711.
+    fn read_calibrated(&mut self) -> Option<f32> {
         self.read()
             .map(|raw| raw as f32 * self.calibration.factor - self.calibration.offset)
     }
@@ -176,7 +176,7 @@ impl<'d> Hx711<'d> {
 
         let mut weight = 0.0;
         for _ in 0..20 {
-            if let Some(x) = self.read_scaled() {
+            if let Some(x) = self.read_calibrated() {
                 // Don't take absolute value - keep the sign
                 weight += x;
             }
