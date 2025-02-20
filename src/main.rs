@@ -1,9 +1,14 @@
 #![no_std]
 #![no_main]
 
+use core::cell::RefCell;
+
 use bleps::{
     ad_structure::{
-        create_advertising_data, AdStructure, BR_EDR_NOT_SUPPORTED, LE_GENERAL_DISCOVERABLE,
+        create_advertising_data,
+        AdStructure,
+        BR_EDR_NOT_SUPPORTED,
+        LE_GENERAL_DISCOVERABLE,
     },
     async_attribute_server::AttributeServer,
     asynch::Ble,
@@ -12,7 +17,6 @@ use bleps::{
     no_rng::NoRng,
 };
 use bytemuck::bytes_of;
-use core::cell::RefCell;
 use critical_section::Mutex;
 use defmt::{debug, error, info};
 use defmt_rtt as _;
@@ -32,12 +36,14 @@ use esp_hal::{
 };
 use esp_println as _;
 use esp_wifi::{ble::controller::BleConnector, init, EspWifiController};
-// use loadcell::{hx711, LoadCell};
 
-use crimpdeq::{
+use crate::{
     hx711::Hx711,
     progressor::{ControlOpCode, DataPoint, DataPointChannel, ResponseCode, SCAN_RESPONSE_DATA},
 };
+
+pub mod hx711;
+pub mod progressor;
 
 macro_rules! mk_static {
     ($t:ty,$val:expr) => {{
@@ -170,15 +176,15 @@ async fn bt_task(connector: BleConnector<'static>, channel: &'static DataPointCh
                 ControlOpCode::StartMeasurement => {
                     let device_tared = critical_section::with(|cs| *DEVICE_TARED.borrow_ref(cs));
                     if device_tared {
-                    critical_section::with(|cs| {
-                        *MEASUREMENT_TASK_STATUS.borrow_ref_mut(cs) =
+                        critical_section::with(|cs| {
+                            *MEASUREMENT_TASK_STATUS.borrow_ref_mut(cs) =
                                 MeasurementTaskStatus::Enabled;
                         });
                     } else {
                         critical_section::with(|cs| {
                             *(MEASUREMENT_TASK_STATUS).borrow_ref_mut(cs) =
-                            MeasurementTaskStatus::SoftTare;
-                    });
+                                MeasurementTaskStatus::SoftTare;
+                        });
                     }
                 }
                 ControlOpCode::StopMeasurement => {

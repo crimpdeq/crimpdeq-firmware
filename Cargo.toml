@@ -5,9 +5,6 @@ license = "MIT OR Apache-2.0"
 name    = "crimpdeq"
 version = "0.1.0"
 
-[[bin]]
-name = "crimpdeq"
-path = "./src/bin/main.rs"
 
 [dependencies]
 bleps = { git = "https://github.com/bjoernQ/bleps", rev = "febf18abc4777b0227ef56b22aa6bcd78947fa24", package = "bleps", features = [
