@@ -77,10 +77,6 @@ static MEASUREMENT_TASK_STATUS: Mutex<RefCell<MeasurementTaskStatus>> =
 /// Static tracking if the device was tared/soft tared
 static DEVICE_TARED: Mutex<RefCell<bool>> = Mutex::new(RefCell::new(false));
 
-/// Calibration value. Obtained measuring a few known weights and adjusting the value
-const CALIBRATION_FACTOR: f32 = 1.0;
-const CALIBRATION_OFFSET: f32 = 0.0;
-
 #[esp_hal_embassy::main]
 async fn main(spawner: Spawner) -> ! {
     let config = Config::default().with_cpu_clock(CpuClock::max());
@@ -318,7 +314,6 @@ async fn measurement_task(
     delay: Delay,
 ) {
     let mut load_cell = Hx711::new(data_pin, clock_pin, delay);
-    // load_cell.set_scale(CALIBRATION_FACTOR);
 
     loop {
         let status = critical_section::with(|cs| *MEASUREMENT_TASK_STATUS.borrow_ref(cs));
@@ -327,7 +322,7 @@ async fn measurement_task(
             continue;
         }
         if status == MeasurementTaskStatus::Tare {
-            // load_cell.tare(16).await;
+            load_cell.tare(16).await;
             critical_section::with(|cs| {
                 *DEVICE_TARED.borrow_ref_mut(cs) = true;
             });
@@ -336,7 +331,7 @@ async fn measurement_task(
         }
 
         let weigth = if status == MeasurementTaskStatus::SoftTare {
-            // load_cell.tare(16).await;
+            load_cell.tare(16).await;
             critical_section::with(|cs| {
                 *MEASUREMENT_TASK_STATUS.borrow_ref_mut(cs) = MeasurementTaskStatus::Enabled;
             });
