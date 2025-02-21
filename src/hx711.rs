@@ -10,6 +10,11 @@ use esp_hal::{
     gpio::{Input, Output},
 };
 
+/// Obtained calibration factor
+const CALIBRATION_FACTOR: f32 = 1.3145;
+/// Obtained calibration offset
+const CALIBRATION_OFFSET: f32 = -3.8790;
+
 /// The HX711 has different amplifier gain settings.
 /// The choice of gain settings is controlled by writing a fixed number of
 /// extra pulses after a read.
@@ -33,6 +38,12 @@ const HX711_DELAY_TIME_US: u32 = 1;
 /// The delay time in microseconds for the HX711 tare function.
 const HX711_TARE_SLEEP_TIME_US: u32 = 10_000;
 
+/// Calibration values
+struct Calibration {
+    offset: f32,
+    factor: f32,
+}
+
 /// A driver for the HX711 24-bit ADC.
 pub struct Hx711<'d> {
     /// Data pin
@@ -44,9 +55,9 @@ pub struct Hx711<'d> {
     /// Gain mode
     gain_mode: GainMode,
     /// Tare value
-    offset: i32,
-    /// Calibration value
-    scale: f32,
+    tare_value: i32,
+    /// Calibration
+    calibration: Calibration,
 }
 
 impl<'d> Hx711<'d> {
@@ -59,13 +70,16 @@ impl<'d> Hx711<'d> {
             clock,
             delay,
             gain_mode: GainMode::A64,
-            offset: 0,
-            scale: 1.0,
+            tare_value: 0,
+            calibration: Calibration {
+                offset: CALIBRATION_OFFSET,
+                factor: CALIBRATION_FACTOR,
+            },
         }
     }
 
     /// Returns true if the load cell amplifier has a value ready to be read.
-    pub fn is_ready(&mut self) -> bool {
+    fn is_ready(&mut self) -> bool {
         self.data.is_low()
     }
 
@@ -95,16 +109,6 @@ impl<'d> Hx711<'d> {
     /// Sets the gain mode for the next reading.
     pub fn set_gain_mode(&mut self, gain_mode: GainMode) {
         self.gain_mode = gain_mode;
-    }
-
-    /// Sets the offset value.
-    pub fn set_offset(&mut self, offset: i32) {
-        self.offset = offset;
-    }
-
-    /// Sets the calibration scale value.
-    pub fn set_scale(&mut self, scale: f32) {
-        self.scale = scale;
     }
 
     /// Reads 24 bits from the HX711 within a critical section.
@@ -147,21 +151,22 @@ impl<'d> Hx711<'d> {
             self.delay.delay_us(HX711_TARE_SLEEP_TIME_US);
         }
 
-        self.offset = total as i32;
+        self.tare_value = total as i32;
     }
 
     /// Reads a raw value from the HX711, subtracting the tare offset.
-    pub fn read(&mut self) -> Option<i32> {
+    fn read(&mut self) -> Option<i32> {
         if !self.is_ready() {
             return None;
         }
 
-        Some(self.read_raw() - self.offset)
+        Some(self.read_raw() - self.tare_value)
     }
 
-    /// Reads a scaled value from the HX711.
-    pub fn read_scaled(&mut self) -> Option<f32> {
-        self.read().map(|raw| raw as f32 * self.scale)
+    /// Reads a calibrated value from the HX711.
+    fn read_calibrated(&mut self) -> Option<f32> {
+        self.read()
+            .map(|raw| raw as f32 * self.calibration.factor - self.calibration.offset)
     }
 
     /// Get the average of 20 readings in kgs.
@@ -171,7 +176,7 @@ impl<'d> Hx711<'d> {
 
         let mut weight = 0.0;
         for _ in 0..20 {
-            if let Some(x) = self.read_scaled() {
+            if let Some(x) = self.read_calibrated() {
                 // Don't take absolute value - keep the sign
                 weight += x;
             }

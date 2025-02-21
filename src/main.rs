@@ -18,7 +18,7 @@ use bleps::{
 };
 use bytemuck::bytes_of;
 use critical_section::Mutex;
-use defmt::{debug, error, info};
+use defmt::{debug, error, info, trace};
 use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_sync::channel::Channel;
@@ -76,9 +76,6 @@ static MEASUREMENT_TASK_STATUS: Mutex<RefCell<MeasurementTaskStatus>> =
     Mutex::new(RefCell::new(MeasurementTaskStatus::Disabled));
 /// Static tracking if the device was tared/soft tared
 static DEVICE_TARED: Mutex<RefCell<bool>> = Mutex::new(RefCell::new(false));
-
-// Calibration value. Obtained measuring a few known weights and adjusting the value
-const CALIBRATION: f32 = 1.26;
 
 #[esp_hal_embassy::main]
 async fn main(spawner: Spawner) -> ! {
@@ -301,7 +298,7 @@ async fn bt_task(connector: BleConnector<'static>, channel: &'static DataPointCh
 
         let mut notifier = || async {
             let data_point = channel.receive().await;
-            debug!("Notifying data point: {:?}", data_point);
+            trace!("Notifying data point: {:?}", data_point);
             let data = bytes_of(&data_point);
             NotificationData::new(data_point_handle, data)
         };
@@ -317,7 +314,6 @@ async fn measurement_task(
     delay: Delay,
 ) {
     let mut load_cell = Hx711::new(data_pin, clock_pin, delay);
-    load_cell.set_scale(CALIBRATION);
 
     loop {
         let status = critical_section::with(|cs| *MEASUREMENT_TASK_STATUS.borrow_ref(cs));
