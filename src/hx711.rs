@@ -170,18 +170,17 @@ impl<'d> Hx711<'d> {
     }
 
     /// Get the average of 20 readings in kgs.
-    // TODO: Improve this function
     pub async fn get_measurement(&mut self) -> f32 {
         self.wait_for_ready().await;
+        let samples = 20;
 
         let mut weight = 0.0;
-        for _ in 0..20 {
+        for _ in 0..samples {
             if let Some(x) = self.read_calibrated() {
-                // Don't take absolute value - keep the sign
                 weight += x;
             }
         }
-        // Divide by 20000.0 to convert to kg
-        weight / 20000.0
+        // Get the average in kgs
+        weight / (samples as f32 * 1000.0)
     }
 }

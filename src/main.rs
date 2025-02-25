@@ -216,16 +216,13 @@ async fn bt_task(connector: BleConnector<'static>, channel: &'static DataPointCh
                 }
             }
         };
-        // TODO: Are this required, they are not used
-        let mut service_change_read = |_, _data: &mut [u8]| 0;
-        let mut data_point_read = |_, _data: &mut [u8]| 0;
 
-        // TODO: Avoid using the gatt! macro, replace the uuids with constants and improve the values
         let device_name = env!("DEVICE_NAME").as_bytes();
         let appearance = b"[0] Unknown";
         let ppcp = b"Connection Interval: 50.00ms - 65.00ms, Max Latency:6ms, Suppervision Timeout Multiplier: 400ms";
         let car = b"Address resolution supported";
         let ccc = b"Notifications and indications disabled";
+        let empty_value = b"";
         gatt!([
             service {
                 // Generic Access
@@ -260,7 +257,7 @@ async fn bt_task(connector: BleConnector<'static>, channel: &'static DataPointCh
                     // Service Changed
                     characteristic {
                         uuid: "2a05",
-                        read: service_change_read,
+                        value: empty_value,
                         descriptors: [
                             // Client Characteristic Configuration
                             descriptor {
@@ -280,14 +277,13 @@ async fn bt_task(connector: BleConnector<'static>, channel: &'static DataPointCh
                         name: "data_point",
                         uuid: "7e4e1702-1ea6-40c9-9dcc-13d34ffead57",
                         notify: true,
-                        read: data_point_read,
+                        value: empty_value,
                     },
                     /// Progressor Control Point
                     characteristic {
                         name: "control_point",
                         uuid: "7e4e1703-1ea6-40c9-9dcc-13d34ffead57",
                         write: control_point_write,
-                        // TODO: Is there a WriteNoResponse?
                     },
                 ],
             },
