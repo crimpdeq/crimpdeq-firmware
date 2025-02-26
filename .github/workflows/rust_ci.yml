@@ -4,7 +4,12 @@ on:
   push:
     paths-ignore:
       - "**/README.md"
+      - "**/*.md"
+      - "**/*.kicad*"
   pull_request:
+    paths-ignore:
+      - "**/README.md"
+      - "**/*.kicad*"
   workflow_dispatch:
 
 env:
