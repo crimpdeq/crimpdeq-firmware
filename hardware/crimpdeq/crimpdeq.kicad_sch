@@ -9004,6 +9004,71 @@
 		)
 	)
 	(symbol
+		(lib_id "power:+3V3")
+		(at 140.97 113.03 0)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(uuid "114959fa-084a-464f-9c2c-571be812d47a")
+		(property "Reference" "#PWR028"
+			(at 140.97 116.84 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Value" "+3V3"
+			(at 141.351 108.6358 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" ""
+			(at 140.97 113.03 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" ""
+			(at 140.97 113.03 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" ""
+			(at 140.97 113.03 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(pin "1"
+			(uuid "0c85db0a-3ca5-4c07-96f3-73e4a6e0bac1")
+		)
+		(instances
+			(project "crimpdeq"
+				(path "/eb289f4a-30cd-4b15-be5d-5da73d92c8be"
+					(reference "#PWR028")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
 		(lib_id "power:GND")
 		(at 115.57 83.82 0)
 		(unit 1)
@@ -10682,6 +10747,71 @@
 			(project "crimpdeq"
 				(path "/eb289f4a-30cd-4b15-be5d-5da73d92c8be"
 					(reference "L1")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "power:GND")
+		(at 165.1 26.67 0)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(uuid "336e311a-bbd1-4dbf-bd38-fa1431adea98")
+		(property "Reference" "#PWR012"
+			(at 165.1 33.02 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Value" "GND"
+			(at 165.227 31.0642 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" ""
+			(at 165.1 26.67 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" ""
+			(at 165.1 26.67 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" ""
+			(at 165.1 26.67 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(pin "1"
+			(uuid "a26be886-a7ea-463b-8803-0017e5e52fde")
+		)
+		(instances
+			(project "crimpdeq"
+				(path "/eb289f4a-30cd-4b15-be5d-5da73d92c8be"
+					(reference "#PWR012")
 					(unit 1)
 				)
 			)
@@ -12937,71 +13067,6 @@
 	)
 	(symbol
 		(lib_id "power:GND")
-		(at 127 41.91 0)
-		(unit 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(dnp no)
-		(uuid "856ab1b7-b4ab-4548-b482-e9f386b0eaf7")
-		(property "Reference" "#PWR09"
-			(at 127 48.26 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Value" "GND"
-			(at 127.127 46.3042 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" ""
-			(at 127 41.91 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Datasheet" ""
-			(at 127 41.91 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Description" ""
-			(at 127 41.91 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(pin "1"
-			(uuid "5a9c892a-f739-419e-a001-d8448f9b693e")
-		)
-		(instances
-			(project "crimpdeq"
-				(path "/eb289f4a-30cd-4b15-be5d-5da73d92c8be"
-					(reference "#PWR09")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "power:GND")
 		(at 179.07 83.82 0)
 		(unit 1)
 		(exclude_from_sim no)
@@ -13888,71 +13953,6 @@
 			(project "crimpdeq"
 				(path "/eb289f4a-30cd-4b15-be5d-5da73d92c8be"
 					(reference "#PWR010")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "power:GND")
-		(at 165.1 26.67 0)
-		(unit 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(dnp no)
-		(uuid "9f63c3bc-3203-4f0e-ba5b-7095c68b0ec2")
-		(property "Reference" "#PWR012"
-			(at 165.1 33.02 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Value" "GND"
-			(at 165.227 31.0642 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" ""
-			(at 165.1 26.67 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Datasheet" ""
-			(at 165.1 26.67 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Description" ""
-			(at 165.1 26.67 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(pin "1"
-			(uuid "9f58110a-9f37-4392-9914-aaa2ab33f3d5")
-		)
-		(instances
-			(project "crimpdeq"
-				(path "/eb289f4a-30cd-4b15-be5d-5da73d92c8be"
-					(reference "#PWR012")
 					(unit 1)
 				)
 			)
@@ -14922,71 +14922,6 @@
 		)
 	)
 	(symbol
-		(lib_id "power:+3V3")
-		(at 140.97 113.03 0)
-		(unit 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(dnp no)
-		(uuid "c5804dce-65f6-4df3-900f-ea6b8462dd86")
-		(property "Reference" "#PWR028"
-			(at 140.97 116.84 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Value" "+3V3"
-			(at 141.351 108.6358 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" ""
-			(at 140.97 113.03 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Datasheet" ""
-			(at 140.97 113.03 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Description" ""
-			(at 140.97 113.03 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(pin "1"
-			(uuid "57b69632-7359-4bac-b110-d5c28ee38847")
-		)
-		(instances
-			(project "crimpdeq"
-				(path "/eb289f4a-30cd-4b15-be5d-5da73d92c8be"
-					(reference "#PWR028")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
 		(lib_id "Device:C_Small")
 		(at 133.35 78.74 0)
 		(unit 1)
@@ -15258,6 +15193,71 @@
 			(project "crimpdeq"
 				(path "/eb289f4a-30cd-4b15-be5d-5da73d92c8be"
 					(reference "#PWR031")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "power:GND")
+		(at 127 41.91 0)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(uuid "dc5c47cf-f7e1-45ea-beb8-6b0a503784a6")
+		(property "Reference" "#PWR09"
+			(at 127 48.26 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Value" "GND"
+			(at 127.127 46.3042 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" ""
+			(at 127 41.91 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" ""
+			(at 127 41.91 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" ""
+			(at 127 41.91 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(pin "1"
+			(uuid "4f7f79d5-ffe5-4e6a-ba08-0ead27fba083")
+		)
+		(instances
+			(project "crimpdeq"
+				(path "/eb289f4a-30cd-4b15-be5d-5da73d92c8be"
+					(reference "#PWR09")
 					(unit 1)
 				)
 			)
