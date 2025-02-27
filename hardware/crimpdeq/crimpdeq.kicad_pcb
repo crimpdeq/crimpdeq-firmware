@@ -6607,7 +6607,7 @@
 		(descr "ESP32-C3-MINI-1: https://www.espressif.com/sites/default/files/documentation/esp32-c3-mini-1_datasheet_en.pdf")
 		(tags "ESP32-C3")
 		(property "Reference" "U1"
-			(at 0 -9.5 0)
+			(at 0 -4.5 0)
 			(layer "F.SilkS")
 			(uuid "aa8f6261-9699-475d-a365-4fa8d231aa24")
 			(effects
@@ -14011,7 +14011,7 @@
 			(at -2.89 -3.68)
 			(size 0.65 0.65)
 			(drill 0.65)
-			(layers "*.Cu" "*.Mask")
+			(layers "F&B.Cu" "*.Mask")
 			(uuid "15068a37-0bd9-4310-84b5-071ec9da44ed")
 		)
 		(pad "" np_thru_hole circle
