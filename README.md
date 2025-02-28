@@ -9,7 +9,7 @@ Crimpdeq is a bluetooth dynamometer designed for finger training, powered by an 
 
 ## Status
 - The firmware is in a usable state, though there is room for improvement. See issues for details.
-- The PCB is still under development and has not yet been tested.
+- The PCB has not yet been produced nor tested.
   - I am not a hardware engineer, so any help or feedback would be greatly appreciated!
 
 Here is how the current prototype looks like:
