@@ -330,8 +330,6 @@ async fn measurement_task(
             load_cell.tare(16).await;
             critical_section::with(|cs| {
                 *MEASUREMENT_TASK_STATUS.borrow_ref_mut(cs) = MeasurementTaskStatus::Enabled;
-            });
-            critical_section::with(|cs| {
                 *DEVICE_TARED.borrow_ref_mut(cs) = true;
             });
             0.0
