@@ -326,7 +326,7 @@ async fn measurement_task(
             continue;
         }
 
-        let weigth = if status == MeasurementTaskStatus::SoftTare {
+        let weight = if status == MeasurementTaskStatus::SoftTare {
             load_cell.tare(16).await;
             critical_section::with(|cs| {
                 *MEASUREMENT_TASK_STATUS.borrow_ref_mut(cs) = MeasurementTaskStatus::Enabled;
@@ -338,7 +338,7 @@ async fn measurement_task(
         };
 
         let timestamp = (time::Instant::now().duration_since_epoch()).as_micros() as u32;
-        let measurement = ResponseCode::WeigthtMeasurement(weigth, timestamp);
+        let measurement = ResponseCode::WeigthtMeasurement(weight, timestamp);
         debug!("Sending measurement: {:?}", measurement);
         let data_point = DataPoint::new(measurement);
         channel.send(data_point).await;
