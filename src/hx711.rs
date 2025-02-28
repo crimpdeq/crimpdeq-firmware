@@ -78,11 +78,6 @@ impl<'d> Hx711<'d> {
         }
     }
 
-    /// Returns true if the load cell amplifier has a value ready to be read.
-    fn is_ready(&mut self) -> bool {
-        self.data.is_low()
-    }
-
     /// Reads a single bit from the data pin.
     fn read_data_bit(&mut self) -> bool {
         self.clock.set_high();
@@ -154,33 +149,11 @@ impl<'d> Hx711<'d> {
         self.tare_value = total as i32;
     }
 
-    /// Reads a raw value from the HX711, subtracting the tare offset.
-    fn read(&mut self) -> Option<i32> {
-        if !self.is_ready() {
-            return None;
-        }
-
-        Some(self.read_raw() - self.tare_value)
-    }
-
-    /// Reads a calibrated value from the HX711.
-    fn read_calibrated(&mut self) -> Option<f32> {
-        self.read()
-            .map(|raw| raw as f32 * self.calibration.factor - self.calibration.offset)
-    }
-
-    /// Get the average of 20 readings in kgs.
-    pub async fn get_measurement(&mut self) -> f32 {
+    /// Reads a calibrated value, in kg.
+    pub async fn read_calibrated(&mut self) -> f32 {
         self.wait_for_ready().await;
-        let samples = 20;
-
-        let mut weight = 0.0;
-        for _ in 0..samples {
-            if let Some(x) = self.read_calibrated() {
-                weight += x;
-            }
-        }
-        // Get the average in kgs
-        weight / (samples as f32 * 1000.0)
+        let raw_value = self.read_raw() - self.tare_value;
+        let calibrated_value = raw_value as f32 * self.calibration.factor - self.calibration.offset;
+        calibrated_value / 1000.0
     }
 }
