@@ -11,9 +11,18 @@ use esp_hal::{
 };
 
 /// Obtained calibration factor
-const CALIBRATION_FACTOR: f32 = 1.3145;
+const CALIBRATION_FACTOR: f32 = 1.0;
 /// Obtained calibration offset
-const CALIBRATION_OFFSET: f32 = -3.8790;
+const CALIBRATION_OFFSET: f32 = 0.0;
+
+/// The absolute minimum readings. A smaller value should be clamped.
+const HX711_MINIMUM: i32 = -(2i32.saturating_pow(24 - 1));
+/// The absolute maximum readings. A greater value should be clamped.
+const HX711_MAXIMUM: i32 = 2i32.saturating_pow(24 - 1) - 1;
+/// The default delay time in microseconds for the HX711.
+const HX711_DELAY_TIME_US: u32 = 1;
+/// The delay time in microseconds for the HX711 tare function.
+const HX711_TARE_SLEEP_TIME_US: u32 = 10_000;
 
 /// The HX711 has different amplifier gain settings.
 /// The choice of gain settings is controlled by writing a fixed number of
@@ -28,15 +37,6 @@ pub enum GainMode {
     /// Amplification gain of 64 on channel A.
     A64 = 3,
 }
-
-/// The absolute minimum readings. A smaller value should be clamped.
-const HX711_MINIMUM: i32 = -(2i32.saturating_pow(24 - 1));
-/// The absolute maximum readings. A greater value should be clamped.
-const HX711_MAXIMUM: i32 = 2i32.saturating_pow(24 - 1) - 1;
-/// The default delay time in microseconds for the HX711.
-const HX711_DELAY_TIME_US: u32 = 1;
-/// The delay time in microseconds for the HX711 tare function.
-const HX711_TARE_SLEEP_TIME_US: u32 = 10_000;
 
 /// Calibration values
 struct Calibration {
@@ -93,12 +93,14 @@ impl<'d> Hx711<'d> {
 
     /// Toggles the clock pin to prepare for the next gain mode.
     fn send_gain_pulses(&mut self) {
-        for _ in 0..(self.gain_mode as u8) {
-            self.clock.set_high();
-            self.delay.delay_us(HX711_DELAY_TIME_US);
-            self.clock.set_low();
-            self.delay.delay_us(HX711_DELAY_TIME_US);
-        }
+        critical_section::with(|_| {
+            for _ in 0..(self.gain_mode as u8) {
+                self.clock.set_high();
+                self.delay.delay_us(HX711_DELAY_TIME_US);
+                self.clock.set_low();
+                self.delay.delay_us(HX711_DELAY_TIME_US);
+            }
+        });
     }
 
     /// Sets the gain mode for the next reading.
@@ -136,16 +138,16 @@ impl<'d> Hx711<'d> {
     }
 
     /// Tares the sensor by measuring the average of `num_samples` readings.
-    pub async fn tare(&mut self, num_samples: usize) {
+    pub async fn tare(&mut self) {
+        const TARING_SAMPLES: usize = 16;
         let mut total: f32 = 0.0;
 
-        for n in 1..=num_samples {
+        for n in 1..=TARING_SAMPLES {
             self.wait_for_ready().await;
             let current = self.read_raw() as f32;
             total += (current - total) / n as f32;
             self.delay.delay_us(HX711_TARE_SLEEP_TIME_US);
         }
-
         self.tare_value = total as i32;
     }
 

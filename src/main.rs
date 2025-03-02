@@ -318,7 +318,7 @@ async fn measurement_task(
             continue;
         }
         if status == MeasurementTaskStatus::Tare {
-            load_cell.tare(16).await;
+            load_cell.tare().await;
             critical_section::with(|cs| {
                 *DEVICE_TARED.borrow_ref_mut(cs) = true;
             });
@@ -327,7 +327,7 @@ async fn measurement_task(
         }
 
         let weight = if status == MeasurementTaskStatus::SoftTare {
-            load_cell.tare(16).await;
+            load_cell.tare().await;
             critical_section::with(|cs| {
                 *MEASUREMENT_TASK_STATUS.borrow_ref_mut(cs) = MeasurementTaskStatus::Enabled;
                 *DEVICE_TARED.borrow_ref_mut(cs) = true;
