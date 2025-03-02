@@ -142,13 +142,13 @@ impl<'d> Hx711<'d> {
         const TARING_SAMPLES: usize = 16;
         let mut total: f32 = 0.0;
 
-        for n in 1..=TARING_SAMPLES {
+        for _ in 0..=TARING_SAMPLES {
             self.wait_for_ready().await;
-            let current = self.read_raw() as f32;
-            total += (current - total) / n as f32;
+            total += self.read_raw() as f32;
             self.delay.delay_us(HX711_TARE_SLEEP_TIME_US);
         }
-        self.tare_value = total as i32;
+        let average = total / TARING_SAMPLES as f32;
+        self.tare_value = average as i32;
     }
 
     /// Reads a calibrated value, in kg.
