@@ -18,7 +18,7 @@ use bleps::{
 };
 use bytemuck::bytes_of;
 use critical_section::Mutex;
-use defmt::{debug, error, info, trace};
+use defmt::{debug, error, info};
 use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_sync::channel::Channel;
@@ -294,7 +294,7 @@ async fn bt_task(connector: BleConnector<'static>, channel: &'static DataPointCh
 
         let mut notifier = || async {
             let data_point = channel.receive().await;
-            trace!("Notifying data point: {:?}", data_point);
+            debug!("Notifying data point: {:?}", data_point);
             let data = bytes_of(&data_point);
             NotificationData::new(data_point_handle, data)
         };
@@ -314,39 +314,33 @@ async fn measurement_task(
     loop {
         let status = critical_section::with(|cs| *MEASUREMENT_TASK_STATUS.borrow_ref(cs));
         if status == MeasurementTaskStatus::Disabled {
-            Timer::after(Duration::from_millis(13)).await;
+            Timer::after(Duration::from_millis(10)).await;
             continue;
         }
         if status == MeasurementTaskStatus::Tare {
-            load_cell.tare(16).await;
+            load_cell.tare().await;
             critical_section::with(|cs| {
                 *DEVICE_TARED.borrow_ref_mut(cs) = true;
             });
-            Timer::after(Duration::from_millis(13)).await;
+            Timer::after(Duration::from_millis(10)).await;
             continue;
         }
 
-        let weigth = if status == MeasurementTaskStatus::SoftTare {
-            load_cell.tare(16).await;
+        let weight = if status == MeasurementTaskStatus::SoftTare {
+            load_cell.tare().await;
             critical_section::with(|cs| {
                 *MEASUREMENT_TASK_STATUS.borrow_ref_mut(cs) = MeasurementTaskStatus::Enabled;
-            });
-            critical_section::with(|cs| {
                 *DEVICE_TARED.borrow_ref_mut(cs) = true;
             });
             0.0
         } else {
-            load_cell.get_measurement().await
+            load_cell.read_calibrated().await
         };
 
         let timestamp = (time::Instant::now().duration_since_epoch()).as_micros() as u32;
-        let measurement = ResponseCode::WeigthtMeasurement(weigth, timestamp);
+        let measurement = ResponseCode::WeigthtMeasurement(weight, timestamp);
         debug!("Sending measurement: {:?}", measurement);
         let data_point = DataPoint::new(measurement);
         channel.send(data_point).await;
-        // On average, measurements take 300 microseconds (0.3ms)
-        // Tindeq can receive samples at 80Hz (12.5ms)
-        // So, we can sleep for 10ms
-        Timer::after(Duration::from_millis(10)).await;
     }
 }
