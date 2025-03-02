@@ -11,9 +11,9 @@ use esp_hal::{
 };
 
 /// Obtained calibration factor
-const CALIBRATION_FACTOR: f32 = 1.0;
+const CALIBRATION_FACTOR: f32 = 0.06672;
 /// Obtained calibration offset
-const CALIBRATION_OFFSET: f32 = 0.0;
+const CALIBRATION_OFFSET: f32 = 52.8916;
 
 /// The absolute minimum readings. A smaller value should be clamped.
 const HX711_MINIMUM: i32 = -(2i32.saturating_pow(24 - 1));
