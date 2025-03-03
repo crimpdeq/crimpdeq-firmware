@@ -21,8 +21,6 @@ const HX711_MINIMUM: i32 = -(2i32.saturating_pow(24 - 1));
 const HX711_MAXIMUM: i32 = 2i32.saturating_pow(24 - 1) - 1;
 /// The default delay time in microseconds for the HX711.
 const HX711_DELAY_TIME_US: u32 = 1;
-/// The delay time in microseconds for the HX711 tare function.
-const HX711_TARE_SLEEP_TIME_US: u32 = 10_000;
 
 /// The HX711 has different amplifier gain settings.
 /// The choice of gain settings is controlled by writing a fixed number of
@@ -139,13 +137,17 @@ impl<'d> Hx711<'d> {
 
     /// Tares the sensor by measuring the average of `num_samples` readings.
     pub async fn tare(&mut self) {
+        if self.calibration.offset == 0.0 && self.calibration.factor == 1.0 {
+            info!("Calibration values not set, skipping tare");
+            return;
+        }
+
         const TARING_SAMPLES: usize = 16;
         let mut total: f32 = 0.0;
 
         for _ in 0..=TARING_SAMPLES {
             self.wait_for_ready().await;
             total += self.read_raw() as f32;
-            self.delay.delay_us(HX711_TARE_SLEEP_TIME_US);
         }
         let average = total / TARING_SAMPLES as f32;
         self.tare_value = average as i32;
