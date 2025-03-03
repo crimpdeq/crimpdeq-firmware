@@ -159,6 +159,11 @@ async fn bt_task(connector: BleConnector<'static>, channel: &'static DataPointCh
 
         info!("Started advertising");
 
+        // Mark the device as untared
+        critical_section::with(|cs| {
+            *DEVICE_TARED.borrow_ref_mut(cs) = false;
+        });
+
         // Service/Characteristics Read/Write methods
         let mut control_point_write = |_, data: &[u8]| {
             let op_copde = ControlOpCode::from(data[0]);
@@ -188,9 +193,6 @@ async fn bt_task(connector: BleConnector<'static>, channel: &'static DataPointCh
                     critical_section::with(|cs| {
                         *MEASUREMENT_TASK_STATUS.borrow_ref_mut(cs) =
                             MeasurementTaskStatus::Disabled;
-                    });
-                    critical_section::with(|cs| {
-                        *DEVICE_TARED.borrow_ref_mut(cs) = false;
                     });
                 }
                 ControlOpCode::GetAppVersion => {
@@ -310,34 +312,33 @@ async fn measurement_task(
     delay: Delay,
 ) {
     let mut load_cell = Hx711::new(data_pin, clock_pin, delay);
+    let start_time = (time::Instant::now().duration_since_epoch()).as_micros() as u32;
 
     loop {
         let status = critical_section::with(|cs| *MEASUREMENT_TASK_STATUS.borrow_ref(cs));
-        if status == MeasurementTaskStatus::Disabled {
-            Timer::after(Duration::from_millis(10)).await;
-            continue;
-        }
-        if status == MeasurementTaskStatus::Tare {
-            load_cell.tare().await;
-            critical_section::with(|cs| {
-                *DEVICE_TARED.borrow_ref_mut(cs) = true;
-            });
-            Timer::after(Duration::from_millis(10)).await;
-            continue;
+        match status {
+            MeasurementTaskStatus::Disabled => {
+                Timer::after(Duration::from_millis(10)).await;
+                continue;
+            }
+            MeasurementTaskStatus::Tare | MeasurementTaskStatus::SoftTare => {
+                load_cell.tare().await;
+                critical_section::with(|cs| {
+                    *DEVICE_TARED.borrow_ref_mut(cs) = true;
+                    if status == MeasurementTaskStatus::SoftTare {
+                        *MEASUREMENT_TASK_STATUS.borrow_ref_mut(cs) =
+                            MeasurementTaskStatus::Enabled;
+                    }
+                });
+                Timer::after(Duration::from_millis(10)).await;
+                continue;
+            }
+            MeasurementTaskStatus::Enabled => {}
         }
 
-        let weight = if status == MeasurementTaskStatus::SoftTare {
-            load_cell.tare().await;
-            critical_section::with(|cs| {
-                *MEASUREMENT_TASK_STATUS.borrow_ref_mut(cs) = MeasurementTaskStatus::Enabled;
-                *DEVICE_TARED.borrow_ref_mut(cs) = true;
-            });
-            0.0
-        } else {
-            load_cell.read_calibrated().await
-        };
-
-        let timestamp = (time::Instant::now().duration_since_epoch()).as_micros() as u32;
+        let weight = load_cell.read_calibrated().await;
+        let timestamp =
+            (time::Instant::now().duration_since_epoch()).as_micros() as u32 - start_time;
         let measurement = ResponseCode::WeigthtMeasurement(weight, timestamp);
         debug!("Sending measurement: {:?}", measurement);
         let data_point = DataPoint::new(measurement);
