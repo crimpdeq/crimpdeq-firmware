@@ -4,7 +4,7 @@
 ///
 /// [Tindeq API documentation]: https://tindeq.com/progressor_api/
 use bytemuck_derive::{Pod, Zeroable};
-use defmt::Format;
+use defmt::{debug, error, trace, Format};
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
 
 /// Size of the channel used to send data points
@@ -84,11 +84,13 @@ pub struct DataPoint {
 }
 
 impl DataPoint {
-    pub fn new(response_code: ResponseCode) -> Self {
-        DataPoint {
-            length: response_code.length(),
-            value: response_code.value(),
-            response_code: response_code.op_code(),
+    /// Send data point to the channel
+    pub fn send(&self, channel: &'static DataPointChannel) {
+        debug!("Sending Data Point: {:?}", self);
+        if channel.try_send(*self).is_err() {
+            error!("Failed to send data point");
+        } else {
+            trace!("Sent data point successfully");
         }
     }
 }
