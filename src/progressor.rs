@@ -45,8 +45,11 @@ pub enum MeasurementTaskStatus {
 /// Device state management
 #[derive(Copy, Debug, Clone, PartialEq)]
 pub struct DeviceState {
+    /// Measurement status
     pub measurement_status: MeasurementTaskStatus,
+    /// Tared status
     pub tared: bool,
+    /// Start time of the measurement
     pub start_time: u32,
 }
 
@@ -69,6 +72,7 @@ pub enum ControlOpCode {
 }
 
 impl ControlOpCode {
+    /// Process the control operation
     pub fn process(self, channel: &'static DataPointChannel, device_state: &mut DeviceState) {
         match self {
             ControlOpCode::TareScale => {

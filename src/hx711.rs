@@ -29,7 +29,7 @@ const HX711_DELAY_TIME_US: u32 = 1;
 #[derive(Clone, Copy, Debug)]
 pub enum GainMode {
     /// Amplification gain of 128 on channel A.
-    A128 = 1, // extra pulses
+    A128 = 1,
     /// Amplification gain of 32 on channel B.
     B32 = 2,
     /// Amplification gain of 64 on channel A.
@@ -38,7 +38,9 @@ pub enum GainMode {
 
 /// Calibration values
 struct Calibration {
+    /// Calibration offset
     offset: f32,
+    /// Calibration factor
     factor: f32,
 }
 
