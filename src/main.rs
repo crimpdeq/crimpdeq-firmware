@@ -15,6 +15,7 @@ use bleps::{
     attribute_server::NotificationData,
     gatt,
     no_rng::NoRng,
+    Data,
 };
 use bytemuck::bytes_of;
 use critical_section::Mutex;
@@ -39,12 +40,21 @@ use esp_wifi::{ble::controller::BleConnector, init, EspWifiController};
 
 use crate::{
     hx711::Hx711,
-    progressor::{ControlOpCode, DataPoint, DataPointChannel, ResponseCode, SCAN_RESPONSE_DATA},
+    progressor::{
+        ControlOpCode,
+        DataPoint,
+        DataPointChannel,
+        DeviceState,
+        MeasurementTaskStatus,
+        ResponseCode,
+        SCAN_RESPONSE_DATA,
+    },
 };
 
 pub mod hx711;
 pub mod progressor;
 
+// Helper macro for static allocation
 macro_rules! mk_static {
     ($t:ty,$val:expr) => {{
         static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
@@ -54,39 +64,23 @@ macro_rules! mk_static {
     }};
 }
 
-/// Status of the weigth measurement task
-#[derive(Copy, Debug, Clone, PartialEq)]
-enum MeasurementTaskStatus {
-    /// Measurements are enabled
-    Enabled,
-    /// Measurements are disabled
-    Disabled,
-    /// Taring the scale
-    ///
-    /// Used in ClimbHarder App
-    Tare,
-    /// Soft taring the scale (substract the current weight)
-    ///
-    /// Used in Tindeq App
-    SoftTare,
-}
-
-/// Static tracking the state of the measurement task
-static MEASUREMENT_TASK_STATUS: Mutex<RefCell<MeasurementTaskStatus>> =
-    Mutex::new(RefCell::new(MeasurementTaskStatus::Disabled));
-/// Static tracking if the device was tared/soft tared
-static DEVICE_TARED: Mutex<RefCell<bool>> = Mutex::new(RefCell::new(false));
-/// Static tracking the timestamp at which the measurement task started
-static START_TIME: Mutex<RefCell<u32>> = Mutex::new(RefCell::new(0));
+/// Static tracking the state of the device
+static DEVICE_STATE: Mutex<RefCell<DeviceState>> = Mutex::new(RefCell::new(DeviceState {
+    measurement_status: MeasurementTaskStatus::Disabled,
+    tared: false,
+    start_time: 0,
+}));
 
 #[esp_hal_embassy::main]
 async fn main(spawner: Spawner) -> ! {
+    // System initialization
     let config = Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
 
     // Allocate 72KB of heap memory
     esp_alloc::heap_allocator!(size: 72 * 1024);
 
+    // Initialize BLE controller
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     let esp_wifi_ctrl = &*mk_static!(
         EspWifiController<'static>,
@@ -98,7 +92,7 @@ async fn main(spawner: Spawner) -> ! {
         .unwrap()
     );
 
-    // Load cell pins
+    // Initialize load cell pins
     let clock_pin = Output::new(peripherals.GPIO5, Level::Low, OutputConfig::default());
     let data_pin = Input::new(
         peripherals.GPIO4,
@@ -113,7 +107,7 @@ async fn main(spawner: Spawner) -> ! {
     // BLE Connector
     let connector = BleConnector::new(esp_wifi_ctrl, peripherals.BT);
 
-    // Data point channel
+    // Data point channel for communication between tasks
     let channel = mk_static!(DataPointChannel, Channel::new());
 
     // Spawn tasks
@@ -122,7 +116,7 @@ async fn main(spawner: Spawner) -> ! {
         .spawn(measurement_task(channel, clock_pin, data_pin, delay))
         .unwrap();
 
-    // Wait forever
+    // Idle loop
     loop {
         Timer::after(Duration::from_millis(50)).await;
     }
@@ -133,94 +127,31 @@ async fn bt_task(connector: BleConnector<'static>, channel: &'static DataPointCh
     let now = || time::Instant::now().duration_since_epoch().as_millis();
     let mut ble = Ble::new(connector, now);
     loop {
-        // Reset the state of the measurement task
+        // Reset device state on reconnection
         critical_section::with(|cs| {
-            *MEASUREMENT_TASK_STATUS.borrow_ref_mut(cs) = MeasurementTaskStatus::Disabled;
+            let mut state = DEVICE_STATE.borrow_ref_mut(cs);
+            state.measurement_status = MeasurementTaskStatus::Disabled;
+            state.tared = false;
         });
         info!("Starting BLE");
-        debug!("Initializing BLE");
-        ble.init().await.unwrap();
-        debug!("Setting advertising parameters");
-        ble.cmd_set_le_advertising_parameters().await.unwrap();
-        debug!("Setting advertising data");
-        ble.cmd_set_le_advertising_data(
-            create_advertising_data(&[
-                AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
-                AdStructure::CompleteLocalName(env!("DEVICE_NAME")),
-            ])
-            .unwrap(),
-        )
-        .await
-        .unwrap();
-        debug!("Setting scan response data");
-        ble.cmd_set_le_scan_rsp_data(Data::new(SCAN_RESPONSE_DATA))
-            .await
-            .unwrap();
-        debug!("Setting advertising enable");
-        ble.cmd_set_le_advertise_enable(true).await.unwrap();
+
+        // Initialize BLE and advertising
+        if let Err(e) = initialize_ble(&mut ble).await {
+            error!("BLE initialization failed: {:?}", e);
+            Timer::after(Duration::from_secs(1)).await;
+            continue;
+        }
 
         info!("Started advertising");
 
-        // Mark the device as untared
-        critical_section::with(|cs| {
-            *DEVICE_TARED.borrow_ref_mut(cs) = false;
-        });
-
         // Service/Characteristics Read/Write methods
         let mut control_point_write = |_, data: &[u8]| {
-            let op_copde = ControlOpCode::from(data[0]);
-            info!("Control Point Received: {:?}", op_copde);
-
-            match op_copde {
-                ControlOpCode::TareScale => {
-                    critical_section::with(|cs| {
-                        *MEASUREMENT_TASK_STATUS.borrow_ref_mut(cs) = MeasurementTaskStatus::Tare;
-                    });
-                }
-                ControlOpCode::StartMeasurement => {
-                    let device_tared = critical_section::with(|cs| *DEVICE_TARED.borrow_ref(cs));
-                    if device_tared {
-                        critical_section::with(|cs| {
-                            *MEASUREMENT_TASK_STATUS.borrow_ref_mut(cs) =
-                                MeasurementTaskStatus::Enabled;
-                            *START_TIME.borrow_ref_mut(cs) =
-                                (time::Instant::now().duration_since_epoch()).as_micros() as u32;
-                        });
-                    } else {
-                        critical_section::with(|cs| {
-                            *(MEASUREMENT_TASK_STATUS).borrow_ref_mut(cs) =
-                                MeasurementTaskStatus::SoftTare;
-                        });
-                    }
-                }
-                ControlOpCode::StopMeasurement => {
-                    critical_section::with(|cs| {
-                        *MEASUREMENT_TASK_STATUS.borrow_ref_mut(cs) =
-                            MeasurementTaskStatus::Disabled;
-                    });
-                }
-                ControlOpCode::GetAppVersion => {
-                    let response =
-                        ResponseCode::AppVersion(env!("DEVICE_VERSION_NUMBER").as_bytes());
-                    debug!("AppVersion: {:?}", response);
-                    let data_point = DataPoint::new(response);
-                    if channel.try_send(data_point).is_err() {
-                        error!("Failed to send data point");
-                    }
-                    debug!("Sent GetAppVersion");
-                }
-                ControlOpCode::Shutdown => {}
-                ControlOpCode::SampleBattery => {}
-                ControlOpCode::GetProgressorId => {
-                    let response = ResponseCode::ProgressorId(env!("DEVICE_ID").parse().unwrap());
-                    debug!("ProgressorId: {:?}", response);
-                    let data_point = DataPoint::new(response);
-                    if channel.try_send(data_point).is_err() {
-                        error!("Failed to send data point");
-                    }
-                    debug!("Sent GetAppVersion");
-                }
-            }
+            let op_code = ControlOpCode::from(data[0]);
+            info!("Control Point Received: {:?}", op_code);
+            critical_section::with(|cs| {
+                let mut device_state = DEVICE_STATE.borrow_ref_mut(cs);
+                op_code.process(channel, &mut device_state);
+            });
         };
 
         let device_name = env!("DEVICE_NAME").as_bytes();
@@ -318,38 +249,73 @@ async fn measurement_task(
     let mut load_cell = Hx711::new(data_pin, clock_pin, delay);
 
     loop {
+        // Get current device state
         let (status, start_time) = critical_section::with(|cs| {
-            (
-                *MEASUREMENT_TASK_STATUS.borrow_ref(cs),
-                *START_TIME.borrow_ref(cs),
-            )
+            let state = DEVICE_STATE.borrow_ref(cs);
+            (state.measurement_status, state.start_time)
         });
+
         match status {
             MeasurementTaskStatus::Disabled => {
+                // Do nothing when disabled
                 Timer::after(Duration::from_millis(10)).await;
-                continue;
             }
             MeasurementTaskStatus::Tare | MeasurementTaskStatus::SoftTare => {
+                // Perform taring operation
                 load_cell.tare().await;
+
                 critical_section::with(|cs| {
-                    *DEVICE_TARED.borrow_ref_mut(cs) = true;
+                    let mut state = DEVICE_STATE.borrow_ref_mut(cs);
+                    state.tared = true;
+
+                    // For soft tare, immediately enable measurements
                     if status == MeasurementTaskStatus::SoftTare {
-                        *MEASUREMENT_TASK_STATUS.borrow_ref_mut(cs) =
-                            MeasurementTaskStatus::Enabled;
+                        state.measurement_status = MeasurementTaskStatus::Enabled;
                     }
                 });
-                Timer::after(Duration::from_millis(10)).await;
-                continue;
-            }
-            MeasurementTaskStatus::Enabled => {}
-        }
 
-        let weight = load_cell.read_calibrated().await;
-        let timestamp =
-            (time::Instant::now().duration_since_epoch()).as_micros() as u32 - start_time;
-        let measurement = ResponseCode::WeigthtMeasurement(weight, timestamp);
-        debug!("Sending measurement: {:?}", measurement);
-        let data_point = DataPoint::new(measurement);
-        channel.send(data_point).await;
+                Timer::after(Duration::from_millis(10)).await;
+            }
+            MeasurementTaskStatus::Enabled => {
+                // Perform weight measurement and send data
+                let weight = load_cell.read_calibrated().await;
+                let timestamp =
+                    (time::Instant::now().duration_since_epoch()).as_micros() as u32 - start_time;
+                let response = ResponseCode::WeigthtMeasurement(weight, timestamp);
+                let data_point = DataPoint::from(response);
+                data_point.send(channel);
+            }
+        }
     }
+}
+
+/// Initialize BLE and set up advertising
+async fn initialize_ble<T>(ble: &mut Ble<T>) -> Result<(), bleps::Error>
+where
+    T: embedded_io_async::Read + embedded_io_async::Write,
+{
+    debug!("Initializing BLE");
+    ble.init().await?;
+
+    debug!("Setting advertising parameters");
+    ble.cmd_set_le_advertising_parameters().await?;
+
+    debug!("Setting advertising data");
+    ble.cmd_set_le_advertising_data(
+        create_advertising_data(&[
+            AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
+            AdStructure::CompleteLocalName(env!("DEVICE_NAME")),
+        ])
+        .unwrap(),
+    )
+    .await?;
+
+    debug!("Setting scan response data");
+    ble.cmd_set_le_scan_rsp_data(Data::new(SCAN_RESPONSE_DATA))
+        .await?;
+
+    debug!("Setting advertising enable");
+    ble.cmd_set_le_advertise_enable(true).await?;
+
+    Ok(())
 }

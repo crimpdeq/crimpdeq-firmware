@@ -4,8 +4,9 @@
 ///
 /// [Tindeq API documentation]: https://tindeq.com/progressor_api/
 use bytemuck_derive::{Pod, Zeroable};
-use defmt::Format;
+use defmt::{debug, error, trace, Format};
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
+use esp_hal::time;
 
 /// Size of the channel used to send data points
 const DATA_POINT_COMMAND_CHANNEL_SIZE: usize = 50;
@@ -24,6 +25,31 @@ pub const SCAN_RESPONSE_DATA: &[u8] = &[
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Padding
 ];
 
+/// Status of the weight measurement task
+#[derive(Copy, Debug, Clone, PartialEq)]
+pub enum MeasurementTaskStatus {
+    /// Measurements are enabled
+    Enabled,
+    /// Measurements are disabled
+    Disabled,
+    /// Taring the scale
+    ///
+    /// Used in ClimbHarder App
+    Tare,
+    /// Soft taring the scale (substract the current weight)
+    ///
+    /// Used in Tindeq App
+    SoftTare,
+}
+
+/// Device state management
+#[derive(Copy, Debug, Clone, PartialEq)]
+pub struct DeviceState {
+    pub measurement_status: MeasurementTaskStatus,
+    pub tared: bool,
+    pub start_time: u32,
+}
+
 /// Progressor Commands
 pub enum ControlOpCode {
     /// Command used to zero weight when no load is applied
@@ -40,6 +66,42 @@ pub enum ControlOpCode {
     GetProgressorId = 0x70,
     /// Get the application version
     GetAppVersion = 0x6B,
+}
+
+impl ControlOpCode {
+    pub fn process(self, channel: &'static DataPointChannel, device_state: &mut DeviceState) {
+        match self {
+            ControlOpCode::TareScale => {
+                device_state.measurement_status = MeasurementTaskStatus::Tare;
+            }
+            ControlOpCode::StartMeasurement => {
+                device_state.start_time =
+                    (time::Instant::now().duration_since_epoch()).as_micros() as u32;
+                if device_state.tared {
+                    device_state.measurement_status = MeasurementTaskStatus::Enabled;
+                } else {
+                    device_state.measurement_status = MeasurementTaskStatus::SoftTare;
+                }
+            }
+            ControlOpCode::StopMeasurement => {
+                device_state.measurement_status = MeasurementTaskStatus::Disabled;
+            }
+            ControlOpCode::GetAppVersion => {
+                let response = ResponseCode::AppVersion(env!("DEVICE_VERSION_NUMBER").as_bytes());
+                debug!("AppVersion: {:?}", response);
+                let data_point = DataPoint::from(response);
+                data_point.send(channel);
+            }
+            ControlOpCode::GetProgressorId => {
+                let response = ResponseCode::ProgressorId(env!("DEVICE_ID").parse().unwrap());
+                debug!("ProgressorId: {:?}", response);
+                let data_point = DataPoint::from(response);
+                data_point.send(channel);
+            }
+            // Currently unimplemented operations
+            ControlOpCode::Shutdown | ControlOpCode::SampleBattery => {}
+        }
+    }
 }
 
 impl From<u8> for ControlOpCode {
@@ -84,11 +146,13 @@ pub struct DataPoint {
 }
 
 impl DataPoint {
-    pub fn new(response_code: ResponseCode) -> Self {
-        DataPoint {
-            length: response_code.length(),
-            value: response_code.value(),
-            response_code: response_code.op_code(),
+    /// Send data point to the channel
+    pub fn send(&self, channel: &'static DataPointChannel) {
+        debug!("Sending Data Point: {:?}", self);
+        if channel.try_send(*self).is_err() {
+            error!("Failed to send data point");
+        } else {
+            trace!("Sent data point successfully");
         }
     }
 }
