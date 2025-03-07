@@ -15,10 +15,11 @@ use bleps::{
     attribute_server::NotificationData,
     gatt,
     no_rng::NoRng,
+    Data,
 };
 use bytemuck::bytes_of;
 use critical_section::Mutex;
-use defmt::{debug, info};
+use defmt::{debug, error, info};
 use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_sync::channel::Channel;
@@ -39,7 +40,15 @@ use esp_wifi::{ble::controller::BleConnector, init, EspWifiController};
 
 use crate::{
     hx711::Hx711,
-    progressor::{ControlOpCode, DataPoint, DataPointChannel, ResponseCode, SCAN_RESPONSE_DATA},
+    progressor::{
+        ControlOpCode,
+        DataPoint,
+        DataPointChannel,
+        DeviceState,
+        MeasurementTaskStatus,
+        ResponseCode,
+        SCAN_RESPONSE_DATA,
+    },
 };
 
 pub mod hx711;
@@ -53,30 +62,6 @@ macro_rules! mk_static {
         let x = STATIC_CELL.uninit().write(($val));
         x
     }};
-}
-
-/// Status of the weight measurement task
-#[derive(Copy, Debug, Clone, PartialEq)]
-enum MeasurementTaskStatus {
-    /// Measurements are enabled
-    Enabled,
-    /// Measurements are disabled
-    Disabled,
-    /// Taring the scale
-    ///
-    /// Used in ClimbHarder App
-    Tare,
-    /// Soft taring the scale (substract the current weight)
-    ///
-    /// Used in Tindeq App
-    SoftTare,
-}
-
-/// Device state management
-struct DeviceState {
-    measurement_status: MeasurementTaskStatus,
-    tared: bool,
-    start_time: u32,
 }
 
 /// Static tracking the state of the device
@@ -149,75 +134,24 @@ async fn bt_task(connector: BleConnector<'static>, channel: &'static DataPointCh
             state.tared = false;
         });
         info!("Starting BLE");
-        debug!("Initializing BLE");
-        ble.init().await.unwrap();
-        debug!("Setting advertising parameters");
-        ble.cmd_set_le_advertising_parameters().await.unwrap();
-        debug!("Setting advertising data");
-        ble.cmd_set_le_advertising_data(
-            create_advertising_data(&[
-                AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
-                AdStructure::CompleteLocalName(env!("DEVICE_NAME")),
-            ])
-            .unwrap(),
-        )
-        .await
-        .unwrap();
-        debug!("Setting scan response data");
-        ble.cmd_set_le_scan_rsp_data(Data::new(SCAN_RESPONSE_DATA))
-            .await
-            .unwrap();
-        debug!("Setting advertising enable");
-        ble.cmd_set_le_advertise_enable(true).await.unwrap();
+
+        // Initialize BLE and advertising
+        if let Err(e) = initialize_ble(&mut ble).await {
+            error!("BLE initialization failed: {:?}", e);
+            Timer::after(Duration::from_secs(1)).await;
+            continue;
+        }
 
         info!("Started advertising");
 
         // Service/Characteristics Read/Write methods
         let mut control_point_write = |_, data: &[u8]| {
-            let op_copde = ControlOpCode::from(data[0]);
-            info!("Control Point Received: {:?}", op_copde);
-
-            match op_copde {
-                ControlOpCode::TareScale => {
-                    critical_section::with(|cs| {
-                        DEVICE_STATE.borrow_ref_mut(cs).measurement_status =
-                            MeasurementTaskStatus::Tare;
-                    });
-                }
-                ControlOpCode::StartMeasurement => {
-                    critical_section::with(|cs| {
-                        let mut state = DEVICE_STATE.borrow_ref_mut(cs);
-                        if state.tared {
-                            state.measurement_status = MeasurementTaskStatus::Enabled;
-                            state.start_time =
-                                (time::Instant::now().duration_since_epoch()).as_micros() as u32;
-                        } else {
-                            state.measurement_status = MeasurementTaskStatus::SoftTare;
-                        }
-                    });
-                }
-                ControlOpCode::StopMeasurement => {
-                    critical_section::with(|cs| {
-                        DEVICE_STATE.borrow_ref_mut(cs).measurement_status =
-                            MeasurementTaskStatus::Disabled;
-                    });
-                }
-                ControlOpCode::GetAppVersion => {
-                    let response =
-                        ResponseCode::AppVersion(env!("DEVICE_VERSION_NUMBER").as_bytes());
-                    debug!("AppVersion: {:?}", response);
-                    let data_point = DataPoint::from(response);
-                    data_point.send(channel);
-                }
-                ControlOpCode::GetProgressorId => {
-                    let response = ResponseCode::ProgressorId(env!("DEVICE_ID").parse().unwrap());
-                    debug!("ProgressorId: {:?}", response);
-                    let data_point = DataPoint::from(response);
-                    data_point.send(channel);
-                }
-                // Currently unimplemented operations
-                ControlOpCode::Shutdown | ControlOpCode::SampleBattery => {}
-            }
+            let op_code = ControlOpCode::from(data[0]);
+            info!("Control Point Received: {:?}", op_code);
+            critical_section::with(|cs| {
+                let mut device_state = DEVICE_STATE.borrow_ref_mut(cs);
+                op_code.process(channel, &mut device_state);
+            });
         };
 
         let device_name = env!("DEVICE_NAME").as_bytes();
@@ -353,4 +287,35 @@ async fn measurement_task(
             }
         }
     }
+}
+
+/// Initialize BLE and set up advertising
+async fn initialize_ble<T>(ble: &mut Ble<T>) -> Result<(), bleps::Error>
+where
+    T: embedded_io_async::Read + embedded_io_async::Write,
+{
+    debug!("Initializing BLE");
+    ble.init().await?;
+
+    debug!("Setting advertising parameters");
+    ble.cmd_set_le_advertising_parameters().await?;
+
+    debug!("Setting advertising data");
+    ble.cmd_set_le_advertising_data(
+        create_advertising_data(&[
+            AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
+            AdStructure::CompleteLocalName(env!("DEVICE_NAME")),
+        ])
+        .unwrap(),
+    )
+    .await?;
+
+    debug!("Setting scan response data");
+    ble.cmd_set_le_scan_rsp_data(Data::new(SCAN_RESPONSE_DATA))
+        .await?;
+
+    debug!("Setting advertising enable");
+    ble.cmd_set_le_advertise_enable(true).await?;
+
+    Ok(())
 }
