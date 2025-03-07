@@ -76,6 +76,8 @@ static MEASUREMENT_TASK_STATUS: Mutex<RefCell<MeasurementTaskStatus>> =
     Mutex::new(RefCell::new(MeasurementTaskStatus::Disabled));
 /// Static tracking if the device was tared/soft tared
 static DEVICE_TARED: Mutex<RefCell<bool>> = Mutex::new(RefCell::new(false));
+/// Static tracking the timestamp at which the measurement task started
+static START_TIME: Mutex<RefCell<u32>> = Mutex::new(RefCell::new(0));
 
 #[esp_hal_embassy::main]
 async fn main(spawner: Spawner) -> ! {
@@ -181,6 +183,8 @@ async fn bt_task(connector: BleConnector<'static>, channel: &'static DataPointCh
                         critical_section::with(|cs| {
                             *MEASUREMENT_TASK_STATUS.borrow_ref_mut(cs) =
                                 MeasurementTaskStatus::Enabled;
+                            *START_TIME.borrow_ref_mut(cs) =
+                                (time::Instant::now().duration_since_epoch()).as_micros() as u32;
                         });
                     } else {
                         critical_section::with(|cs| {
@@ -312,10 +316,14 @@ async fn measurement_task(
     delay: Delay,
 ) {
     let mut load_cell = Hx711::new(data_pin, clock_pin, delay);
-    let start_time = (time::Instant::now().duration_since_epoch()).as_micros() as u32;
 
     loop {
-        let status = critical_section::with(|cs| *MEASUREMENT_TASK_STATUS.borrow_ref(cs));
+        let (status, start_time) = critical_section::with(|cs| {
+            (
+                *MEASUREMENT_TASK_STATUS.borrow_ref(cs),
+                *START_TIME.borrow_ref(cs),
+            )
+        });
         match status {
             MeasurementTaskStatus::Disabled => {
                 Timer::after(Duration::from_millis(10)).await;
