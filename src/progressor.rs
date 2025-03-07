@@ -75,10 +75,10 @@ impl ControlOpCode {
                 device_state.measurement_status = MeasurementTaskStatus::Tare;
             }
             ControlOpCode::StartMeasurement => {
+                device_state.start_time =
+                    (time::Instant::now().duration_since_epoch()).as_micros() as u32;
                 if device_state.tared {
                     device_state.measurement_status = MeasurementTaskStatus::Enabled;
-                    device_state.start_time =
-                        (time::Instant::now().duration_since_epoch()).as_micros() as u32;
                 } else {
                     device_state.measurement_status = MeasurementTaskStatus::SoftTare;
                 }
