@@ -17,6 +17,11 @@ target/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
+# MDBook
+book/book
+.vale.ini
+.vale
+
 # KiCad Gitignore
 # For PCBs designed using KiCad: https://www.kicad.org/
 # Format documentation: https://kicad.org/help/file-formats/
