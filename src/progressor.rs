@@ -9,7 +9,7 @@ use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
 use esp_hal::time;
 
 /// Size of the channel used to send data points
-const DATA_POINT_COMMAND_CHANNEL_SIZE: usize = 50;
+const DATA_POINT_COMMAND_CHANNEL_SIZE: usize = 80;
 /// Channel used to send data points
 pub type DataPointChannel = Channel<NoopRawMutex, DataPoint, DATA_POINT_COMMAND_CHANNEL_SIZE>;
 
