@@ -160,6 +160,7 @@ impl<'d> Hx711<'d> {
         self.wait_for_ready().await;
         let raw_value = self.read_raw() - self.tare_value;
         let calibrated_value = raw_value as f32 * self.calibration.factor - self.calibration.offset;
+        // Convert to kg
         calibrated_value / 1000.0
     }
 }
