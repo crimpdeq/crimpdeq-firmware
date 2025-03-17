@@ -15,5 +15,6 @@ PCB is almost finished but has not been manufactured yet, note that there may be
     - *0.1 kg* between 0 100 kg
 - Working temperature: 0ºC - 40ºC
 - Dimession: 80 mm x 90 mm x 35 mm
+- USB-C rechargeable battery
 
-<!-- Note that specs are based on the crane scale that I use -->
+> ⚠️ **Note**:  Some of this specs come from the crane scale, if you use a different one, those valuse migth change
