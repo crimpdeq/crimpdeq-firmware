@@ -147,7 +147,7 @@ impl<'d> Hx711<'d> {
         const TARING_SAMPLES: usize = 16;
         let mut total: f32 = 0.0;
 
-        for _ in 0..=TARING_SAMPLES {
+        for _ in 0..TARING_SAMPLES {
             self.wait_for_ready().await;
             total += self.read_raw() as f32;
         }
