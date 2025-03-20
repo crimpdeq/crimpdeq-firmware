@@ -1,10 +1,10 @@
 # Crimpdeq
 
-Meet Crimpdeq, an open source alternative to [Tindeq Progressor](https://tindeq.com/product/progressor/), that works with Tindeq and ClimbHarder apps!
+Meet Crimpdeq, an open source alternative to [Tindeq Progressor](https://tindeq.com/product/progressor/), that works with [Tindeq](https://tindeq.com/) and [ClimbHarder](https://climbharder.net/) apps!
 
-The project relies on an ESP32-C3 and uses a HX711 to get the measurements from the crane scale. All the firmware its written in Rust, using `esp-hal` and the anciliary crates.
+The project relies on an ESP32-C3 and uses a HX711 to get the measurements from the crane scale. For more details, see the [Fimrware](./firmware.md) chapter
 
-PCB is almost finished but has not been manufactured yet, note that there may be some differences between the hardware in the PCB and the prototype
+PCB is finished but has not been manufactured yet, hence, not its not tested.
 
 ## Specs
 
@@ -17,4 +17,4 @@ PCB is almost finished but has not been manufactured yet, note that there may be
 - Dimession: 80 mm x 90 mm x 35 mm
 - USB-C rechargeable battery
 
-> ⚠️ **Note**:  Some of this specs come from the crane scale, if you use a different one, those valuse migth change
+> ⚠️ **Note**:  Some of this specs come from the crane scale, if you use a different one, those valuse migth change.

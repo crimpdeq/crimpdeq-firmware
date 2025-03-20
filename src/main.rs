@@ -111,7 +111,7 @@ async fn main(spawner: Spawner) -> ! {
     let channel = mk_static!(DataPointChannel, Channel::new());
 
     // Spawn tasks
-    spawner.spawn(bt_task(connector, channel)).unwrap();
+    spawner.spawn(ble_task(connector, channel)).unwrap();
     spawner
         .spawn(measurement_task(channel, clock_pin, data_pin, delay))
         .unwrap();
@@ -123,7 +123,7 @@ async fn main(spawner: Spawner) -> ! {
 }
 
 #[embassy_executor::task]
-async fn bt_task(connector: BleConnector<'static>, channel: &'static DataPointChannel) {
+async fn ble_task(connector: BleConnector<'static>, channel: &'static DataPointChannel) {
     let now = || time::Instant::now().duration_since_epoch().as_millis();
     let mut ble = Ble::new(connector, now);
     loop {
