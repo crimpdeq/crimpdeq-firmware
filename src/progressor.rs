@@ -73,8 +73,6 @@ pub enum ControlOpCode {
     GetProgressorId = 0x70,
     /// Get the application version
     GetAppVersion = 0x6B,
-    /// Reset the calibration values
-    ResetCalibration = 0x71,
     /// Get the calibration values
     GetCalibration = 0x72,
     /// Adds a calibration point
@@ -117,10 +115,6 @@ impl ControlOpCode {
                 let data_point = DataPoint::from(response);
                 data_point.send(channel);
             }
-            ControlOpCode::ResetCalibration => {
-                unsafe { crate::hx711::CALIBRATION_OFFSET = 0.0 };
-                unsafe { crate::hx711::CALIBRATION_FACTOR = 1.0 };
-            }
             ControlOpCode::GetCalibration => {
                 defmt::info!("GetCalibration: ");
                 defmt::info!(" - Offset: {}", unsafe { crate::hx711::CALIBRATION_OFFSET });
@@ -150,7 +144,6 @@ impl From<u8> for ControlOpCode {
             0x6F => ControlOpCode::SampleBattery,
             0x70 => ControlOpCode::GetProgressorId,
             0x6B => ControlOpCode::GetAppVersion,
-            0x71 => ControlOpCode::ResetCalibration,
             0x72 => ControlOpCode::GetCalibration,
             0x73 => ControlOpCode::AddCalibrationPoint,
             _ => panic!("Invalid OpCode"),
@@ -168,7 +161,6 @@ impl Format for ControlOpCode {
             ControlOpCode::Shutdown => defmt::write!(fmt, "Shutdown"),
             ControlOpCode::SampleBattery => defmt::write!(fmt, "SampleBattery"),
             ControlOpCode::GetProgressorId => defmt::write!(fmt, "GetProgressorId"),
-            ControlOpCode::ResetCalibration => defmt::write!(fmt, "ResetCalibration"),
             ControlOpCode::GetCalibration => defmt::write!(fmt, "GetCalibration"),
             ControlOpCode::AddCalibrationPoint => {
                 defmt::write!(fmt, "AddCalibrationPoint")
