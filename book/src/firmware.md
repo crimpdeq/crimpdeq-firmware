@@ -6,9 +6,9 @@ The firmware application is written in asynchronous Rust (`no_std`) using `esp-h
 To build and upload the firmware to your device, ensure you have the following installed:
 - Rust: See [installation](https://rustup.rs/) for details
 - The `stable` toolchain with the ESP32-C3 target architecture installed:
-```bash
-rustup toolchain install stable --component rust-src --target riscv32imc-unknown-none-elf
-```
+  ```bash
+  rustup toolchain install stable --component rust-src --target riscv32imc-unknown-none-elf
+  ```
 - [`probe-rs`](https://probe.rs/) installed, see [instructions](https://probe.rs/docs/getting-started/installation/)
 
 ## How to Build
