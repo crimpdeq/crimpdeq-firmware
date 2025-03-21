@@ -1,43 +1,32 @@
 # Calibration
+1. Get the hex value of a known weigth:
+   - This known weight should be a value greater than the maximum weight that you are trying to apply. Using something like 80 kg should be enough.
+   1. Go to [Floating Point to Hex Converter](https://gregstoll.com/~gregstoll/floattohex/)
+   2. Use the *Single-precision* floating point converter
+   3. Add your known weigth in the "Float value"
+   4. Press "Convert to hex"
+   5. Save the calculated "Hex value"
+   - Eg: Using a known weigth of 75.3, gives a hex value of 0x4296999a
+2. Download and install the nRF Connect app
+   - [Android](https://play.google.com/store/apps/details?id=no.nordicsemi.android.mcp&hl=es_419)
+   - [iOS](https://apps.apple.com/es/app/nrf-connect-for-mobile/id1054362403)
+   - [Desktop](https://www.nordicsemi.com/Products/Development-tools/nRF-Connect-for-Desktop/Download#infotabs): Windows, Linux and macOS versions are available.
+3. Connect your Crimpdeq with nRF Connect:
+   1. Open the app
+   2. Scan for devices
+   3. It should be listed on the Scanner tab as "Progressor_7125"
+   4. Click "Connect"
+   5. Go to its tab
 
-1. Using an IDE or text editor, open the project
-2. Reset the calibration factor and calibration offset
-   1. Open the `src/hx711.rs` file
-   2. Set `CALIBRATION_FACTOR` value to `1.0`
-   3. Set `CALIBRATION_OFFSET` value to `0.0`
-3. Upload the code with the new values:
-   1. Connect your device via USB-C
-   2. In a terminal, run:
-        ```bash
-        cargo run --release
-        ```
-4. Connect your device to the Tindeq or ClimbHarder app and go to the Live Data/Live View
-5. Measure how much it measures with no weight attached
-6. Measure how much it measures with a known weight attached
-   1. This known weight should be a value greater than the maximum weight that you are trying to apply. Using something like 80 kg should be enough
-7. Calculate the new calibration offset and factor:
-   1. To calibrate a scale sensor using two known points, use the linear equation:
-        ```
-        m = (y_2 - y_1) / (x_2 - x_1)
-        b = y_1 - m * x_1
-        ```
-        Where:
-        - `y1` is the actual weight (kg) with no weigth attached (should be `0`)
-        - `y2` is the actual weight (kg) of the known weight
-        - `x1` is the sensor reading with no weigth attached
-        - `x2` is the sensor reading with known weight
-        - `m` is the calibration factor
-        - `b` is the calibration offset
-8.  Update those values in the code:
-    1. Open the `src/hx711.rs` file
-    2. Update the `CALIBRATION_FACTOR` to the calculated `m` value
-    3. Update the `CALIBRATION_OFFSET` to the calculated `b` value
-    4. Upload the code with the new values:
-        1. Connect your device via USB-C
-        2. In a terminal, run:
-            ```bash
-            cargo run --release
-            ```
-9.  Verify that it now measures properly
+   ![nrF Discovered](./assets/Screenshot_1.png)
+4. Once connected, you should see the different serives and characteristics. Cick the "Unkown Service" to expand its characteristics
+   ![Services](./assets/Screenshot_2.png)
+5. Hang your Crimpdeq with no weigth
+6. Send to the `7e4e1703-1ea6-40c9-9dcc-13d34ffead57` characteristic a `7300000000` value:
+   - You can send commands by pressing the Up Arrow icon on the characteristic and filling the fields as in the screenshot:
+   ![Send weigth](./assets/Screenshot_3.png)
+7. Hang the known weigth to your Crimpdeq
+8. Append `73` to the hex value calculated in step 1: `73<your_hex_result>`
+   - Eg: For 75.3 kg (0x4296999a) that would be: `734296999a`
+9. Send that value to the  `7e4e1703-1ea6-40c9-9dcc-13d34ffead57` characteristic
 
-For an example of calibration, see the following [Pull Request](https://github.com/SergioGasquez/crimpdeq/pull/11).
