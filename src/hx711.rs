@@ -3,17 +3,20 @@
 /// Based on [loadcell] crate.
 ///
 /// [loadcell]: https://crates.io/crates/loadcell
-use defmt::info;
+use defmt::{debug, info};
 use embedded_hal::delay::DelayNs;
 use esp_hal::{
     delay::Delay,
     gpio::{Input, Output},
+    ram,
 };
 
-/// Obtained calibration factor
-const CALIBRATION_FACTOR: f32 = 0.06672;
-/// Obtained calibration offset
-const CALIBRATION_OFFSET: f32 = 52.8916;
+/// Calibration offset
+#[ram(rtc_fast, persistent)]
+pub static mut CALIBRATION_OFFSET: f32 = 0.0;
+/// Calibration factor
+#[ram(rtc_fast, persistent)]
+pub static mut CALIBRATION_FACTOR: f32 = 1.0;
 
 /// The absolute minimum readings. A smaller value should be clamped.
 const HX711_MINIMUM: i32 = -(2i32.saturating_pow(24 - 1));
@@ -43,8 +46,7 @@ struct Calibration {
     /// Calibration factor
     factor: f32,
 }
-
-/// A driver for the HX711 24-bit ADC.
+/// HX711 24-bit ADC driver
 pub struct Hx711<'d> {
     /// Data pin
     data: Input<'d>,
@@ -72,10 +74,23 @@ impl<'d> Hx711<'d> {
             gain_mode: GainMode::A64,
             tare_value: 0,
             calibration: Calibration {
-                offset: CALIBRATION_OFFSET,
-                factor: CALIBRATION_FACTOR,
+                offset: unsafe { CALIBRATION_OFFSET },
+                factor: unsafe { CALIBRATION_FACTOR },
             },
         }
+    }
+
+    pub fn update_calibration(&mut self, offset: f32, factor: f32) {
+        debug!(
+            "Updating calibration: offset: {}, factor: {}",
+            offset, factor
+        );
+        unsafe {
+            CALIBRATION_OFFSET = offset;
+            CALIBRATION_FACTOR = factor;
+        }
+        self.calibration.offset = offset;
+        self.calibration.factor = factor;
     }
 
     /// Reads a single bit from the data pin.

@@ -69,6 +69,7 @@ static DEVICE_STATE: Mutex<RefCell<DeviceState>> = Mutex::new(RefCell::new(Devic
     measurement_status: MeasurementTaskStatus::Disabled,
     tared: false,
     start_time: 0,
+    calibration_points: [-1.0, -1.0],
 }));
 
 #[esp_hal_embassy::main]
@@ -150,7 +151,7 @@ async fn ble_task(connector: BleConnector<'static>, channel: &'static DataPointC
             info!("Control Point Received: {:?}", op_code);
             critical_section::with(|cs| {
                 let mut device_state = DEVICE_STATE.borrow_ref_mut(cs);
-                op_code.process(channel, &mut device_state);
+                op_code.process(data, channel, &mut device_state);
             });
         };
 
@@ -284,6 +285,34 @@ async fn measurement_task(
                 let response = ResponseCode::WeigthtMeasurement(weight, timestamp);
                 let data_point = DataPoint::from(response);
                 data_point.send(channel);
+            }
+            MeasurementTaskStatus::Calibration(weight) => {
+                load_cell.update_calibration(0.0, 1.0);
+                let mut average_value = 0.0;
+                for _ in 0..100 {
+                    average_value += load_cell.read_calibrated().await;
+                }
+                average_value /= 100.0;
+                critical_section::with(|cs| {
+                    let mut state = DEVICE_STATE.borrow_ref_mut(cs);
+                    if state.calibration_points[0] == -1.0 {
+                        state.calibration_points[0] = average_value;
+                    } else {
+                        state.calibration_points[1] = average_value;
+                    }
+                    state.measurement_status = MeasurementTaskStatus::Disabled;
+                    if state.calibration_points[0] != -1.0 && state.calibration_points[1] != -1.0 {
+                        debug!("Calibration points: {:?}", state.calibration_points);
+                        if state.calibration_points[1] == state.calibration_points[0] {
+                            error!("Attempted to divide by zero");
+                            return;
+                        }
+                        let m =
+                            weight / (state.calibration_points[1] - state.calibration_points[0]);
+                        let b = m * state.calibration_points[0];
+                        load_cell.update_calibration(b, m);
+                    }
+                });
             }
         }
     }

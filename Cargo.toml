@@ -5,7 +5,6 @@ license = "MIT OR Apache-2.0"
 name    = "crimpdeq"
 version = "0.1.0"
 
-
 [dependencies]
 bleps = { git = "https://github.com/bjoernQ/bleps", rev = "febf18abc4777b0227ef56b22aa6bcd78947fa24", package = "bleps", features = [
     "async",
@@ -46,6 +45,7 @@ esp-wifi = { version = "0.13.0", default-features = false, features = [
     "esp-alloc",
     "esp32c3",
 ] }
+# num-traits = { version = "0.2.19", default-features = false }
 static_cell = "2.1.0"
 
 [profile.dev]

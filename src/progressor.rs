@@ -32,6 +32,8 @@ pub enum MeasurementTaskStatus {
     Enabled,
     /// Measurements are disabled
     Disabled,
+    /// Device is in calibration mode
+    Calibration(f32),
     /// Taring the scale
     ///
     /// Used in ClimbHarder App
@@ -51,6 +53,8 @@ pub struct DeviceState {
     pub tared: bool,
     /// Start time of the measurement
     pub start_time: u32,
+    /// Calibration points
+    pub calibration_points: [f32; 2],
 }
 
 /// Progressor Commands
@@ -69,11 +73,22 @@ pub enum ControlOpCode {
     GetProgressorId = 0x70,
     /// Get the application version
     GetAppVersion = 0x6B,
+    /// Reset the calibration values
+    ResetCalibration = 0x71,
+    /// Get the calibration values
+    GetCalibration = 0x72,
+    /// Adds a calibration point
+    AddCalibrationPoint = 0x73,
 }
 
 impl ControlOpCode {
     /// Process the control operation
-    pub fn process(self, channel: &'static DataPointChannel, device_state: &mut DeviceState) {
+    pub fn process(
+        self,
+        data: &[u8],
+        channel: &'static DataPointChannel,
+        device_state: &mut DeviceState,
+    ) {
         match self {
             ControlOpCode::TareScale => {
                 device_state.measurement_status = MeasurementTaskStatus::Tare;
@@ -102,6 +117,23 @@ impl ControlOpCode {
                 let data_point = DataPoint::from(response);
                 data_point.send(channel);
             }
+            ControlOpCode::ResetCalibration => {
+                unsafe { crate::hx711::CALIBRATION_OFFSET = 0.0 };
+                unsafe { crate::hx711::CALIBRATION_FACTOR = 1.0 };
+            }
+            ControlOpCode::GetCalibration => {
+                defmt::info!("GetCalibration: ");
+                defmt::info!(" - Offset: {}", unsafe { crate::hx711::CALIBRATION_OFFSET });
+                defmt::info!(" - Factor: {}", unsafe { crate::hx711::CALIBRATION_FACTOR });
+            }
+            ControlOpCode::AddCalibrationPoint => {
+                let weight = f32::from_be_bytes(data[1..5].try_into().unwrap());
+                device_state.measurement_status = MeasurementTaskStatus::Calibration(weight);
+                defmt::debug!(
+                    "Received AddCalibrationPoint command with measurement: {}",
+                    weight
+                );
+            }
             // Currently unimplemented operations
             ControlOpCode::Shutdown | ControlOpCode::SampleBattery => {}
         }
@@ -118,6 +150,9 @@ impl From<u8> for ControlOpCode {
             0x6F => ControlOpCode::SampleBattery,
             0x70 => ControlOpCode::GetProgressorId,
             0x6B => ControlOpCode::GetAppVersion,
+            0x71 => ControlOpCode::ResetCalibration,
+            0x72 => ControlOpCode::GetCalibration,
+            0x73 => ControlOpCode::AddCalibrationPoint,
             _ => panic!("Invalid OpCode"),
         }
     }
@@ -133,6 +168,11 @@ impl Format for ControlOpCode {
             ControlOpCode::Shutdown => defmt::write!(fmt, "Shutdown"),
             ControlOpCode::SampleBattery => defmt::write!(fmt, "SampleBattery"),
             ControlOpCode::GetProgressorId => defmt::write!(fmt, "GetProgressorId"),
+            ControlOpCode::ResetCalibration => defmt::write!(fmt, "ResetCalibration"),
+            ControlOpCode::GetCalibration => defmt::write!(fmt, "GetCalibration"),
+            ControlOpCode::AddCalibrationPoint => {
+                defmt::write!(fmt, "AddCalibrationPoint")
+            }
         }
     }
 }
