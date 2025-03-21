@@ -65,10 +65,13 @@
         ```
         If you dont have git installed on your system, you go to the green Code button and use the "Download ZIP" option.
    3. Upload the firmware to your device:
-        ```bash
-        cargo run --release
-        ```
-        This command requires Rust installed on your system, see [Rust installation](https://www.rust-lang.org/tools/install)
+      1. Download the binary from the desired [GitHub release](https://github.com/SergioGasquez/crimpdeq/releases)
+      2. Open [esp.huhn.me](https://esp.huhn.me/)
+      3. Click Connect and select the serial port of your ESP board
+      4. Upload your .bin file(s)
+      5. Click Program
+
+        See [this blogpost](https://blog.spacehuhn.com/espwebtool) for more details
    4. Check if the calibration values work for your scale:
       1. Connect your device with ClimbHarder or Tindeq apps
       2. Use the "Live View" option
