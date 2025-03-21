@@ -1,32 +1,50 @@
 # Calibration
-1. Get the hex value of a known weigth:
-   - This known weight should be a value greater than the maximum weight that you are trying to apply. Using something like 80 kg should be enough.
-   1. Go to [Floating Point to Hex Converter](https://gregstoll.com/~gregstoll/floattohex/)
-   2. Use the *Single-precision* floating point converter
-   3. Add your known weigth in the "Float value"
-   4. Press "Convert to hex"
-   5. Save the calculated "Hex value"
-   - Eg: Using a known weigth of 75.3, gives a hex value of 0x4296999a
-2. Download and install the nRF Connect app
+
+This guide will help you calibrate your Crimpdeq device to ensure accurate weight measurements. The calibration process involves using a known weight to establish a reference point for the device's measurements.
+
+1. Install nRF Connect: Download and install the nRF Connect app for your platform:
    - [Android](https://play.google.com/store/apps/details?id=no.nordicsemi.android.mcp&hl=es_419)
    - [iOS](https://apps.apple.com/es/app/nrf-connect-for-mobile/id1054362403)
-   - [Desktop](https://www.nordicsemi.com/Products/Development-tools/nRF-Connect-for-Desktop/Download#infotabs): Windows, Linux and macOS versions are available.
-3. Connect your Crimpdeq with nRF Connect:
-   1. Open the app
-   2. Scan for devices
-   3. It should be listed on the Scanner tab as "Progressor_7125"
-   4. Click "Connect"
-   5. Go to its tab
+   - [Desktop](https://www.nordicsemi.com/Products/Development-tools/nRF-Connect-for-Desktop/Download#infotabs) (Windows, Linux, macOS)
+2. Connect nRF Commect with Crimpdeq:
+   1. Launch the nRF Connect app
+   2. Navigate to the Scanner tab
+   3. Look for a device named "Progressor_7125"
+   4. Tap "Connect"
+   5. Once connected, the app will display the device’s services and characteristics.
 
-   ![nrF Discovered](./assets/Screenshot_1.png)
-4. Once connected, you should see the different serives and characteristics. Cick the "Unkown Service" to expand its characteristics
-   ![Services](./assets/Screenshot_2.png)
-5. Hang your Crimpdeq with no weigth
-6. Send to the `7e4e1703-1ea6-40c9-9dcc-13d34ffead57` characteristic a `7300000000` value:
-   - You can send commands by pressing the Up Arrow icon on the characteristic and filling the fields as in the screenshot:
-   ![Send weigth](./assets/Screenshot_3.png)
-7. Hang the known weigth to your Crimpdeq
-8. Append `73` to the hex value calculated in step 1: `73<your_hex_result>`
-   - Eg: For 75.3 kg (0x4296999a) that would be: `734296999a`
-9. Send that value to the  `7e4e1703-1ea6-40c9-9dcc-13d34ffead57` characteristic
+      ![nRF Discovered](./assets/Screenshot_1.png)
+
+3. Locate the Calibration Characteristic
+   1. Expand the "Unknown Service" section
+   2. Look for the characteristic with UUID: `7e4e1703-1ea6-40c9-9dcc-13d34ffead57`
+
+      ![Services](./assets/Screenshot_2.png)
+4. Calculate the Hex Value of your known weigth
+   1. Visit the [Floating Point to Hex Converter](https://gregstoll.com/~gregstoll/floattohex/)
+   2. Use "Single-precision" floating point convertor
+   3. Enter your known weight in the "Float value" field
+   4. Click "Convert to hex"
+   5. Save the resulting "Hex value"
+      **Example:** For a known weight of 75.3 kg, the hex value would be `0x4296999a`
+
+5. Perform Calibration
+   1. Hang your Crimpdeq with no weight attached
+   2. Send the command `7300000000` to the characteristic:
+      - Tap the Up Arrow icon on the characteristic (`7e4e1703-1ea6-40c9-9dcc-13d34ffead57`)
+      - Enter the command as shown in the screenshot
+
+      ![Send weight](./assets/Screenshot_3.png)
+
+   3. Now, attach your known weight to the Crimpdeq
+   4. Prepare the calibration command:
+      - Take your hex value from the previous step
+      - Add `73` at the beginning
+       **Example:** For 75.3 kg (0x4296999a), the command would be: `734296999a`
+   5. Send this new command to the same characteristic (`7e4e1703-1ea6-40c9-9dcc-13d34ffead57`)
+
+## Important Notes
+- The known weight should be greater than the maximum weight you plan to measure
+- Make sure the device is stable and not moving when sending calibration commands
+- The calibration process should be performed in a controlled environment
 
