@@ -24,6 +24,7 @@ embassy-sync = { version = "0.6.2", features = ["defmt"] }
 embassy-time = { version = "0.4.0", features = ["defmt"] }
 embedded-hal = "1.0.0"
 embedded-io-async = "0.6.1"
+embedded-storage = "0.3.1"
 esp-alloc = { version = "0.7.0", features = ["defmt"] }
 esp-backtrace = { version = "0.15.1", features = [
     "defmt",
@@ -38,6 +39,7 @@ esp-hal = { version = "1.0.0-beta.0", features = [
 ] }
 esp-hal-embassy = { version = "0.7.0", features = ["defmt", "esp32c3"] }
 esp-println = { version = "0.13.1", features = ["esp32c3", "log"] }
+esp-storage = { version = "0.5.0", features = ["esp32c3"] }
 esp-wifi = { version = "0.13.0", default-features = false, features = [
     "ble",
     "builtin-scheduler",
@@ -45,8 +47,8 @@ esp-wifi = { version = "0.13.0", default-features = false, features = [
     "esp-alloc",
     "esp32c3",
 ] }
-# num-traits = { version = "0.2.19", default-features = false }
 static_cell = "2.1.0"
+
 
 [profile.dev]
 # Rust debug is too slow.

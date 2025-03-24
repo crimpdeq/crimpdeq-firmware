@@ -169,11 +169,13 @@ dependencies = [
  "embassy-time",
  "embedded-hal 1.0.0",
  "embedded-io-async",
+ "embedded-storage",
  "esp-alloc",
  "esp-backtrace",
  "esp-hal",
  "esp-hal-embassy",
  "esp-println",
+ "esp-storage",
  "esp-wifi",
  "static_cell",
 ]
@@ -661,6 +663,17 @@ dependencies = [
  "document-features",
  "riscv",
  "riscv-rt-macros",
+]
+
+[[package]]
+name = "esp-storage"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e98b5069bd1482fb85f9236f8ea6cd1b5b6b5a1c3c3fb8c938c97ccfbbb051b"
+dependencies = [
+ "critical-section",
+ "embedded-storage",
+ "esp-build",
 ]
 
 [[package]]

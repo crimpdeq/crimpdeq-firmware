@@ -81,6 +81,8 @@ async fn main(spawner: Spawner) -> ! {
     // Allocate 72KB of heap memory
     esp_alloc::heap_allocator!(size: 72 * 1024);
 
+    debug!("{}", Hx711::get_calibration());
+
     // Initialize BLE controller
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     let esp_wifi_ctrl = &*mk_static!(
@@ -287,30 +289,50 @@ async fn measurement_task(
                 data_point.send(channel);
             }
             MeasurementTaskStatus::Calibration(weight) => {
+                // Reset calibration to raw values first
                 load_cell.update_calibration(0.0, 1.0);
+
+                // Take multiple readings and average them for stability
+                const NUM_SAMPLES: usize = 100;
                 let mut average_value = 0.0;
-                for _ in 0..100 {
+                for _ in 0..NUM_SAMPLES {
                     average_value += load_cell.read_calibrated().await;
                 }
-                average_value /= 100.0;
+                average_value /= NUM_SAMPLES as f32;
+
                 critical_section::with(|cs| {
                     let mut state = DEVICE_STATE.borrow_ref_mut(cs);
+
+                    // Store calibration point (either first or second)
                     if state.calibration_points[0] == -1.0 {
                         state.calibration_points[0] = average_value;
                     } else {
                         state.calibration_points[1] = average_value;
                     }
+
+                    // Disable measurement mode after capturing point
                     state.measurement_status = MeasurementTaskStatus::Disabled;
+
+                    // Calculate and apply calibration if we have both points
                     if state.calibration_points[0] != -1.0 && state.calibration_points[1] != -1.0 {
                         debug!("Calibration points: {:?}", state.calibration_points);
-                        if state.calibration_points[1] == state.calibration_points[0] {
-                            error!("Attempted to divide by zero");
+
+                        let (point1, point2) =
+                            (state.calibration_points[0], state.calibration_points[1]);
+
+                        // Check for invalid calibration points
+                        if (point2 - point1).abs() < f32::EPSILON {
+                            error!("Invalid calibration - points are too close together");
                             return;
                         }
-                        let m =
-                            weight / (state.calibration_points[1] - state.calibration_points[0]);
-                        let b = m * state.calibration_points[0];
-                        load_cell.update_calibration(b, m);
+
+                        // Calculate calibration parameters
+                        // m = scale factor (weight/raw_diff)
+                        // b = offset
+                        let scale_factor = weight / (point2 - point1);
+                        let offset = scale_factor * point1;
+
+                        load_cell.update_calibration(offset, scale_factor);
                     }
                 });
             }

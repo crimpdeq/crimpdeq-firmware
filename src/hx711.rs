@@ -3,20 +3,14 @@
 /// Based on [loadcell] crate.
 ///
 /// [loadcell]: https://crates.io/crates/loadcell
-use defmt::{debug, info};
+use defmt::{debug, info, Format};
 use embedded_hal::delay::DelayNs;
+use embedded_storage::{ReadStorage, Storage};
 use esp_hal::{
     delay::Delay,
     gpio::{Input, Output},
-    ram,
 };
-
-/// Calibration offset
-#[ram(rtc_fast, persistent)]
-pub static mut CALIBRATION_OFFSET: f32 = 0.0;
-/// Calibration factor
-#[ram(rtc_fast, persistent)]
-pub static mut CALIBRATION_FACTOR: f32 = 1.0;
+use esp_storage::FlashStorage;
 
 /// The absolute minimum readings. A smaller value should be clamped.
 const HX711_MINIMUM: i32 = -(2i32.saturating_pow(24 - 1));
@@ -24,6 +18,9 @@ const HX711_MINIMUM: i32 = -(2i32.saturating_pow(24 - 1));
 const HX711_MAXIMUM: i32 = 2i32.saturating_pow(24 - 1) - 1;
 /// The default delay time in microseconds for the HX711.
 const HX711_DELAY_TIME_US: u32 = 1;
+
+/// The address of the NVS flash storage.
+const NVS_ADDR: u32 = 0x110000;
 
 /// The HX711 has different amplifier gain settings.
 /// The choice of gain settings is controlled by writing a fixed number of
@@ -40,12 +37,28 @@ pub enum GainMode {
 }
 
 /// Calibration values
-struct Calibration {
+#[derive(Debug, Clone, Copy)]
+pub struct Calibration {
     /// Calibration offset
     offset: f32,
     /// Calibration factor
     factor: f32,
 }
+
+impl Format for Calibration {
+    fn format(&self, fmt: defmt::Formatter) {
+        defmt::write!(
+            fmt,
+            "Calibration {{
+                    - Offset: {}
+                    - Factor: {}
+                }}",
+            self.offset,
+            self.factor
+        );
+    }
+}
+
 /// HX711 24-bit ADC driver
 pub struct Hx711<'d> {
     /// Data pin
@@ -73,24 +86,35 @@ impl<'d> Hx711<'d> {
             delay,
             gain_mode: GainMode::A64,
             tare_value: 0,
-            calibration: Calibration {
-                offset: unsafe { CALIBRATION_OFFSET },
-                factor: unsafe { CALIBRATION_FACTOR },
-            },
+            calibration: Self::get_calibration(),
         }
     }
 
+    /// Update the calibration values.
     pub fn update_calibration(&mut self, offset: f32, factor: f32) {
         debug!(
             "Updating calibration: offset: {}, factor: {}",
             offset, factor
         );
-        unsafe {
-            CALIBRATION_OFFSET = offset;
-            CALIBRATION_FACTOR = factor;
-        }
+
+        let mut flash = FlashStorage::new();
+        let mut bytes = [0u8; 8];
+        bytes[0..4].copy_from_slice(&offset.to_le_bytes());
+        bytes[4..8].copy_from_slice(&factor.to_le_bytes());
+        flash.write(NVS_ADDR, &bytes).unwrap();
+
         self.calibration.offset = offset;
         self.calibration.factor = factor;
+    }
+
+    /// Get the calibration values from the NVS flash storage.
+    pub fn get_calibration() -> Calibration {
+        let mut flash = FlashStorage::new();
+        let mut bytes = [0u8; 8];
+        flash.read(NVS_ADDR, &mut bytes).unwrap();
+        let offset = f32::from_le_bytes(bytes[0..4].try_into().unwrap());
+        let factor = f32::from_le_bytes(bytes[4..8].try_into().unwrap());
+        Calibration { offset, factor }
     }
 
     /// Reads a single bit from the data pin.

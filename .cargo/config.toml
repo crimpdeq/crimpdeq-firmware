@@ -1,8 +1,8 @@
 [target.riscv32imc-unknown-none-elf]
-runner = "probe-rs run --no-location"
+runner = "probe-rs run --chip esp32c3 --no-location --preverify --idf-partition-table partition.csv"
 
 [env]
-DEFMT_LOG             = "off"             # Use "debug/info/error" to enable defmt logging
+DEFMT_LOG             = "off"             # Use "trace/debug/info/error" to enable defmt logging
 DEVICE_ID             = "42"
 DEVICE_NAME           = "Progressor_7125"
 DEVICE_VERSION_NUMBER = "1.2.3.4"
