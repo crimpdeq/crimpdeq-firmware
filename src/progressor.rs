@@ -4,9 +4,11 @@
 ///
 /// [Tindeq API documentation]: https://tindeq.com/progressor_api/
 use bytemuck_derive::{Pod, Zeroable};
-use defmt::{debug, error, trace, Format};
+use defmt::{debug, error, info, trace, Format};
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
 use esp_hal::time;
+
+use crate::hx711::Hx711;
 
 /// Size of the channel used to send data points
 const DATA_POINT_COMMAND_CHANNEL_SIZE: usize = 80;
@@ -116,14 +118,12 @@ impl ControlOpCode {
                 data_point.send(channel);
             }
             ControlOpCode::GetCalibration => {
-                defmt::info!("GetCalibration: ");
-                defmt::info!(" - Offset: {}", unsafe { crate::hx711::CALIBRATION_OFFSET });
-                defmt::info!(" - Factor: {}", unsafe { crate::hx711::CALIBRATION_FACTOR });
+                info!("GetCalibration: {:?}", Hx711::get_calibration());
             }
             ControlOpCode::AddCalibrationPoint => {
                 let weight = f32::from_be_bytes(data[1..5].try_into().unwrap());
                 device_state.measurement_status = MeasurementTaskStatus::Calibration(weight);
-                defmt::debug!(
+                debug!(
                     "Received AddCalibrationPoint command with measurement: {}",
                     weight
                 );
