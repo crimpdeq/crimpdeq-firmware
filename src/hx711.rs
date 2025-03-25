@@ -21,6 +21,11 @@ const HX711_DELAY_TIME_US: u32 = 1;
 
 /// The default address of the NVS flash storage.
 const NVS_ADDR: u32 = 0x9000;
+/// The default calibration values.
+const DEFAULT_CALIBRATION: Calibration = Calibration {
+    offset: 52.8916,
+    factor: 0.06672,
+};
 
 /// The HX711 has different amplifier gain settings.
 /// The choice of gain settings is controlled by writing a fixed number of
@@ -115,6 +120,18 @@ impl<'d> Hx711<'d> {
         let offset = f32::from_le_bytes(bytes[0..4].try_into().unwrap());
         let factor = f32::from_le_bytes(bytes[4..8].try_into().unwrap());
         Calibration { offset, factor }
+    }
+
+    /// Set the default calibration values.
+    pub fn default_calibration(&mut self) {
+        let mut flash = FlashStorage::new();
+        let mut bytes = [0u8; 8];
+        bytes[0..4].copy_from_slice(&DEFAULT_CALIBRATION.offset.to_le_bytes());
+        bytes[4..8].copy_from_slice(&DEFAULT_CALIBRATION.factor.to_le_bytes());
+        flash.write(NVS_ADDR, &bytes).unwrap();
+
+        self.calibration.offset = DEFAULT_CALIBRATION.offset;
+        self.calibration.factor = DEFAULT_CALIBRATION.factor;
     }
 
     /// Reads a single bit from the data pin.

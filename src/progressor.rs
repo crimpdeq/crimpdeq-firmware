@@ -44,6 +44,8 @@ pub enum MeasurementTaskStatus {
     ///
     /// Used in Tindeq App
     SoftTare,
+    /// Resotres default calibration values
+    DefaultCalibration,
 }
 
 /// Device state management
@@ -79,6 +81,8 @@ pub enum ControlOpCode {
     GetCalibration = 0x72,
     /// Adds a calibration point
     AddCalibrationPoint = 0x73,
+    /// Default calibration
+    DefaultCalibration = 0x74,
 }
 
 impl ControlOpCode {
@@ -128,6 +132,9 @@ impl ControlOpCode {
                     weight
                 );
             }
+            ControlOpCode::DefaultCalibration => {
+                device_state.measurement_status = MeasurementTaskStatus::DefaultCalibration;
+            }
             // Currently unimplemented operations
             ControlOpCode::Shutdown | ControlOpCode::SampleBattery => {}
         }
@@ -146,6 +153,7 @@ impl From<u8> for ControlOpCode {
             0x6B => ControlOpCode::GetAppVersion,
             0x72 => ControlOpCode::GetCalibration,
             0x73 => ControlOpCode::AddCalibrationPoint,
+            0x74 => ControlOpCode::DefaultCalibration,
             _ => panic!("Invalid OpCode"),
         }
     }
@@ -165,6 +173,7 @@ impl Format for ControlOpCode {
             ControlOpCode::AddCalibrationPoint => {
                 defmt::write!(fmt, "AddCalibrationPoint")
             }
+            ControlOpCode::DefaultCalibration => defmt::write!(fmt, "DefaultCalibration"),
         }
     }
 }
