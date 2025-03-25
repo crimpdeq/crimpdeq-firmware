@@ -19,8 +19,8 @@ const HX711_MAXIMUM: i32 = 2i32.saturating_pow(24 - 1) - 1;
 /// The default delay time in microseconds for the HX711.
 const HX711_DELAY_TIME_US: u32 = 1;
 
-/// The address of the NVS flash storage.
-const NVS_ADDR: u32 = 0x110000;
+/// The default address of the NVS flash storage.
+const NVS_ADDR: u32 = 0x9000;
 
 /// The HX711 has different amplifier gain settings.
 /// The choice of gain settings is controlled by writing a fixed number of
