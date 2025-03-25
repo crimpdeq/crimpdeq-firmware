@@ -49,7 +49,6 @@ esp-wifi = { version = "0.13.0", default-features = false, features = [
 ] }
 static_cell = "2.1.0"
 
-
 [profile.dev]
 # Rust debug is too slow.
 # For debug builds always builds with some optimization
