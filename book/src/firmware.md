@@ -36,12 +36,11 @@ This method does not require any of the [Prerequisites](#prerequisites), but als
 
 To flash the released binary using your browser:
 1. Download the binary from the desired GitHub release
-2. Open [esp.huhn.me](https://esp.huhn.me/)
-3. Click Connect and select the serial port of your ESP board
-4. Upload your .bin file(s)
+2. Open [Adafruit ESPTool](https://adafruit.github.io/Adafruit_WebSerial_ESPTool/)
+3. Click Connect and select the serial port of your ESP board (should be named `USB/JTAG serial debug unit...`)
+4. Upload your .bin file(s) at offset `0x0`
 5. Click Program
-
-See [this blogpost](https://blog.spacehuhn.com/espwebtool) for more details
+  ![Flashing with ESPTool](./assets/esptool.png)
 
 ## Code Structure
 ### `hx711`
