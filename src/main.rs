@@ -336,6 +336,14 @@ async fn measurement_task(
                     }
                 });
             }
+            MeasurementTaskStatus::DefaultCalibration => {
+                // Reset calibration to default values
+                load_cell.default_calibration();
+                critical_section::with(|cs| {
+                    let mut state = DEVICE_STATE.borrow_ref_mut(cs);
+                    state.measurement_status = MeasurementTaskStatus::Disabled;
+                });
+            }
         }
     }
 }
