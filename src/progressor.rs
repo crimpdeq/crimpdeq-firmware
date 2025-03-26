@@ -195,7 +195,7 @@ impl DataPoint {
     /// Send data point to the channel
     pub fn send(&self, channel: &'static DataPointChannel) {
         debug!("Sending Data Point: {:?}", self);
-        if let Err(_) = channel.try_send(*self) {
+        if channel.try_send(*self).is_err() {
             error!("Failed to send data point: channel full or receiver dropped");
         } else {
             trace!("Sent data point successfully");
