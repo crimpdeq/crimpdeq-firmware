@@ -5,9 +5,9 @@
         - Other ESP32 devices can be used, but you need to figure out how to charge the battery
     - [Battery Holder](https://es.aliexpress.com/item/1005006283753220.html?spm=a2g0o.order_list.order_list_main.5.4779194d1mFZpd&gatewayAdapt=glo2esp)
     - [18650 Battery](https://es.aliexpress.com/item/1005007923191656.html?spm=a2g0o.order_list.order_list_main.11.4779194d1mFZpd&gatewayAdapt=glo2esp)
-      - Other batteries migth also work, as long as they can power the device
+      - Other batteries might also work, as long as they can power the device
     - [Crane Scale](https://es.aliexpress.com/item/1005002719645426.html?spm=a2g0o.order_list.order_list_main.17.4779194d1mFZpd&gatewayAdapt=glo2esp) or [Amazon alternative](https://www.amazon.es/dp/B08133JCM6)
-      - Other crane-scales migth also work
+      - Other crane-scales might also work
     - [HX711](https://www.amazon.es/dp/B0DJX8BPQL)
 2. Disassemble the Crane Scale
     ![Dissasembly](assets/crane_dissasembly.png)
@@ -20,10 +20,10 @@
         ![HX711 Pinout](assets/hx711_pinout.png)
        1. Break the track of `RATE` pin.
           1. I did this by scratching the module with a knife
-       2. Verify with a polymeter that `GND` and the `RATE` pin are not connected anymore
+       2. Verify with a multimeter that `GND` and the `RATE` pin are not connected anymore
             - Make sure that you dont break the next connection
        3. Solder the `RATE` to `VDD` pin
-       4. Verify with a polymeter
+       4. Verify with a multimeter
     2. Connect the Crane Scale to the HX711:
       - Solder the 4 wires of the crane scale to the HX711. Usually the colors are:
 
@@ -34,7 +34,7 @@
         | S+            | S+ (Green)        | Signal positive (from load cell)   |
         | S-            | S- (White)        | Signal negative (from load cell)   |
 
-        - Note that sometimes the `S` pins are refred as `A`
+        - Note that sometimes the `S` pins are referred as `A`
     3. Connect the HX711 to the ESP32-C3-DevKit-RUST-1 devkit:
 
      | **HX711 Pin** | **ESP32-C3 Pin** | **Description**                |
@@ -46,18 +46,18 @@
 
      ![ESP32-C3 Connections](assets/esp32c3_connections.png)
 
-    4. Verify all the connections with a polymeter
+    4. Verify all the connections with a multimeter
 4. Adapt the Scale Case:
    1. Create space for the USB connector
        - I did this by placing the devkit, marking the space that I needed with a pen and then, heating a knife and melting the case.
    2. Install the battery holder:
-      1. Glue, with some silicone, the battery holder, make sure to leave the lid for the original batteries of the scale open, as there is a hole for which you need to intrudece the two wire of the battery holder.
-      2. Solder the positive wire (red) of the battery holder to a switch/button, to turn on/off the device, then, solder the other pin the button/swtich to the `B+` pin of ESP32-C3-DevKit-RUST-1.
+      1. Glue, with some silicone, the battery holder, make sure to leave the lid for the original batteries of the scale open, as there is a hole for which you need to introduce the two wires of the battery holder.
+      2. Solder the positive wire (red) of the battery holder to a switch/button, to turn on/off the device, then, solder the other pin the button/switch to the `B+` pin of ESP32-C3-DevKit-RUST-1.
       3. Solder the negative wire (black) of the battery holder to the `B-` pin of the ESP32-C3-DevKit-RUST-1.
    3. Close the case
       1. Ensure all components are securely installed before closing the case.
    ![Assembly](assets/crane_assembly.png)
-5. Upload the fimrware:
+5. Upload the firmware:
    1. Connect your device with an USB-C
    2. Pull the `crimpdeq` repository:
         ```bash
@@ -75,7 +75,7 @@
    4. Check if the calibration values work for your scale:
       1. Connect your device with ClimbHarder or Tindeq apps
       2. Use the "Live View" option
-      3. Meassure a known weigths and verify that Crimpdeq meassures the rigth value
+      3. Measure a known weight and verify that Crimpdeq measures the right value
          1. If Crimpdeq calibration is off, see the [Calibration chapter](calibration.md)
 
 

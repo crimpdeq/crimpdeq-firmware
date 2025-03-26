@@ -20,7 +20,7 @@ To build and upload the firmware to your device, refer to the [Build and Flash y
 
 ## How to Flash your Device
 ### Build and Flash your Device
-Since we've setted a [custom runner](https://doc.rust-lang.org/cargo/reference/config.html#targettriplerunner) in the `.cargo/config.toml`, you can build and upload the resulting binary to your target using:
+Since we've set a [custom runner](https://doc.rust-lang.org/cargo/reference/config.html#targettriplerunner) in the `.cargo/config.toml`, you can build and upload the resulting binary to your target using:
 ```bash
 cargo run --release
 ```
@@ -53,7 +53,7 @@ The `main.rs` file defines several asynchronous tasks that run concurrently:
   - Initializes the load cell
   - Handles taring and reading measurements from the sensor.
 - `ble_task`:
-  - Initializes BLE, setting all the sevices and charactiteristics.
+  - Initializes BLE, setting all the services and characteristics.
   - Manages BLE communication, processing received commands and sending measurements.
 
-Communication between task occurs via a [`Channel`](https://docs.embassy.dev/embassy-sync/git/default/channel/struct.Channel.html)
+Communication between tasks occurs via a [`Channel`](https://docs.embassy.dev/embassy-sync/git/default/channel/struct.Channel.html)
