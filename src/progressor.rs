@@ -112,7 +112,7 @@ impl ControlOpCode {
             }
             ControlOpCode::GetAppVersion => {
                 let response = ResponseCode::AppVersion(env!("DEVICE_VERSION_NUMBER").as_bytes());
-                debug!("AppVersion: {:?}", response);
+                debug!("AppVersion: {:#x}", response);
                 let data_point = DataPoint::from(response);
                 data_point.send(channel);
             }
