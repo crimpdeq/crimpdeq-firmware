@@ -235,6 +235,7 @@ async fn ble_task(connector: BleConnector<'static>, channel: &'static DataPointC
 
         let mut notifier = || async {
             let data_point = channel.receive().await;
+            debug!("Sending Data Point: {:?}", data_point);
             let data = bytes_of(&data_point);
             NotificationData::new(data_point_handle, data)
         };
@@ -360,14 +361,16 @@ where
     ble.cmd_set_le_advertising_parameters().await?;
 
     debug!("Setting advertising data");
-    let adv_data = create_advertising_data(&[
+    let adv_data = match create_advertising_data(&[
         AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
         AdStructure::CompleteLocalName(env!("DEVICE_NAME")),
-    ])
-    .map_err(|_| {
-        error!("Failed to create advertising data");
-        bleps::Error::Failed(0)
-    })?;
+    ]) {
+        Ok(data) => data,
+        Err(_e) => {
+            error!("Failed to create advertising data");
+            return Err(bleps::Error::Failed(0));
+        }
+    };
 
     ble.cmd_set_le_advertising_data(adv_data).await?;
 

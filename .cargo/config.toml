@@ -15,8 +15,7 @@ DEVICE_NAME           = "Progressor_7125"
 DEVICE_VERSION_NUMBER = "1.1.4"
 
 # esp-wifi config
-# This will allow sending data points up to 80 Hz
-ESP_WIFI_CONFIG_TICK_RATE_HZ = "160"
+ESP_WIFI_CONFIG_TICK_RATE_HZ = "200"
 
 [build]
 rustflags = [
