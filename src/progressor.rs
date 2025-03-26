@@ -117,7 +117,15 @@ impl ControlOpCode {
                 data_point.send(channel);
             }
             ControlOpCode::GetProgressorId => {
-                let response = ResponseCode::ProgressorId(env!("DEVICE_ID").parse().unwrap());
+                let device_id = env!("DEVICE_ID");
+                let id = match device_id.parse::<u64>() {
+                    Ok(id) => id,
+                    Err(_) => {
+                        error!("Failed to parse DEVICE_ID");
+                        0 // Default ID in case of parsing error
+                    }
+                };
+                let response = ResponseCode::ProgressorId(id);
                 debug!("ProgressorId: {:?}", response);
                 let data_point = DataPoint::from(response);
                 data_point.send(channel);
@@ -126,7 +134,19 @@ impl ControlOpCode {
                 info!("GetCalibration: {:?}", Hx711::get_calibration());
             }
             ControlOpCode::AddCalibrationPoint => {
-                let weight = f32::from_be_bytes(data[1..5].try_into().unwrap());
+                if data.len() < 5 {
+                    error!("AddCalibrationPoint: Invalid data length");
+                    return;
+                }
+
+                let weight = match data[1..5].try_into() {
+                    Ok(bytes) => f32::from_be_bytes(bytes),
+                    Err(e) => {
+                        error!("Failed to parse calibration point data: {:?}", e);
+                        return;
+                    }
+                };
+
                 device_state.measurement_status = MeasurementTaskStatus::Calibration(weight);
                 debug!(
                     "Received AddCalibrationPoint command with measurement: {}",
@@ -155,7 +175,10 @@ impl From<u8> for ControlOpCode {
             0x72 => ControlOpCode::GetCalibration,
             0x73 => ControlOpCode::AddCalibrationPoint,
             0x74 => ControlOpCode::DefaultCalibration,
-            _ => panic!("Invalid OpCode"),
+            _ => {
+                error!("Invalid OpCode received: {:#x}", op_code);
+                ControlOpCode::Shutdown
+            }
         }
     }
 }
@@ -194,7 +217,6 @@ pub struct DataPoint {
 impl DataPoint {
     /// Send data point to the channel
     pub fn send(&self, channel: &'static DataPointChannel) {
-        debug!("Sending Data Point: {:?}", self);
         if channel.try_send(*self).is_err() {
             error!("Failed to send data point: channel full or receiver dropped");
         } else {

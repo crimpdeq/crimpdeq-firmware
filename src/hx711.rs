@@ -106,7 +106,10 @@ impl<'d> Hx711<'d> {
         let mut bytes = [0u8; 8];
         bytes[0..4].copy_from_slice(&offset.to_le_bytes());
         bytes[4..8].copy_from_slice(&factor.to_le_bytes());
-        flash.write(NVS_ADDR, &bytes).unwrap();
+        if flash.write(NVS_ADDR, &bytes).is_err() {
+            error!("Failed to write calibration to flash");
+            return;
+        }
 
         self.calibration.offset = offset;
         self.calibration.factor = factor;
@@ -138,7 +141,10 @@ impl<'d> Hx711<'d> {
         let mut bytes = [0u8; 8];
         bytes[0..4].copy_from_slice(&DEFAULT_CALIBRATION.offset.to_le_bytes());
         bytes[4..8].copy_from_slice(&DEFAULT_CALIBRATION.factor.to_le_bytes());
-        flash.write(NVS_ADDR, &bytes).unwrap();
+        if flash.write(NVS_ADDR, &bytes).is_err() {
+            error!("Failed to write default calibration to flash");
+            return;
+        }
 
         self.calibration.offset = DEFAULT_CALIBRATION.offset;
         self.calibration.factor = DEFAULT_CALIBRATION.factor;
