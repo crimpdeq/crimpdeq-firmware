@@ -3,7 +3,7 @@
 /// Based on [loadcell] crate.
 ///
 /// [loadcell]: https://crates.io/crates/loadcell
-use defmt::{debug, info, Format};
+use defmt::{debug, error, info, Format};
 use embedded_hal::delay::DelayNs;
 use embedded_storage::{ReadStorage, Storage};
 use esp_hal::{
@@ -116,14 +116,19 @@ impl<'d> Hx711<'d> {
     pub fn get_calibration() -> Calibration {
         let mut flash = FlashStorage::new();
         let mut bytes = [0u8; 8];
-        flash.read(NVS_ADDR, &mut bytes).unwrap();
+        if flash.read(NVS_ADDR, &mut bytes).is_err() {
+            error!("Failed to read calibration from flash, using default values");
+            return DEFAULT_CALIBRATION;
+        }
+
         let offset = f32::from_le_bytes(bytes[0..4].try_into().unwrap());
         let factor = f32::from_le_bytes(bytes[4..8].try_into().unwrap());
-        // Check if the calibration values different from NaN, use default values if so
+
         if offset.is_nan() || factor.is_nan() {
             info!("Calibration values are NaN, using default values");
             return DEFAULT_CALIBRATION;
         }
+
         Calibration { offset, factor }
     }
 

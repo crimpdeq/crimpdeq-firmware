@@ -129,6 +129,7 @@ async fn main(spawner: Spawner) -> ! {
 async fn ble_task(connector: BleConnector<'static>, channel: &'static DataPointChannel) {
     let now = || time::Instant::now().duration_since_epoch().as_millis();
     let mut ble = Ble::new(connector, now);
+
     loop {
         // Reset device state on reconnection
         critical_section::with(|cs| {
@@ -283,7 +284,7 @@ async fn measurement_task(
                 let weight = load_cell.read_calibrated().await;
                 let timestamp =
                     (time::Instant::now().duration_since_epoch()).as_micros() as u32 - start_time;
-                let response = ResponseCode::WeigthtMeasurement(weight, timestamp);
+                let response = ResponseCode::WeightMeasurement(weight, timestamp);
                 let data_point = DataPoint::from(response);
                 data_point.send(channel);
             }
@@ -359,14 +360,16 @@ where
     ble.cmd_set_le_advertising_parameters().await?;
 
     debug!("Setting advertising data");
-    ble.cmd_set_le_advertising_data(
-        create_advertising_data(&[
-            AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
-            AdStructure::CompleteLocalName(env!("DEVICE_NAME")),
-        ])
-        .unwrap(),
-    )
-    .await?;
+    let adv_data = create_advertising_data(&[
+        AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
+        AdStructure::CompleteLocalName(env!("DEVICE_NAME")),
+    ])
+    .map_err(|e| {
+        error!("Failed to create advertising data: {:?}", e);
+        bleps::Error::Failed(0)
+    })?;
+
+    ble.cmd_set_le_advertising_data(adv_data).await?;
 
     debug!("Setting scan response data");
     ble.cmd_set_le_scan_rsp_data(Data::new(SCAN_RESPONSE_DATA))
