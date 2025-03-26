@@ -2,9 +2,9 @@
 
 Meet Crimpdeq, an open source alternative to [Tindeq Progressor](https://tindeq.com/product/progressor/), that works with [Tindeq](https://tindeq.com/) and [ClimbHarder](https://climbharder.net/) apps!
 
-The project relies on an ESP32-C3 and uses a HX711 to get the measurements from the crane scale. For more details, see the [Firmware](./firmware.md) chapter
+The project relies on an ESP32-C3 and uses a HX711 to get the measurements from the crane scale. For more details, see the [Firmware](./firmware.md) chapter.
 
-PCB is finished but has not been manufactured yet, hence, not its not tested.
+PCB is finished but has not been manufactured yet, hence, it's not tested.
 
 ## Specs
 
@@ -12,7 +12,7 @@ PCB is finished but has not been manufactured yet, hence, not its not tested.
 - Design Load: 1500 N (150 kg) (Full Scale)
 - Precision:
     - *0.05 kg* between 0 and 99 kg
-    - *0.1 kg* between 0 100 kg
+    - *0.1 kg* between 100 kg and above
 - Working temperature: 0ºC - 40ºC
 - Dimension: 80 mm x 90 mm x 35 mm
 - USB-C rechargeable battery

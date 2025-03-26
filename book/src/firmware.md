@@ -16,7 +16,7 @@ To build the firmware, run:
 ```bash
 cargo build --release
 ```
-To build and upload the firmware to your device, refer to the [Build and Flash your Device](#build-and-flash-your-device) section
+To build and upload the firmware to your device, refer to the [Build and Flash your Device](#build-and-flash-your-device) section.
 
 ## How to Flash your Device
 ### Build and Flash your Device
@@ -44,7 +44,7 @@ To flash the released binary using your browser:
 
 ## Code Structure
 ### `hx711`
-This module implements the load cell functionality, its an `async` version of the [loadcell](https://crates.io/crates/loadcell) crate with additional modifications
+This module implements the load cell functionality, it's an `async` version of the [loadcell](https://crates.io/crates/loadcell) crate with additional modifications.
 ### `progressor`
 The `progressor` module implements the [Tindeq API](https://tindeq.com/progressor_api/), enabling BLE (Bluetooth Low Energy) communication between the ESP32-C3 and a smartphone.
 ## Main Tasks
@@ -56,4 +56,4 @@ The `main.rs` file defines several asynchronous tasks that run concurrently:
   - Initializes BLE, setting all the services and characteristics.
   - Manages BLE communication, processing received commands and sending measurements.
 
-Communication between tasks occurs via a [`Channel`](https://docs.embassy.dev/embassy-sync/git/default/channel/struct.Channel.html)
+Communication between tasks occurs via a [`Channel`](https://docs.embassy.dev/embassy-sync/git/default/channel/struct.Channel.html).
