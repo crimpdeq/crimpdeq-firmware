@@ -234,7 +234,6 @@ async fn ble_task(connector: BleConnector<'static>, channel: &'static DataPointC
 
         let mut notifier = || async {
             let data_point = channel.receive().await;
-            debug!("Notifying data point: {:?}", data_point);
             let data = bytes_of(&data_point);
             NotificationData::new(data_point_handle, data)
         };
