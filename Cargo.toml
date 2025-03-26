@@ -6,6 +6,7 @@ name    = "crimpdeq"
 version = "0.1.0"
 
 [dependencies]
+arrayvec = { version = "0.7.6", default-features = false }
 bleps = { git = "https://github.com/bjoernQ/bleps", rev = "febf18abc4777b0227ef56b22aa6bcd78947fa24", package = "bleps", features = [
     "async",
     "defmt",

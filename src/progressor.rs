@@ -3,6 +3,7 @@
 /// See [Tindeq API documentation] for more information
 ///
 /// [Tindeq API documentation]: https://tindeq.com/progressor_api/
+use arrayvec::ArrayVec;
 use bytemuck_derive::{Pod, Zeroable};
 use defmt::{debug, error, info, trace, Format};
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
@@ -237,7 +238,7 @@ pub enum ResponseCode {
     /// Response to [OpCode::GetAppVersion] command
     AppVersion(&'static [u8]),
     /// Response to [OpCode::GetProgressorId] command
-    ProgressorId(u8),
+    ProgressorId(u64),
 }
 
 impl Format for ResponseCode {
@@ -294,7 +295,8 @@ impl ResponseCode {
             }
             ResponseCode::LowPowerWarning => (),
             ResponseCode::ProgressorId(id) => {
-                value[0..1].copy_from_slice(&[*id]);
+                let bytes = to_le_bytes_without_trailing_zeros(*id);
+                value[0..bytes.len()].copy_from_slice(&bytes);
             }
             ResponseCode::AppVersion(version) => {
                 value[0..version.len()].copy_from_slice(version);
@@ -302,4 +304,20 @@ impl ResponseCode {
         };
         value
     }
+}
+
+/// Convert an integer into an array of bytes with any zeros on the MSB side trimmed
+fn to_le_bytes_without_trailing_zeros<T: Into<u64>>(input: T) -> ArrayVec<u8, 8> {
+    let input = input.into();
+    if input == 0 {
+        return ArrayVec::try_from([0_u8].as_slice()).unwrap();
+    }
+    let mut out: ArrayVec<u8, 8> = input
+        .to_le_bytes()
+        .into_iter()
+        .rev()
+        .skip_while(|&i| i == 0)
+        .collect();
+    out.reverse();
+    out
 }

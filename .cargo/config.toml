@@ -5,13 +5,17 @@ bin = "espflash save-image --chip esp32c3 crimpdeq.bin"
 runner = "probe-rs run --chip esp32c3 --no-location --preverify --restore-unwritten"
 
 [env]
-DEFMT_LOG             = "off"             # Use "trace/debug/info/error" to enable defmt logging
-DEVICE_ID             = "42"
+# Defmt Logging
+DEFMT_LOG = "off" # Use "trace/debug/info/error" to enable defmt logging
+
+# Progressor
+CALIBRATION_CURVE     = "FFFFFFFFFFFFFFFF00000000"
+DEVICE_ID             = "201969230396841"
 DEVICE_NAME           = "Progressor_7125"
 DEVICE_VERSION_NUMBER = "1.2.3.4"
 
 # esp-wifi config
-# This will allow sending data points up to 100 Hz
+# This will allow sending data points up to 80 Hz
 ESP_WIFI_CONFIG_TICK_RATE_HZ = "160"
 
 [build]

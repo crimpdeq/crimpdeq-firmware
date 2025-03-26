@@ -120,7 +120,6 @@ impl<'d> Hx711<'d> {
         let offset = f32::from_le_bytes(bytes[0..4].try_into().unwrap());
         let factor = f32::from_le_bytes(bytes[4..8].try_into().unwrap());
         // Check if the calibration values different from NaN, use default values if so
-        // TODO: Test this
         if offset.is_nan() || factor.is_nan() {
             info!("Calibration values are NaN, using default values");
             return DEFAULT_CALIBRATION;
