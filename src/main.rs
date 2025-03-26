@@ -364,8 +364,8 @@ where
         AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
         AdStructure::CompleteLocalName(env!("DEVICE_NAME")),
     ])
-    .map_err(|e| {
-        error!("Failed to create advertising data: {:?}", e);
+    .map_err(|_| {
+        error!("Failed to create advertising data");
         bleps::Error::Failed(0)
     })?;
 
