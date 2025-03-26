@@ -16,7 +16,7 @@ const DATA_POINT_COMMAND_CHANNEL_SIZE: usize = 80;
 /// Channel used to send data points
 pub type DataPointChannel = Channel<NoopRawMutex, DataPoint, DATA_POINT_COMMAND_CHANNEL_SIZE>;
 
-/// DataPoint max data size
+/// Maximum size of the data payload in bytes for any data point
 pub const MAX_PAYLOAD_SIZE: usize = 12;
 
 /// Progressor BLE Scanning Response
@@ -195,8 +195,8 @@ impl DataPoint {
     /// Send data point to the channel
     pub fn send(&self, channel: &'static DataPointChannel) {
         debug!("Sending Data Point: {:?}", self);
-        if channel.try_send(*self).is_err() {
-            error!("Failed to send data point");
+        if let Err(_) = channel.try_send(*self) {
+            error!("Failed to send data point: channel full or receiver dropped");
         } else {
             trace!("Sent data point successfully");
         }
@@ -227,12 +227,12 @@ impl From<ResponseCode> for DataPoint {
 
 #[derive(Copy, Clone, Debug)]
 #[repr(u8)]
-/// Data point resposne code
+/// Data point response code
 pub enum ResponseCode {
     /// Response to [OpCode::SampleBattery] command
     SampleBatteryVoltage(u32),
-    /// Each measurement is sent together with a timestam where the timestam is the number of microseconds since the measurement was started
-    WeigthtMeasurement(f32, u32),
+    /// Each measurement is sent together with a timestamp where the timestamp is the number of microseconds since the measurement was started
+    WeightMeasurement(f32, u32),
     /// Low power warning indicating that the battery is empty. The Progressor will turn itself off after sending this warning
     LowPowerWarning,
     /// Response to [OpCode::GetAppVersion] command
@@ -247,11 +247,11 @@ impl Format for ResponseCode {
             ResponseCode::SampleBatteryVoltage(voltage) => {
                 defmt::write!(fmt, "SampleBatteryVoltage: {}", voltage)
             }
-            ResponseCode::WeigthtMeasurement(weigth, timestamp) => {
+            ResponseCode::WeightMeasurement(weight, timestamp) => {
                 defmt::write!(
                     fmt,
-                    "WeigthtMeasurement: Weigth: {}, Timestamp: {}",
-                    weigth,
+                    "WeightMeasurement: Weight: {}, Timestamp: {}",
+                    weight,
                     timestamp
                 )
             }
@@ -268,7 +268,7 @@ impl ResponseCode {
             ResponseCode::SampleBatteryVoltage(..)
             | ResponseCode::AppVersion(..)
             | ResponseCode::ProgressorId(..) => 0x00,
-            ResponseCode::WeigthtMeasurement(..) => 0x01,
+            ResponseCode::WeightMeasurement(..) => 0x01,
             ResponseCode::LowPowerWarning => 0x04,
         }
     }
@@ -276,7 +276,7 @@ impl ResponseCode {
     fn length(&self) -> u8 {
         match self {
             ResponseCode::SampleBatteryVoltage(..) => 4,
-            ResponseCode::WeigthtMeasurement(..) => 8,
+            ResponseCode::WeightMeasurement(..) => 8,
             ResponseCode::LowPowerWarning => 0,
             ResponseCode::AppVersion(version) => version.len() as u8,
             ResponseCode::ProgressorId(..) => 1,
@@ -289,7 +289,7 @@ impl ResponseCode {
             ResponseCode::SampleBatteryVoltage(voltage) => {
                 value[0..4].copy_from_slice(&voltage.to_le_bytes());
             }
-            ResponseCode::WeigthtMeasurement(weight, timestamp) => {
+            ResponseCode::WeightMeasurement(weight, timestamp) => {
                 value[0..4].copy_from_slice(&weight.to_le_bytes());
                 value[4..8].copy_from_slice(&timestamp.to_le_bytes());
             }
