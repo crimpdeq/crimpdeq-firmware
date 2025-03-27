@@ -1,5 +1,9 @@
 # Crimpdeq
 
+[![Rust CI](https://github.com/SergioGasquez/crimpdeq/actions/workflows/rust_ci.yml/badge.svg)](https://github.com/SergioGasquez/crimpdeq/actions/workflows/rust_ci.yml)
+[![Book CI](https://github.com/SergioGasquez/crimpdeq/actions/workflows/book_ci.yml/badge.svg)](https://github.com/SergioGasquez/crimpdeq/actions/workflows/book_ci.yml)
+[![Documentation](https://img.shields.io/badge/Documentation-Book-orange.svg)](https://sergiogasquez.github.io/crimpdeq/)
+
 Crimpdeq is a bluetooth dynamometer designed for finger training, powered by an [ESP32-C3](https://github.com/esp-rs/esp-rust-board) and a WH-C100 crane scale, with firmware fully written in Rust!
 
 > [!NOTE]
@@ -38,8 +42,22 @@ Here is how the current prototype looks like:
 
 ![Prototype](assets/prototype.png)
 
+## Contributing
+Contributions are welcome! Feel free to:
+- Submit PRs for bug fixes or new features
+- Test and report issues
+- Suggest improvements to documentation
+
 ## Issues
 If you encounter any issue or want to leave any feedback, please [open an issue](https://github.com/SergioGasquez/crimpdeq/issues/new)
+
+## License
+This repository is licensed under either of:
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
+- MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
+
+at your option.
 
 ## Kudos
 - @bjoernQ for helping me during the development and developing the [`bleps`](https://github.com/bjoernQ/bleps) crate, which is fundamental for this project.

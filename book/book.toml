@@ -1,6 +1,7 @@
 [book]
 title        = "Crimpdeq"
 description  = "BLE dynamometer designed for finger training"
+authors      = ["Sergio Gasquez"]
 multilingual = false
 language     = "en"
 
