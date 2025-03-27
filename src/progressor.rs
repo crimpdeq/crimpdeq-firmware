@@ -229,7 +229,7 @@ impl Format for DataPoint {
     fn format(&self, fmt: defmt::Formatter) {
         defmt::write!(
             fmt,
-            "Code: {:?}, Length: {}, Data: {:?}",
+            "Code: {}, Length: {}, Data: {:x}",
             self.response_code,
             self.length,
             &self.value[0..self.length as usize]

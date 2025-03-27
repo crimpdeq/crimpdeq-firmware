@@ -10,7 +10,7 @@ DEFMT_LOG = "off" # Use "trace/debug/info/error" to enable defmt logging
 
 # Progressor
 CALIBRATION_CURVE     = "FFFFFFFFFFFFFFFF00000000"
-DEVICE_ID             = "201969230396841"
+DEVICE_ID             = "249501971913242"
 DEVICE_NAME           = "Progressor_7125"
 DEVICE_VERSION_NUMBER = "1.1.4"
 

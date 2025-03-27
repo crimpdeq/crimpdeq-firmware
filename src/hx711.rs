@@ -211,6 +211,7 @@ impl<'d> Hx711<'d> {
 
     /// Tares the sensor by measuring the average of `num_samples` readings.
     pub async fn tare(&mut self) {
+        debug!("Taring the crane scale");
         if self.calibration.offset == 0.0 && self.calibration.factor == 1.0 {
             info!("Calibration values not set, skipping tare");
             return;

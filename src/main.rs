@@ -285,6 +285,11 @@ async fn measurement_task(
                 let weight = load_cell.read_calibrated().await;
                 let timestamp =
                     (time::Instant::now().duration_since_epoch()).as_micros() as u32 - start_time;
+                debug!(
+                    "Sending measurement: Weight: {}kg, Timestamp: {:?}",
+                    weight,
+                    timestamp as f32 / 1000000.0
+                );
                 let response = ResponseCode::WeightMeasurement(weight, timestamp);
                 let data_point = DataPoint::from(response);
                 data_point.send(channel);
