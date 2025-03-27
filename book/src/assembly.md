@@ -10,7 +10,7 @@
       - Other crane-scales might also work
     - [HX711](https://www.amazon.es/dp/B0DJX8BPQL)
 2. Disassemble the Crane Scale
-    ![Dissasembly](assets/crane_dissasembly.png)
+    ![Disassembly](assets/crane_dissasembly.png)
     1. Desolder the battery connections.
     2. Desolder the four wires of the load cell (`E-`, `S-`, `S+` and `E+`) from the PCB.
         ![Crane connections](assets/crane_connections.png)

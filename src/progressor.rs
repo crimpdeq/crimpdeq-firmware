@@ -41,7 +41,7 @@ pub enum MeasurementTaskStatus {
     ///
     /// Used in ClimbHarder App
     Tare,
-    /// Soft taring the scale (substract the current weight)
+    /// Soft taring the scale (subtract the current weight)
     ///
     /// Used in Tindeq App
     SoftTare,
@@ -72,7 +72,7 @@ pub enum ControlOpCode {
     StopMeasurement = 0x66,
     /// Turn the Progressor off
     Shutdown = 0x6E,
-    /// Measures the battery voltage in milivolts
+    /// Measures the battery voltage in millivolts
     SampleBattery = 0x6F,
     /// Get the Progressor ID
     GetProgressorId = 0x70,

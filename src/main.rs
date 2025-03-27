@@ -160,7 +160,7 @@ async fn ble_task(connector: BleConnector<'static>, channel: &'static DataPointC
 
         let device_name = env!("DEVICE_NAME").as_bytes();
         let appearance = b"[0] Unknown";
-        let ppcp = b"Connection Interval: 50.00ms - 65.00ms, Max Latency:6ms, Suppervision Timeout Multiplier: 400ms";
+        let ppcp = b"Connection Interval: 50.00ms - 65.00ms, Max Latency:6ms, Supervision Timeout Multiplier: 400ms";
         let car = b"Address resolution supported";
         let ccc = b"Notifications and indications disabled";
         let empty_value = b"";
@@ -328,8 +328,6 @@ async fn measurement_task(
                         }
 
                         // Calculate calibration parameters
-                        // m = scale factor (weight/raw_diff)
-                        // b = offset
                         let scale_factor = weight / (point2 - point1);
                         let offset = scale_factor * point1;
 

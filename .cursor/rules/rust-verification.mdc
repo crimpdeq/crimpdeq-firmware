@@ -1,0 +1,11 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+
+# Rust Verification
+
+- Be concise and direct
+- Verify linting and typechecking, and run tests if available
+- After every code change in @hx711.rs, @main.rs and @progressor.rs, run `cargo build` and `cargo clippy`.
