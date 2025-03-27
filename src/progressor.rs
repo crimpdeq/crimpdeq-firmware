@@ -45,7 +45,7 @@ pub enum MeasurementTaskStatus {
     ///
     /// Used in Tindeq App
     SoftTare,
-    /// Resotres default calibration values
+    /// Restores default calibration values
     DefaultCalibration,
 }
 
