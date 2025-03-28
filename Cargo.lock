@@ -70,7 +70,6 @@ checksum = "5c8214115b7bf84099f1309324e63141d4c5d7cc26862f97a0a857dbefe165bd"
 [[package]]
 name = "bleps"
 version = "0.1.0"
-source = "git+https://github.com/bjoernQ/bleps?rev=febf18abc4777b0227ef56b22aa6bcd78947fa24#febf18abc4777b0227ef56b22aa6bcd78947fa24"
 dependencies = [
  "bitfield 0.14.0",
  "bleps-dedup",
@@ -87,7 +86,6 @@ dependencies = [
 [[package]]
 name = "bleps-dedup"
 version = "0.1.0"
-source = "git+https://github.com/bjoernQ/bleps?rev=febf18abc4777b0227ef56b22aa6bcd78947fa24#febf18abc4777b0227ef56b22aa6bcd78947fa24"
 dependencies = [
  "darling",
  "proc-macro-error",
@@ -99,7 +97,6 @@ dependencies = [
 [[package]]
 name = "bleps-macros"
 version = "0.1.0"
-source = "git+https://github.com/bjoernQ/bleps?rev=febf18abc4777b0227ef56b22aa6bcd78947fa24#febf18abc4777b0227ef56b22aa6bcd78947fa24"
 dependencies = [
  "litrs 0.2.3",
  "proc-macro2",
@@ -178,12 +175,12 @@ dependencies = [
  "embedded-io-async",
  "embedded-storage",
  "esp-alloc",
- "esp-backtrace",
  "esp-hal",
  "esp-hal-embassy",
  "esp-println",
  "esp-storage",
  "esp-wifi",
+ "panic-rtt-target",
  "static_cell",
 ]
 
@@ -513,17 +510,6 @@ dependencies = [
  "document-features",
  "enumset",
  "linked_list_allocator",
-]
-
-[[package]]
-name = "esp-backtrace"
-version = "0.15.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e4cd70abe47945c9116972781b5c05277ad855a5f5569fe2afd3e2e61a103cc0"
-dependencies = [
- "defmt",
- "esp-build",
- "esp-println",
 ]
 
 [[package]]
@@ -1064,6 +1050,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "panic-rtt-target"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9a8116ffce1f89818647b84fba66d16cfdf3c0bee3c9320e606588d3e7415ce7"
+dependencies = [
+ "critical-section",
+ "defmt",
+ "portable-atomic",
+ "rtt-target",
+]
+
+[[package]]
 name = "paste"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1232,6 +1230,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.99",
+]
+
+[[package]]
+name = "rtt-target"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4235cd78091930e907d2a510adb0db1369e82668eafa338f109742fa0c83059d"
+dependencies = [
+ "critical-section",
+ "portable-atomic",
+ "ufmt-write",
 ]
 
 [[package]]

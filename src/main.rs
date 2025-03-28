@@ -25,7 +25,6 @@ use embassy_executor::Spawner;
 use embassy_sync::channel::Channel;
 use embassy_time::{Duration, Timer};
 use esp_alloc as _;
-use esp_backtrace as _;
 use esp_hal::{
     clock::CpuClock,
     delay::Delay,
@@ -37,6 +36,8 @@ use esp_hal::{
 };
 use esp_println as _;
 use esp_wifi::{ble::controller::BleConnector, init, EspWifiController};
+// use esp_backtrace as _;
+use panic_rtt_target as _;
 
 use crate::{
     hx711::Hx711,
@@ -235,11 +236,14 @@ async fn ble_task(connector: BleConnector<'static>, channel: &'static DataPointC
 
         let mut notifier = || async {
             let data_point = channel.receive().await;
+            debug!("Channel free: {:?}", channel.free_capacity());
             debug!("Sending Data Point: {:?}", data_point);
             let data = bytes_of(&data_point);
             NotificationData::new(data_point_handle, data)
         };
-        server.run(&mut notifier).await.unwrap();
+        if server.run(&mut notifier).await.is_err() {
+            error!("BLE server error!");
+        }
     }
 }
 
@@ -283,6 +287,8 @@ async fn measurement_task(
             MeasurementTaskStatus::Enabled => {
                 // Perform weight measurement and send data
                 let weight = load_cell.read_calibrated().await;
+                // Timer::after(Duration::from_millis(100)).await;
+                // let weight = 1.0;
                 let timestamp =
                     (time::Instant::now().duration_since_epoch()).as_micros() as u32 - start_time;
                 debug!(

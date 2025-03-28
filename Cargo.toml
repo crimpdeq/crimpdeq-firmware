@@ -7,7 +7,13 @@ version = "0.1.0"
 
 [dependencies]
 arrayvec = { version = "0.7.6", default-features = false }
-bleps = { git = "https://github.com/bjoernQ/bleps", rev = "febf18abc4777b0227ef56b22aa6bcd78947fa24", package = "bleps", features = [
+
+# bleps = { git = "https://github.com/bjoernQ/bleps", rev = "febf18abc4777b0227ef56b22aa6bcd78947fa24", package = "bleps", features = [
+#     "async",
+#     "defmt",
+#     "macros",
+# ] }
+bleps = { path = "/home/sergio/Documents/Espressif/forks/bleps/bleps", package = "bleps", features = [
     "async",
     "defmt",
     "macros",
@@ -27,12 +33,12 @@ embedded-hal = "1.0.0"
 embedded-io-async = "0.6.1"
 embedded-storage = "0.3.1"
 esp-alloc = { version = "0.7.0", features = ["defmt"] }
-esp-backtrace = { version = "0.15.1", features = [
-    "defmt",
-    "esp32c3",
-    "exception-handler",
-    "panic-handler",
-] }
+# esp-backtrace = { version = "0.15.1", features = [
+#     "defmt",
+#     "esp32c3",
+#     "exception-handler",
+#     "panic-handler",
+# ] }
 esp-hal = { version = "1.0.0-beta.0", features = [
     "defmt",
     "esp32c3",
@@ -48,10 +54,11 @@ esp-wifi = { version = "0.13.0", default-features = false, features = [
     "esp-alloc",
     "esp32c3",
 ] }
+panic-rtt-target = { version = "0.2.0", features = ["defmt"] }
 static_cell = "2.1.0"
 
 [profile.dev]
-# Rust debug is too slow.
+# Rust debug is too slow.arrayvec = { version = "0.7.6", default-features = false }
 # For debug builds always builds with some optimization
 opt-level = "s"
 
