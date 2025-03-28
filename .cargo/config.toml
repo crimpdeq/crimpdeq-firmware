@@ -2,7 +2,7 @@
 bin = "espflash save-image --chip esp32c3 crimpdeq.bin"
 
 [target.riscv32imc-unknown-none-elf]
-runner = "probe-rs run --chip esp32c3 --no-location --preverify --restore-unwritten"
+runner = "probe-rs run --chip esp32c3 --no-location --preverify --restore-unwritten --always-print-stacktrace --catch-hardfault"
 
 [env]
 # Defmt Logging
@@ -15,7 +15,7 @@ DEVICE_NAME           = "Progressor_7125"
 DEVICE_VERSION_NUMBER = "1.1.4"
 
 # esp-wifi config
-ESP_WIFI_CONFIG_TICK_RATE_HZ = "200"
+ESP_WIFI_CONFIG_TICK_RATE_HZ = "500"
 
 [build]
 rustflags = [
