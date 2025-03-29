@@ -301,7 +301,7 @@ impl ResponseCode {
             ResponseCode::WeightMeasurement(..) => 8,
             ResponseCode::LowPowerWarning => 0,
             ResponseCode::AppVersion(version) => version.len() as u8,
-            ResponseCode::ProgressorId(..) => 1,
+            ResponseCode::ProgressorId(..) => 6,
         }
     }
 
