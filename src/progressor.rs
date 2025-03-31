@@ -1,3 +1,5 @@
+use core::cell::UnsafeCell;
+
 /// Progressor data types
 ///
 /// See [Tindeq API documentation] for more information
@@ -8,6 +10,7 @@ use bytemuck_derive::{Pod, Zeroable};
 use defmt::{debug, error, info, trace, Format};
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
 use esp_hal::time;
+use trouble_host::types::gatt_traits::{AsGatt, FromGatt, FromGattError};
 
 use crate::hx711::Hx711;
 
@@ -185,6 +188,7 @@ impl ControlOpCode {
                 device_state.reset_calibration();
             }
             ControlOpCode::SampleBattery => {
+                // Hardcoded for now
                 let voltage = 3300;
                 let response = ResponseCode::SampleBatteryVoltage(voltage);
                 debug!("SampleBattery: {:?}", response);
@@ -244,6 +248,69 @@ pub struct DataPoint {
     pub(crate) length: u8,
     /// Data
     pub(crate) value: [u8; MAX_PAYLOAD_SIZE],
+}
+
+// Thread-local buffer for preparing GATT data
+struct SyncUnsafeCell<T>(UnsafeCell<T>);
+
+unsafe impl<T> Sync for SyncUnsafeCell<T> {}
+
+static GATT_BUFFER: SyncUnsafeCell<[u8; MAX_PAYLOAD_SIZE + 2]> =
+    SyncUnsafeCell(UnsafeCell::new([0; MAX_PAYLOAD_SIZE + 2]));
+
+impl AsGatt for DataPoint {
+    const MIN_SIZE: usize = 3;
+    const MAX_SIZE: usize = MAX_PAYLOAD_SIZE + 2; // +2 for response_code and length
+
+    fn as_gatt(&self) -> &[u8] {
+        // SAFETY: We're using an UnsafeCell to provide interior mutability.
+        // This is safe as long as we ensure this function is not called concurrently from multiple threads.
+        // In our embedded context with no preemptive threading, this should be fine.
+        let buffer = unsafe { &mut *GATT_BUFFER.0.get() };
+
+        // Populate the buffer with our data
+        buffer[0] = self.response_code;
+        buffer[1] = self.length;
+
+        // Copy the value bytes
+        if self.length > 0 {
+            buffer[2..2 + self.length as usize]
+                .copy_from_slice(&self.value[..self.length as usize]);
+        }
+        let result =
+            unsafe { core::slice::from_raw_parts(buffer.as_ptr(), 2 + self.length as usize) };
+        trace!("AsGatt: {:?}", result);
+        result
+    }
+}
+
+impl FromGatt for DataPoint {
+    fn from_gatt(data: &[u8]) -> Result<Self, FromGattError> {
+        Ok(DataPoint::new(data[0], data[1], &data[2..]))
+    }
+}
+
+// // Implement FixedGattValue for DataPoint
+// impl FixedGattValue for DataPoint {
+//     const SIZE: usize = 10;
+
+//     fn from_gatt(data: &[u8]) -> Result<Self, FromGattError> {
+//         Ok(DataPoint::new(data[0], data[1], &data[2..]))
+//     }
+
+//     fn as_gatt(&self) -> &[u8] {
+//         &self.value[..self.length as usize]
+//     }
+// }
+
+impl Default for DataPoint {
+    fn default() -> Self {
+        Self {
+            response_code: 0,
+            length: 0,
+            value: [0; MAX_PAYLOAD_SIZE],
+        }
+    }
 }
 
 impl DataPoint {
