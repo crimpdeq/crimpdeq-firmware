@@ -85,7 +85,7 @@ impl Format for Calibration {
     fn format(&self, fmt: defmt::Formatter) {
         defmt::write!(
             fmt,
-            "Calibration {{
+            "{{
                     - Offset: {}
                     - Factor: {}
                 }}",
@@ -200,7 +200,10 @@ impl<'d> Hx711<'d> {
     pub fn get_calibration() -> Result<Calibration, Hx711Error> {
         // Get the calibration values from the NVS flash storage.
         match Self::read_from_flash() {
-            Ok(calibration) => Ok(calibration),
+            Ok(calibration) => {
+                info!("Read Calibration values: {:?}", calibration);
+                Ok(calibration)
+            }
             Err(Hx711Error::InvalidCalibration) => {
                 info!("Using default calibration values");
                 Ok(DEFAULT_CALIBRATION)
