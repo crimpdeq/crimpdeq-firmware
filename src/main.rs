@@ -195,10 +195,10 @@ async fn measurement_task(
                     // For soft tare, immediately enable measurements
                     if status == MeasurementTaskStatus::SoftTare {
                         state.measurement_status = MeasurementTaskStatus::Enabled;
+                    } else {
+                        state.measurement_status = MeasurementTaskStatus::Disabled;
                     }
                 });
-
-                Timer::after(Duration::from_millis(10)).await;
             }
             MeasurementTaskStatus::Enabled => {
                 send_weight_measurement(&mut load_cell, start_time, channel).await;
@@ -215,22 +215,19 @@ async fn measurement_task(
                         state.calibration_points[0] = calibration_point;
                     } else {
                         state.calibration_points[1] = calibration_point;
-                    }
 
-                    // Disable measurement mode after capturing point
-                    state.measurement_status = MeasurementTaskStatus::Disabled;
-
-                    // Calculate and apply calibration if we have both points
-                    if state.calibration_points[0] != -1.0 && state.calibration_points[1] != -1.0 {
-                        let success =
-                            load_cell.apply_two_point_calibration(state.calibration_points, weight);
-                        if !success {
+                        // Calculate and apply calibration if we have both points
+                        if !load_cell.apply_two_point_calibration(state.calibration_points, weight)
+                        {
                             error!(
                                 "Failed to apply calibration points: {:?}",
                                 state.calibration_points
                             );
                         }
                     }
+
+                    // Disable measurement mode after capturing point
+                    state.measurement_status = MeasurementTaskStatus::Disabled;
                 });
             }
             MeasurementTaskStatus::DefaultCalibration => {
@@ -246,6 +243,11 @@ async fn measurement_task(
                     state.measurement_status = MeasurementTaskStatus::Disabled;
                 });
             }
+        }
+
+        // Add a short delay to prevent tight loops
+        if status == MeasurementTaskStatus::Disabled {
+            Timer::after(Duration::from_millis(10)).await;
         }
     }
 }
@@ -287,43 +289,41 @@ async fn gatt_events_task(
                 break;
             }
             GattConnectionEvent::Gatt { event } => {
-                match event {
-                    Ok(event) => {
-                        if let GattEvent::Write(write_event) = &event {
-                            if write_event.handle() == control_point.handle {
-                                // Process control point command
-                                let cmd_data = write_event.data();
-                                let cmd_type = cmd_data[0]; // Command type
-                                let op_code = ControlOpCode::from(cmd_type);
-                                info!("Control Point Received: {:?}", op_code);
+                if let Ok(event) = event {
+                    // Handle write events to the control point
+                    if let GattEvent::Write(write_event) = &event {
+                        if write_event.handle() == control_point.handle {
+                            let cmd_data = write_event.data();
+                            let op_code = ControlOpCode::from(cmd_data[0]);
+                            info!("Control Point Received: {:?}", op_code);
 
-                                critical_section::with(|cs| {
-                                    let mut device_state = DEVICE_STATE.borrow_ref_mut(cs);
-                                    op_code.process(cmd_data, channel, &mut device_state);
-                                });
-                            }
-                        }
-
-                        // This step is also performed at drop(), but writing it explicitly is necessary
-                        // in order to ensure reply is sent.
-                        match event.accept() {
-                            Ok(reply) => {
-                                reply.send().await;
-                            }
-                            Err(_e) => warn!("Error sending response"),
+                            critical_section::with(|cs| {
+                                let mut device_state = DEVICE_STATE.borrow_ref_mut(cs);
+                                op_code.process(cmd_data, channel, &mut device_state);
+                            });
                         }
                     }
-                    Err(_e) => warn!("Error processing event"),
+
+                    // Ensure reply is sent
+                    if let Ok(reply) = event.accept() {
+                        reply.send().await;
+                    } else {
+                        warn!("Error sending response");
+                    }
+                } else {
+                    warn!("Error processing event");
                 }
             }
             _ => {}
         }
     }
+
     info!("BLE task finished");
     critical_section::with(|cs| {
         let mut device_state = DEVICE_STATE.borrow_ref_mut(cs);
         device_state.stop_measurement();
     });
+
     Ok(())
 }
 

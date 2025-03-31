@@ -260,24 +260,17 @@ impl AsGatt for DataPoint {
     const MAX_SIZE: usize = MAX_PAYLOAD_SIZE + 2; // +2 for response_code and length
 
     fn as_gatt(&self) -> &[u8] {
-        // SAFETY: We're using an UnsafeCell to provide interior mutability.
-        // This is safe as long as we ensure this function is not called concurrently from multiple threads.
-        // In our embedded context with no preemptive threading, this should be fine.
         let buffer = unsafe { &mut *GATT_BUFFER.0.get() };
 
-        // Populate the buffer with our data
         buffer[0] = self.response_code;
         buffer[1] = self.length;
 
-        // Copy the value bytes
         if self.length > 0 {
             buffer[2..2 + self.length as usize]
                 .copy_from_slice(&self.value[..self.length as usize]);
         }
-        let result =
-            unsafe { core::slice::from_raw_parts(buffer.as_ptr(), 2 + self.length as usize) };
-        trace!("AsGatt: {:?}", result);
-        result
+
+        unsafe { core::slice::from_raw_parts(buffer.as_ptr(), 2 + self.length as usize) }
     }
 }
 
@@ -286,19 +279,6 @@ impl FromGatt for DataPoint {
         Ok(DataPoint::new(data[0], data[1], &data[2..]))
     }
 }
-
-// // Implement FixedGattValue for DataPoint
-// impl FixedGattValue for DataPoint {
-//     const SIZE: usize = 10;
-
-//     fn from_gatt(data: &[u8]) -> Result<Self, FromGattError> {
-//         Ok(DataPoint::new(data[0], data[1], &data[2..]))
-//     }
-
-//     fn as_gatt(&self) -> &[u8] {
-//         &self.value[..self.length as usize]
-//     }
-// }
 
 impl Default for DataPoint {
     fn default() -> Self {

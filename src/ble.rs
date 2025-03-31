@@ -87,25 +87,23 @@ fn advertising_data(name: &[u8]) -> Result<ArrayVec<u8, 27>, ()> {
     const FLAG_LE_GENERAL_DISC_MODE: u8 = 0x02;
     const FLAG_BR_EDR_NOT_SUPPORTED: u8 = 0x04;
 
-    let mut advertising_data: ArrayVec<u8, 27> = ArrayVec::new();
-
-    // Add flags
-    advertising_data.push(2); // Length of flag field (1 byte for type + 1 byte for value)
-    advertising_data.push(AD_TYPE_FLAGS);
-    advertising_data.push(FLAG_LE_GENERAL_DISC_MODE | FLAG_BR_EDR_NOT_SUPPORTED);
-
-    // Add name (1 byte for type + name bytes)
-    let name_len = name.len();
-    if name_len > 24 {
-        // Maximum allowed size (27 - 3 bytes used for flags)
+    // Validate name length
+    if name.len() > 24 {
+        // Max allowed (27 - 3 bytes for flags)
         return Err(());
     }
 
-    advertising_data.push(name_len as u8 + 1);
-    advertising_data.push(AD_TYPE_COMPLETE_LOCAL_NAME);
-    advertising_data
-        .try_extend_from_slice(name)
-        .map_err(|_| ())?;
+    let mut adv_data: ArrayVec<u8, 27> = ArrayVec::new();
 
-    Ok(advertising_data)
+    // Add flags (length=2, type, flags)
+    adv_data.push(2);
+    adv_data.push(AD_TYPE_FLAGS);
+    adv_data.push(FLAG_LE_GENERAL_DISC_MODE | FLAG_BR_EDR_NOT_SUPPORTED);
+
+    // Add name (length=name.len()+1, type, name bytes)
+    adv_data.push(name.len() as u8 + 1);
+    adv_data.push(AD_TYPE_COMPLETE_LOCAL_NAME);
+    adv_data.try_extend_from_slice(name).map_err(|_| ())?;
+
+    Ok(adv_data)
 }
