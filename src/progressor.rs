@@ -150,13 +150,10 @@ impl ControlOpCode {
             }
             ControlOpCode::GetProgressorId => {
                 let device_id = env!("DEVICE_ID");
-                let id = match device_id.parse::<u64>() {
-                    Ok(id) => id,
-                    Err(_) => {
-                        error!("Failed to parse DEVICE_ID");
-                        0 // Default ID in case of parsing error
-                    }
-                };
+                let mut id = 0;
+                for (i, c) in device_id.chars().enumerate() {
+                    id |= (c as u64) << (i * 8);
+                }
                 let response = ResponseCode::ProgressorId(id);
                 debug!("ProgressorId: {:?}", response);
                 DataPoint::from(response).send(channel);
