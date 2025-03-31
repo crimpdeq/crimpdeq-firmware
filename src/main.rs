@@ -339,10 +339,6 @@ async fn data_processing_task(
         let data_point = channel.receive().await;
         debug!("Sending Data Point: {:?}", data_point);
 
-        // // Convert DataPoint to a fixed-size array that matches the characteristic type
-        // let data_bytes: [u8; core::mem::size_of::<DataPoint>()] = cast(data_point);
-        // info!("Data Point: {:?}", data_bytes);
-
         // Send notification with the data packet
         if let Err(e) = data_point_handle.notify(conn, &data_point).await {
             info!("Error sending Data Point: {:?}", defmt::Debug2Format(&e));
