@@ -28,7 +28,7 @@ pub const L2CAP_CHANNELS_MAX: usize = 2; // Signal + att
 pub const L2CAP_MTU: usize = 255;
 
 /// Maximum size of the data payload in bytes for any data point
-pub const MAX_PAYLOAD_SIZE: usize = 12;
+pub const MAX_PAYLOAD_SIZE: usize = 10;
 
 /// Progressor BLE Scanning Response
 pub const SCAN_RESPONSE_DATA: &[u8] = &[
