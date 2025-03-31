@@ -184,8 +184,14 @@ impl ControlOpCode {
             ControlOpCode::DefaultCalibration => {
                 device_state.reset_calibration();
             }
+            ControlOpCode::SampleBattery => {
+                let voltage = 3300;
+                let response = ResponseCode::SampleBatteryVoltage(voltage);
+                debug!("SampleBattery: {:?}", response);
+                DataPoint::from(response).send(channel);
+            }
             // Currently unimplemented operations
-            ControlOpCode::Shutdown | ControlOpCode::SampleBattery => {}
+            ControlOpCode::Shutdown => {}
         }
     }
 }
