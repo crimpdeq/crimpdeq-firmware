@@ -41,6 +41,7 @@ use crate::{
         CONNECTIONS_MAX,
         L2CAP_CHANNELS_MAX,
         L2CAP_MTU,
+        MAX_PAYLOAD_SIZE,
         SCAN_RESPONSE_DATA,
     },
 };
@@ -56,11 +57,11 @@ pub struct Server {
 struct ProgressorService {
     /// Data Point - for receiving data from the Progressor
     #[characteristic(uuid = "7e4e1702-1ea6-40c9-9dcc-13d34ffead57", notify)]
-    pub data_point: [u8; 14], // Buffer for received data
+    pub data_point: [u8; MAX_PAYLOAD_SIZE], // Buffer for received data
 
     /// Control Point - for sending commands to the Progressor
     #[characteristic(uuid = "7e4e1703-1ea6-40c9-9dcc-13d34ffead57", write)]
-    pub control_point: [u8; 14], // Buffer for command data
+    pub control_point: [u8; MAX_PAYLOAD_SIZE], // Buffer for command data
 }
 
 pub mod hx711;
@@ -342,6 +343,10 @@ async fn gatt_events_task(
         }
     }
     info!("BLE task finished");
+    critical_section::with(|cs| {
+        let mut device_state = DEVICE_STATE.borrow_ref_mut(cs);
+        device_state.stop_measurement();
+    });
     Ok(())
 }
 
@@ -358,14 +363,14 @@ async fn data_processing_task(
         debug!("Sending Data Point: {:?}", data_point);
 
         // Create a properly sized array for notification
-        let mut notification_data = [0u8; 14];
+        let mut notification_data = [0u8; MAX_PAYLOAD_SIZE];
 
         // Use bytes_of to get the raw bytes from the DataPoint struct
         let data_bytes = bytes_of(&data_point);
 
         // Copy the data to a properly sized array
-        notification_data[..data_bytes.len().min(14)]
-            .copy_from_slice(&data_bytes[..data_bytes.len().min(14)]);
+        notification_data[..data_bytes.len().min(MAX_PAYLOAD_SIZE)]
+            .copy_from_slice(&data_bytes[..data_bytes.len().min(MAX_PAYLOAD_SIZE)]);
 
         // Send notification with the data packet
         if let Err(e) = data_point_handle.notify(conn, &notification_data).await {

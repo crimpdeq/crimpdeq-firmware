@@ -9,14 +9,14 @@ version = "0.1.0"
 arrayvec = { version = "0.7.6", default-features = false }
 bt-hci = { version = "0.2.1" }
 bytemuck = "1.22.0"
-bytemuck_derive = "1.8.1"
+bytemuck_derive = "1.9.3"
 critical-section = "1.2.0"
 defmt = "0.3.10"
-defmt-rtt = "0.4.1"
+defmt-rtt = "0.4.2"
 embassy-executor = { version = "0.7.0", features = [
     "defmt",
     "task-arena-size-20480",
-    # Trouble uses task-arena-size-32768
+    # TODO: Trouble uses task-arena-size-32768?
 ] }
 embassy-futures = "0.1.1"
 embassy-sync = { version = "0.6.2", features = ["defmt"] }
