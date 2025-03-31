@@ -5,7 +5,7 @@ use trouble_host::{
     prelude::*,
 };
 
-use crate::progressor::MAX_PAYLOAD_SIZE;
+use crate::progressor::{DataPoint, MAX_PAYLOAD_SIZE};
 
 /// Max number of connections
 pub const CONNECTIONS_MAX: usize = 1;
@@ -47,7 +47,7 @@ pub struct Server {
 pub struct ProgressorService {
     /// Data Point - for receiving data from the Progressor
     #[characteristic(uuid = "7e4e1702-1ea6-40c9-9dcc-13d34ffead57", notify)]
-    pub data_point: [u8; MAX_PAYLOAD_SIZE], // Buffer for received data
+    pub data_point: DataPoint,
 
     /// Control Point - for sending commands to the Progressor
     #[characteristic(

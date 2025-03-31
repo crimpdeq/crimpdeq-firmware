@@ -4,7 +4,7 @@
 use core::cell::RefCell;
 
 use bt_hci::controller::ExternalController;
-use bytemuck::bytes_of;
+// use bytemuck::cast;
 use critical_section::Mutex;
 use defmt::{debug, error, info, warn};
 use defmt_rtt as _;
@@ -37,7 +37,6 @@ use crate::{
         DeviceState,
         MeasurementTaskStatus,
         ResponseCode,
-        MAX_PAYLOAD_SIZE,
     },
 };
 
@@ -340,18 +339,12 @@ async fn data_processing_task(
         let data_point = channel.receive().await;
         debug!("Sending Data Point: {:?}", data_point);
 
-        // Create a properly sized array for notification
-        let mut notification_data = [0u8; MAX_PAYLOAD_SIZE];
-
-        // Use bytes_of to get the raw bytes from the DataPoint struct
-        let data_bytes = bytes_of(&data_point);
-
-        // Copy the data to a properly sized array
-        notification_data[..data_bytes.len().min(MAX_PAYLOAD_SIZE)]
-            .copy_from_slice(&data_bytes[..data_bytes.len().min(MAX_PAYLOAD_SIZE)]);
+        // // Convert DataPoint to a fixed-size array that matches the characteristic type
+        // let data_bytes: [u8; core::mem::size_of::<DataPoint>()] = cast(data_point);
+        // info!("Data Point: {:?}", data_bytes);
 
         // Send notification with the data packet
-        if let Err(e) = data_point_handle.notify(conn, &notification_data).await {
+        if let Err(e) = data_point_handle.notify(conn, &data_point).await {
             info!("Error sending Data Point: {:?}", defmt::Debug2Format(&e));
             break;
         }
