@@ -11,22 +11,36 @@ use esp_hal::time;
 
 use crate::hx711::Hx711;
 
+//----------------------------------------------------------------------------
+// Constants and Types
+//----------------------------------------------------------------------------
+
 /// Size of the channel used to send data points
 const DATA_POINT_COMMAND_CHANNEL_SIZE: usize = 80;
 /// Channel used to send data points
 pub type DataPointChannel = Channel<NoopRawMutex, DataPoint, DATA_POINT_COMMAND_CHANNEL_SIZE>;
+
+/// Max number of connections
+pub const CONNECTIONS_MAX: usize = 1;
+/// Max number of L2CAP channels.
+pub const L2CAP_CHANNELS_MAX: usize = 2; // Signal + att
+/// Size of L2CAP packets
+pub const L2CAP_MTU: usize = 255;
 
 /// Maximum size of the data payload in bytes for any data point
 pub const MAX_PAYLOAD_SIZE: usize = 12;
 
 /// Progressor BLE Scanning Response
 pub const SCAN_RESPONSE_DATA: &[u8] = &[
-    18, // Length
-    17, // AD_FLAG_LE_LIMITED_DISCOVERABLE | SIMUL_LE_BR_HOST
-    0x07, 0x57, 0xad, 0xfe, 0x4f, 0xd3, 0x13, 0xcc, 0x9d, 0xc9, 0x40, 0xa6, 0x1e, 0x01, 0x17, 0x4e,
+    17,   // AD_FLAG_LE_LIMITED_DISCOVERABLE | SIMUL_LE_BR_HOST
+    7_u8, // BLE_GAP_AD_TYPE_128BIT_SERVICE_UUID_COMPLETE
+    0x57, 0xad, 0xfe, 0x4f, 0xd3, 0x13, 0xcc, 0x9d, 0xc9, 0x40, 0xa6, 0x1e, 0x01, 0x17, 0x4e,
     0x7e, //UUID
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Padding
 ];
+
+//----------------------------------------------------------------------------
+// Device State Management
+//----------------------------------------------------------------------------
 
 /// Status of the weight measurement task
 #[derive(Copy, Debug, Clone, PartialEq)]
@@ -35,15 +49,11 @@ pub enum MeasurementTaskStatus {
     Enabled,
     /// Measurements are disabled
     Disabled,
-    /// Device is in calibration mode
+    /// Device is in calibration mode with target weight
     Calibration(f32),
-    /// Taring the scale
-    ///
-    /// Used in ClimbHarder App
+    /// Taring the scale (used in ClimbHarder App)
     Tare,
-    /// Soft taring the scale (subtract the current weight)
-    ///
-    /// Used in Tindeq App
+    /// Soft taring the scale - subtract the current weight (used in Tindeq App)
     SoftTare,
     /// Restores default calibration values
     DefaultCalibration,
@@ -56,13 +66,66 @@ pub struct DeviceState {
     pub measurement_status: MeasurementTaskStatus,
     /// Tared status
     pub tared: bool,
-    /// Start time of the measurement
+    /// Start time of the measurement in microseconds
     pub start_time: u32,
-    /// Calibration points
+    /// Calibration points [point1, point2]
     pub calibration_points: [f32; 2],
 }
 
+impl Default for DeviceState {
+    fn default() -> Self {
+        Self {
+            measurement_status: MeasurementTaskStatus::Disabled,
+            tared: false,
+            start_time: 0,
+            calibration_points: [-1.0, -1.0],
+        }
+    }
+}
+
+impl DeviceState {
+    /// Create a new device state with default values
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Start a measurement
+    pub fn start_measurement(&mut self) {
+        self.start_time = (time::Instant::now().duration_since_epoch()).as_micros() as u32;
+        if self.tared {
+            self.measurement_status = MeasurementTaskStatus::Enabled;
+        } else {
+            self.measurement_status = MeasurementTaskStatus::SoftTare;
+        }
+    }
+
+    /// Stop the current measurement
+    pub fn stop_measurement(&mut self) {
+        self.measurement_status = MeasurementTaskStatus::Disabled;
+    }
+
+    /// Start taring process
+    pub fn tare(&mut self) {
+        self.measurement_status = MeasurementTaskStatus::Tare;
+    }
+
+    /// Set calibration mode with the given weight
+    pub fn calibrate(&mut self, weight: f32) {
+        self.measurement_status = MeasurementTaskStatus::Calibration(weight);
+    }
+
+    /// Reset to default calibration
+    pub fn reset_calibration(&mut self) {
+        self.measurement_status = MeasurementTaskStatus::DefaultCalibration;
+    }
+}
+
+//----------------------------------------------------------------------------
+// Control OpCode handling
+//----------------------------------------------------------------------------
+
 /// Progressor Commands
+#[derive(Debug, Clone, Copy)]
 pub enum ControlOpCode {
     /// Command used to zero weight when no load is applied
     TareScale = 0x64,
@@ -96,25 +159,18 @@ impl ControlOpCode {
     ) {
         match self {
             ControlOpCode::TareScale => {
-                device_state.measurement_status = MeasurementTaskStatus::Tare;
+                device_state.tare();
             }
             ControlOpCode::StartMeasurement => {
-                device_state.start_time =
-                    (time::Instant::now().duration_since_epoch()).as_micros() as u32;
-                if device_state.tared {
-                    device_state.measurement_status = MeasurementTaskStatus::Enabled;
-                } else {
-                    device_state.measurement_status = MeasurementTaskStatus::SoftTare;
-                }
+                device_state.start_measurement();
             }
             ControlOpCode::StopMeasurement => {
-                device_state.measurement_status = MeasurementTaskStatus::Disabled;
+                device_state.stop_measurement();
             }
             ControlOpCode::GetAppVersion => {
                 let response = ResponseCode::AppVersion(env!("DEVICE_VERSION_NUMBER").as_bytes());
                 debug!("AppVersion: {:#x}", response);
-                let data_point = DataPoint::from(response);
-                data_point.send(channel);
+                DataPoint::from(response).send(channel);
             }
             ControlOpCode::GetProgressorId => {
                 let device_id = env!("DEVICE_ID");
@@ -127,11 +183,10 @@ impl ControlOpCode {
                 };
                 let response = ResponseCode::ProgressorId(id);
                 debug!("ProgressorId: {:?}", response);
-                let data_point = DataPoint::from(response);
-                data_point.send(channel);
+                DataPoint::from(response).send(channel);
             }
             ControlOpCode::GetCalibration => {
-                info!("GetCalibration: {:?}", Hx711::get_calibration());
+                info!("GetCalibration: {:?}", Hx711::get_calibration().unwrap());
             }
             ControlOpCode::AddCalibrationPoint => {
                 if data.len() < 5 {
@@ -147,14 +202,14 @@ impl ControlOpCode {
                     }
                 };
 
-                device_state.measurement_status = MeasurementTaskStatus::Calibration(weight);
+                device_state.calibrate(weight);
                 debug!(
                     "Received AddCalibrationPoint command with measurement: {}",
                     weight
                 );
             }
             ControlOpCode::DefaultCalibration => {
-                device_state.measurement_status = MeasurementTaskStatus::DefaultCalibration;
+                device_state.reset_calibration();
             }
             // Currently unimplemented operations
             ControlOpCode::Shutdown | ControlOpCode::SampleBattery => {}
@@ -194,27 +249,44 @@ impl Format for ControlOpCode {
             ControlOpCode::SampleBattery => defmt::write!(fmt, "SampleBattery"),
             ControlOpCode::GetProgressorId => defmt::write!(fmt, "GetProgressorId"),
             ControlOpCode::GetCalibration => defmt::write!(fmt, "GetCalibration"),
-            ControlOpCode::AddCalibrationPoint => {
-                defmt::write!(fmt, "AddCalibrationPoint")
-            }
+            ControlOpCode::AddCalibrationPoint => defmt::write!(fmt, "AddCalibrationPoint"),
             ControlOpCode::DefaultCalibration => defmt::write!(fmt, "DefaultCalibration"),
         }
     }
 }
 
+//----------------------------------------------------------------------------
+// Data Point and Response Code handling
+//----------------------------------------------------------------------------
+
+/// Data point characteristic is where we receive data from the Progressor
 #[derive(Copy, Debug, Clone, Pod, Zeroable)]
 #[repr(C, packed)]
-/// Data point characteristic is where we receive data from the Progressor
 pub struct DataPoint {
     /// Response code
-    response_code: u8,
+    pub(crate) response_code: u8,
     /// Length of the data
-    length: u8,
+    pub(crate) length: u8,
     /// Data
-    value: [u8; MAX_PAYLOAD_SIZE],
+    pub(crate) value: [u8; MAX_PAYLOAD_SIZE],
 }
 
 impl DataPoint {
+    /// Create a new data point with specified response code, length and data
+    pub fn new(response_code: u8, length: u8, data: &[u8]) -> Self {
+        let mut value = [0; MAX_PAYLOAD_SIZE];
+        let len = length.min(MAX_PAYLOAD_SIZE as u8) as usize;
+        if len > 0 && !data.is_empty() {
+            value[..len.min(data.len())].copy_from_slice(&data[..len.min(data.len())]);
+        }
+
+        Self {
+            response_code,
+            length,
+            value,
+        }
+    }
+
     /// Send data point to the channel
     pub fn send(&self, channel: &'static DataPointChannel) {
         if channel.try_send(*self).is_err() {
@@ -222,6 +294,11 @@ impl DataPoint {
         } else {
             trace!("Sent data point successfully");
         }
+    }
+
+    /// Create a weight measurement data point
+    pub fn weight_measurement(weight: f32, timestamp: u32) -> Self {
+        Self::from(ResponseCode::WeightMeasurement(weight, timestamp))
     }
 }
 
@@ -240,26 +317,26 @@ impl Format for DataPoint {
 impl From<ResponseCode> for DataPoint {
     fn from(response_code: ResponseCode) -> Self {
         Self {
+            response_code: response_code.op_code(),
             length: response_code.length(),
             value: response_code.value(),
-            response_code: response_code.op_code(),
         }
     }
 }
 
+/// Data point response code
 #[derive(Copy, Clone, Debug)]
 #[repr(u8)]
-/// Data point response code
 pub enum ResponseCode {
-    /// Response to [OpCode::SampleBattery] command
+    /// Response to battery voltage sampling command
     SampleBatteryVoltage(u32),
     /// Each measurement is sent together with a timestamp where the timestamp is the number of microseconds since the measurement was started
     WeightMeasurement(f32, u32),
     /// Low power warning indicating that the battery is empty. The Progressor will turn itself off after sending this warning
     LowPowerWarning,
-    /// Response to [OpCode::GetAppVersion] command
+    /// Response to app version request command
     AppVersion(&'static [u8]),
-    /// Response to [OpCode::GetProgressorId] command
+    /// Response to progressor ID request command
     ProgressorId(u64),
 }
 
@@ -285,6 +362,7 @@ impl Format for ResponseCode {
 }
 
 impl ResponseCode {
+    /// Get the operation code for this response
     fn op_code(&self) -> u8 {
         match self {
             ResponseCode::SampleBatteryVoltage(..)
@@ -295,6 +373,7 @@ impl ResponseCode {
         }
     }
 
+    /// Get the length of the data for this response
     fn length(&self) -> u8 {
         match self {
             ResponseCode::SampleBatteryVoltage(..) => 4,
@@ -305,6 +384,7 @@ impl ResponseCode {
         }
     }
 
+    /// Get the value bytes for this response
     fn value(&self) -> [u8; MAX_PAYLOAD_SIZE] {
         let mut value = [0; MAX_PAYLOAD_SIZE];
         match self {
@@ -328,12 +408,17 @@ impl ResponseCode {
     }
 }
 
+//----------------------------------------------------------------------------
+// Utility Functions
+//----------------------------------------------------------------------------
+
 /// Convert an integer into an array of bytes with any zeros on the MSB side trimmed
 fn to_le_bytes_without_trailing_zeros<T: Into<u64>>(input: T) -> ArrayVec<u8, 8> {
     let input = input.into();
     if input == 0 {
         return ArrayVec::try_from([0_u8].as_slice()).unwrap();
     }
+
     let mut out: ArrayVec<u8, 8> = input
         .to_le_bytes()
         .into_iter()

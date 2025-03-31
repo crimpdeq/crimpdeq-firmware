@@ -3,25 +3,14 @@
 
 use core::cell::RefCell;
 
-use bleps::{
-    ad_structure::{
-        create_advertising_data,
-        AdStructure,
-        BR_EDR_NOT_SUPPORTED,
-        LE_GENERAL_DISCOVERABLE,
-    },
-    async_attribute_server::AttributeServer,
-    asynch::Ble,
-    attribute_server::NotificationData,
-    gatt,
-    no_rng::NoRng,
-    Data,
-};
+use arrayvec::ArrayVec;
+use bt_hci::controller::ExternalController;
 use bytemuck::bytes_of;
 use critical_section::Mutex;
-use defmt::{debug, error, info};
+use defmt::{debug, error, info, warn};
 use defmt_rtt as _;
 use embassy_executor::Spawner;
+use embassy_futures::{join::join, select::select};
 use embassy_sync::channel::Channel;
 use embassy_time::{Duration, Timer};
 use esp_alloc as _;
@@ -38,6 +27,7 @@ use esp_println as _;
 use esp_wifi::{ble::controller::BleConnector, init, EspWifiController};
 // use esp_backtrace as _;
 use panic_rtt_target as _;
+use trouble_host::prelude::*;
 
 use crate::{
     hx711::Hx711,
@@ -48,9 +38,30 @@ use crate::{
         DeviceState,
         MeasurementTaskStatus,
         ResponseCode,
+        CONNECTIONS_MAX,
+        L2CAP_CHANNELS_MAX,
+        L2CAP_MTU,
         SCAN_RESPONSE_DATA,
     },
 };
+
+// GATT Server definition
+#[gatt_server]
+pub struct Server {
+    progressor: ProgressorService,
+}
+
+/// Tindeq Progressor service
+#[gatt_service(uuid = "7e4e1701-1ea6-40c9-9dcc-13d34ffead57")]
+struct ProgressorService {
+    /// Data Point - for receiving data from the Progressor
+    #[characteristic(uuid = "7e4e1702-1ea6-40c9-9dcc-13d34ffead57", notify)]
+    pub data_point: [u8; 14], // Buffer for received data
+
+    /// Control Point - for sending commands to the Progressor
+    #[characteristic(uuid = "7e4e1703-1ea6-40c9-9dcc-13d34ffead57", write)]
+    pub control_point: [u8; 14], // Buffer for command data
+}
 
 pub mod hx711;
 pub mod progressor;
@@ -108,17 +119,56 @@ async fn main(spawner: Spawner) -> ! {
     let systimer = SystemTimer::new(peripherals.SYSTIMER);
     esp_hal_embassy::init(systimer.alarm0);
 
-    // BLE Connector
-    let connector = BleConnector::new(esp_wifi_ctrl, peripherals.BT);
+    // Initialize BLE
+    let bluetooth = peripherals.BT;
+    let connector = BleConnector::new(esp_wifi_ctrl, bluetooth);
+    let controller: ExternalController<_, 20> = ExternalController::new(connector);
+    let address: Address = Address::random([0x0a, 0x0a, 0x0a, 0x0a, 0x0a, 0x0a]);
+    // info!("Our address = {}", address);
+    let mut resources: HostResources<CONNECTIONS_MAX, L2CAP_CHANNELS_MAX, L2CAP_MTU> =
+        HostResources::new();
+    let stack = trouble_host::new(controller, &mut resources).set_random_address(address);
+    let Host {
+        mut peripheral,
+        runner,
+        ..
+    } = stack.build();
+
+    info!("Starting advertising and GATT service");
+    let server = Server::new_with_config(GapConfig::Peripheral(PeripheralConfig {
+        name: "Progressor",
+        appearance: &appearance::UNKNOWN,
+    }))
+    .unwrap();
 
     // Data point channel for communication between tasks
     let channel = mk_static!(DataPointChannel, Channel::new());
 
     // Spawn tasks
-    spawner.spawn(ble_task(connector, channel)).unwrap();
     spawner
         .spawn(measurement_task(channel, clock_pin, data_pin, delay))
         .unwrap();
+
+    let _ = join(ble_task(runner), async {
+        loop {
+            match advertise(&mut peripheral, &server).await {
+                Ok(conn) => {
+                    // run until any task ends (usually because the connection has been closed),
+                    // then return to advertising state.
+                    select(
+                        gatt_events_task(&server, &conn, channel),
+                        data_processing_task(&server, &conn, channel),
+                    )
+                    .await;
+                }
+                Err(e) => {
+                    let e = defmt::Debug2Format(&e);
+                    panic!("BLE error: {:?}", e);
+                }
+            }
+        }
+    })
+    .await;
 
     // Idle loop
     loop {
@@ -126,123 +176,11 @@ async fn main(spawner: Spawner) -> ! {
     }
 }
 
-#[embassy_executor::task]
-async fn ble_task(connector: BleConnector<'static>, channel: &'static DataPointChannel) {
-    let now = || time::Instant::now().duration_since_epoch().as_millis();
-    let mut ble = Ble::new(connector, now);
-
+async fn ble_task<C: Controller>(mut runner: Runner<'_, C>) {
     loop {
-        // Reset device state on reconnection
-        critical_section::with(|cs| {
-            let mut state = DEVICE_STATE.borrow_ref_mut(cs);
-            state.measurement_status = MeasurementTaskStatus::Disabled;
-            state.tared = false;
-        });
-        info!("Starting BLE");
-
-        // Initialize BLE and advertising
-        if let Err(e) = initialize_ble(&mut ble).await {
-            error!("BLE initialization failed: {:?}", e);
-            Timer::after(Duration::from_secs(1)).await;
-            continue;
-        }
-
-        info!("Started advertising");
-
-        // Service/Characteristics Read/Write methods
-        let mut control_point_write = |_, data: &[u8]| {
-            let op_code = ControlOpCode::from(data[0]);
-            info!("Control Point Received: {:?}", op_code);
-            critical_section::with(|cs| {
-                let mut device_state = DEVICE_STATE.borrow_ref_mut(cs);
-                op_code.process(data, channel, &mut device_state);
-            });
-        };
-
-        let device_name = env!("DEVICE_NAME").as_bytes();
-        let appearance = b"[0] Unknown";
-        let ppcp = b"Connection Interval: 50.00ms - 65.00ms, Max Latency:6ms, Supervision Timeout Multiplier: 400ms";
-        let car = b"Address resolution supported";
-        let ccc = b"Notifications and indications disabled";
-        let empty_value = b"";
-        gatt!([
-            service {
-                // Generic Access
-                uuid: "1800",
-                characteristics: [
-                    // Device Name
-                    characteristic {
-                        uuid: "2a00",
-                        value: device_name,
-                    },
-                    // Appearance
-                    characteristic {
-                        uuid: "2a01",
-                        value: appearance,
-                    },
-                    // Peripheral Preferred Connection Parameters
-                    characteristic {
-                        uuid: "2a04",
-                        value: ppcp,
-                    },
-                    // Central Address Resolution
-                    characteristic {
-                        uuid: "2aa6",
-                        value: car,
-                    },
-                ],
-            },
-            // Generic Attribute
-            service {
-                uuid: "1801",
-                characteristics: [
-                    // Service Changed
-                    characteristic {
-                        uuid: "2a05",
-                        value: empty_value,
-                        descriptors: [
-                            // Client Characteristic Configuration
-                            descriptor {
-                                uuid: "2902",
-                                value: ccc,
-                            },
-                        ],
-                    },
-                ],
-            },
-            service {
-                // Progressor Primary
-                uuid: "7e4e1701-1ea6-40c9-9dcc-13d34ffead57",
-                characteristics: [
-                    // Progressor Data Point
-                    characteristic {
-                        name: "data_point",
-                        uuid: "7e4e1702-1ea6-40c9-9dcc-13d34ffead57",
-                        notify: true,
-                        value: empty_value,
-                    },
-                    /// Progressor Control Point
-                    characteristic {
-                        name: "control_point",
-                        uuid: "7e4e1703-1ea6-40c9-9dcc-13d34ffead57",
-                        write: control_point_write,
-                    },
-                ],
-            },
-        ]);
-
-        let mut rng = NoRng;
-        let mut server = AttributeServer::new(&mut ble, &mut gatt_attributes, &mut rng);
-
-        let mut notifier = || async {
-            let data_point = channel.receive().await;
-            debug!("Channel free: {:?}", channel.free_capacity());
-            debug!("Sending Data Point: {:?}", data_point);
-            let data = bytes_of(&data_point);
-            NotificationData::new(data_point_handle, data)
-        };
-        if server.run(&mut notifier).await.is_err() {
-            error!("BLE server error!");
+        if let Err(e) = runner.run().await {
+            let e = defmt::Debug2Format(&e);
+            panic!("BLE error: {:?}", e);
         }
     }
 }
@@ -285,41 +223,20 @@ async fn measurement_task(
                 Timer::after(Duration::from_millis(10)).await;
             }
             MeasurementTaskStatus::Enabled => {
-                // Perform weight measurement and send data
-                let weight = load_cell.read_calibrated().await;
-                // Timer::after(Duration::from_millis(100)).await;
-                // let weight = 1.0;
-                let timestamp =
-                    (time::Instant::now().duration_since_epoch()).as_micros() as u32 - start_time;
-                debug!(
-                    "Sending measurement: Weight: {}kg, Timestamp: {:?}",
-                    weight,
-                    timestamp as f32 / 1000000.0
-                );
-                let response = ResponseCode::WeightMeasurement(weight, timestamp);
-                let data_point = DataPoint::from(response);
-                data_point.send(channel);
+                send_weight_measurement(&mut load_cell, start_time, channel).await;
             }
             MeasurementTaskStatus::Calibration(weight) => {
-                // Reset calibration to raw values first
-                load_cell.update_calibration(0.0, 1.0);
-
-                // Take multiple readings and average them for stability
-                const NUM_SAMPLES: usize = 100;
-                let mut average_value = 0.0;
-                for _ in 0..NUM_SAMPLES {
-                    average_value += load_cell.read_calibrated().await;
-                }
-                average_value /= NUM_SAMPLES as f32;
+                // Use the load cell's own calibration method to collect a calibration point
+                let calibration_point = load_cell.perform_calibration(weight).await;
 
                 critical_section::with(|cs| {
                     let mut state = DEVICE_STATE.borrow_ref_mut(cs);
 
                     // Store calibration point (either first or second)
                     if state.calibration_points[0] == -1.0 {
-                        state.calibration_points[0] = average_value;
+                        state.calibration_points[0] = calibration_point;
                     } else {
-                        state.calibration_points[1] = average_value;
+                        state.calibration_points[1] = calibration_point;
                     }
 
                     // Disable measurement mode after capturing point
@@ -327,28 +244,25 @@ async fn measurement_task(
 
                     // Calculate and apply calibration if we have both points
                     if state.calibration_points[0] != -1.0 && state.calibration_points[1] != -1.0 {
-                        debug!("Calibration points: {:?}", state.calibration_points);
-
-                        let (point1, point2) =
-                            (state.calibration_points[0], state.calibration_points[1]);
-
-                        // Check for invalid calibration points
-                        if (point2 - point1).abs() < f32::EPSILON {
-                            error!("Invalid calibration - points are too close together");
-                            return;
+                        let success =
+                            load_cell.apply_two_point_calibration(state.calibration_points, weight);
+                        if !success {
+                            error!(
+                                "Failed to apply calibration points: {:?}",
+                                state.calibration_points
+                            );
                         }
-
-                        // Calculate calibration parameters
-                        let scale_factor = weight / (point2 - point1);
-                        let offset = scale_factor * point1;
-
-                        load_cell.update_calibration(offset, scale_factor);
                     }
                 });
             }
             MeasurementTaskStatus::DefaultCalibration => {
                 // Reset calibration to default values
-                load_cell.default_calibration();
+                if let Err(e) = load_cell.default_calibration() {
+                    error!(
+                        "Error applying default calibration: {:?}",
+                        defmt::Debug2Format(&e)
+                    );
+                }
                 critical_section::with(|cs| {
                     let mut state = DEVICE_STATE.borrow_ref_mut(cs);
                     state.measurement_status = MeasurementTaskStatus::Disabled;
@@ -358,37 +272,157 @@ async fn measurement_task(
     }
 }
 
-/// Initialize BLE and set up advertising
-async fn initialize_ble<T>(ble: &mut Ble<T>) -> Result<(), bleps::Error>
-where
-    T: embedded_io_async::Read + embedded_io_async::Write,
-{
-    debug!("Initializing BLE");
-    ble.init().await?;
+/// Send a weight measurement data point with current timestamp
+async fn send_weight_measurement(
+    load_cell: &mut Hx711<'_>,
+    start_time: u32,
+    channel: &'static DataPointChannel,
+) {
+    let weight = load_cell.read_calibrated().await;
+    let timestamp = (time::Instant::now().duration_since_epoch()).as_micros() as u32 - start_time;
 
-    debug!("Setting advertising parameters");
-    ble.cmd_set_le_advertising_parameters().await?;
+    debug!(
+        "Sending measurement: Weight: {}kg, Timestamp: {:?}",
+        weight,
+        timestamp as f32 / 1000000.0
+    );
 
-    debug!("Setting advertising data");
-    let adv_data = match create_advertising_data(&[
-        AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
-        AdStructure::CompleteLocalName(env!("DEVICE_NAME")),
-    ]) {
-        Ok(data) => data,
-        Err(_e) => {
-            error!("Failed to create advertising data");
-            return Err(bleps::Error::Failed(0));
+    let response = ResponseCode::WeightMeasurement(weight, timestamp);
+    let data_point = DataPoint::from(response);
+    data_point.send(channel);
+}
+
+/// Stream Events until the connection closes.
+///
+/// This function will handle the GATT events and process them.
+/// This is how we interact with read and write requests.
+async fn gatt_events_task(
+    server: &Server<'_>,
+    conn: &GattConnection<'_, '_>,
+    channel: &'static DataPointChannel,
+) -> Result<(), Error> {
+    let control_point = server.progressor.control_point;
+    loop {
+        match conn.next().await {
+            GattConnectionEvent::Disconnected { reason } => {
+                info!("Device disconnected: {:?}", reason);
+                break;
+            }
+            GattConnectionEvent::Gatt { event } => {
+                match event {
+                    Ok(event) => {
+                        if let GattEvent::Write(write_event) = &event {
+                            if write_event.handle() == control_point.handle {
+                                // Process control point command
+                                let cmd_data = write_event.data();
+                                let cmd_type = cmd_data[0]; // Command type
+                                let op_code = ControlOpCode::from(cmd_type);
+                                info!("Control Point Received: {:?}", op_code);
+
+                                critical_section::with(|cs| {
+                                    let mut device_state = DEVICE_STATE.borrow_ref_mut(cs);
+                                    op_code.process(cmd_data, channel, &mut device_state);
+                                });
+                            }
+                        }
+
+                        // This step is also performed at drop(), but writing it explicitly is necessary
+                        // in order to ensure reply is sent.
+                        match event.accept() {
+                            Ok(reply) => {
+                                reply.send().await;
+                            }
+                            Err(_e) => warn!("Error sending response"),
+                        }
+                    }
+                    Err(_e) => warn!("Error processing event"),
+                }
+            }
+            _ => {}
         }
-    };
-
-    ble.cmd_set_le_advertising_data(adv_data).await?;
-
-    debug!("Setting scan response data");
-    ble.cmd_set_le_scan_rsp_data(Data::new(SCAN_RESPONSE_DATA))
-        .await?;
-
-    debug!("Setting advertising enable");
-    ble.cmd_set_le_advertise_enable(true).await?;
-
+    }
+    info!("BLE task finished");
     Ok(())
+}
+
+/// Process data and send notifications to the client
+async fn data_processing_task(
+    server: &Server<'_>,
+    conn: &GattConnection<'_, '_>,
+    channel: &'static DataPointChannel,
+) {
+    let data_point_handle = server.progressor.data_point;
+
+    loop {
+        let data_point = channel.receive().await;
+        debug!("Sending Data Point: {:?}", data_point);
+
+        // Create a properly sized array for notification
+        let mut notification_data = [0u8; 14];
+
+        // Use bytes_of to get the raw bytes from the DataPoint struct
+        let data_bytes = bytes_of(&data_point);
+
+        // Copy the data to a properly sized array
+        notification_data[..data_bytes.len().min(14)]
+            .copy_from_slice(&data_bytes[..data_bytes.len().min(14)]);
+
+        // Send notification with the data packet
+        if let Err(e) = data_point_handle.notify(conn, &notification_data).await {
+            info!("Error sending Data Point: {:?}", defmt::Debug2Format(&e));
+            break;
+        }
+    }
+}
+
+/// Create an advertiser to use to connect to a BLE Central, and wait for it to connect.
+pub async fn advertise<'a, 'b, C: Controller>(
+    peripheral: &mut Peripheral<'a, C>,
+    server: &'b Server<'_>,
+) -> Result<GattConnection<'a, 'b>, BleHostError<C::Error>> {
+    let advertising_data = advertising_data(b"Progressor_7125").expect("Valid advertising data");
+
+    debug!("Advertising BLE");
+    let advertiser = peripheral
+        .advertise(
+            &Default::default(),
+            Advertisement::ConnectableScannableUndirected {
+                adv_data: advertising_data.as_slice(),
+                scan_data: SCAN_RESPONSE_DATA,
+            },
+        )
+        .await?;
+    let conn = advertiser.accept().await?.with_attribute_server(server)?;
+    info!("BLE connection established");
+    Ok(conn)
+}
+
+fn advertising_data(name: &[u8]) -> Result<ArrayVec<u8, 27>, ()> {
+    // BLE AD type and flag constants
+    const AD_TYPE_FLAGS: u8 = 0x01;
+    const AD_TYPE_COMPLETE_LOCAL_NAME: u8 = 0x09;
+    const FLAG_LE_GENERAL_DISC_MODE: u8 = 0x02;
+    const FLAG_BR_EDR_NOT_SUPPORTED: u8 = 0x04;
+
+    let mut advertising_data: ArrayVec<u8, 27> = ArrayVec::new();
+
+    // Add flags
+    advertising_data.push(2); // Length of flag field (1 byte for type + 1 byte for value)
+    advertising_data.push(AD_TYPE_FLAGS);
+    advertising_data.push(FLAG_LE_GENERAL_DISC_MODE | FLAG_BR_EDR_NOT_SUPPORTED);
+
+    // Add name (1 byte for type + name bytes)
+    let name_len = name.len();
+    if name_len > 24 {
+        // Maximum allowed size (27 - 3 bytes used for flags)
+        return Err(());
+    }
+
+    advertising_data.push(name_len as u8 + 1);
+    advertising_data.push(AD_TYPE_COMPLETE_LOCAL_NAME);
+    advertising_data
+        .try_extend_from_slice(name)
+        .map_err(|_| ())?;
+
+    Ok(advertising_data)
 }
