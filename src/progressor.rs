@@ -11,36 +11,13 @@ use esp_hal::time;
 
 use crate::hx711::Hx711;
 
-//----------------------------------------------------------------------------
-// Constants and Types
-//----------------------------------------------------------------------------
-
 /// Size of the channel used to send data points
 const DATA_POINT_COMMAND_CHANNEL_SIZE: usize = 80;
 /// Channel used to send data points
 pub type DataPointChannel = Channel<NoopRawMutex, DataPoint, DATA_POINT_COMMAND_CHANNEL_SIZE>;
 
-/// Max number of connections
-pub const CONNECTIONS_MAX: usize = 1;
-/// Max number of L2CAP channels.
-pub const L2CAP_CHANNELS_MAX: usize = 2; // Signal + att
-/// Size of L2CAP packets
-pub const L2CAP_MTU: usize = 255;
-
 /// Maximum size of the data payload in bytes for any data point
 pub const MAX_PAYLOAD_SIZE: usize = 10;
-
-/// Progressor BLE Scanning Response
-pub const SCAN_RESPONSE_DATA: &[u8] = &[
-    17,   // AD_FLAG_LE_LIMITED_DISCOVERABLE | SIMUL_LE_BR_HOST
-    7_u8, // BLE_GAP_AD_TYPE_128BIT_SERVICE_UUID_COMPLETE
-    0x57, 0xad, 0xfe, 0x4f, 0xd3, 0x13, 0xcc, 0x9d, 0xc9, 0x40, 0xa6, 0x1e, 0x01, 0x17, 0x4e,
-    0x7e, //UUID
-];
-
-//----------------------------------------------------------------------------
-// Device State Management
-//----------------------------------------------------------------------------
 
 /// Status of the weight measurement task
 #[derive(Copy, Debug, Clone, PartialEq)]
@@ -119,10 +96,6 @@ impl DeviceState {
         self.measurement_status = MeasurementTaskStatus::DefaultCalibration;
     }
 }
-
-//----------------------------------------------------------------------------
-// Control OpCode handling
-//----------------------------------------------------------------------------
 
 /// Progressor Commands
 #[derive(Debug, Clone, Copy)]
@@ -254,10 +227,6 @@ impl Format for ControlOpCode {
         }
     }
 }
-
-//----------------------------------------------------------------------------
-// Data Point and Response Code handling
-//----------------------------------------------------------------------------
 
 /// Data point characteristic is where we receive data from the Progressor
 #[derive(Copy, Debug, Clone, Pod, Zeroable)]
@@ -407,10 +376,6 @@ impl ResponseCode {
         value
     }
 }
-
-//----------------------------------------------------------------------------
-// Utility Functions
-//----------------------------------------------------------------------------
 
 /// Convert an integer into an array of bytes with any zeros on the MSB side trimmed
 fn to_le_bytes_without_trailing_zeros<T: Into<u64>>(input: T) -> ArrayVec<u8, 8> {
