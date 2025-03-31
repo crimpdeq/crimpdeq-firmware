@@ -25,7 +25,6 @@ use esp_hal::{
 };
 use esp_println as _;
 use esp_wifi::{ble::controller::BleConnector, init, EspWifiController};
-// use esp_backtrace as _;
 use panic_rtt_target as _;
 use trouble_host::prelude::*;
 
@@ -46,6 +45,9 @@ use crate::{
     },
 };
 
+pub mod hx711;
+pub mod progressor;
+
 // GATT Server definition
 #[gatt_server]
 pub struct Server {
@@ -63,9 +65,6 @@ struct ProgressorService {
     #[characteristic(uuid = "7e4e1703-1ea6-40c9-9dcc-13d34ffead57", write)]
     pub control_point: [u8; MAX_PAYLOAD_SIZE], // Buffer for command data
 }
-
-pub mod hx711;
-pub mod progressor;
 
 // Helper macro for static allocation
 macro_rules! mk_static {
@@ -94,7 +93,7 @@ async fn main(spawner: Spawner) -> ! {
     // Allocate 72KB of heap memory
     esp_alloc::heap_allocator!(size: 72 * 1024);
 
-    debug!("{}", Hx711::get_calibration());
+    debug!("{}", Hx711::get_calibration().unwrap());
 
     // Initialize BLE controller
     let timg0 = TimerGroup::new(peripherals.TIMG0);
@@ -137,7 +136,7 @@ async fn main(spawner: Spawner) -> ! {
 
     info!("Starting advertising and GATT service");
     let server = Server::new_with_config(GapConfig::Peripheral(PeripheralConfig {
-        name: "Progressor",
+        name: env!("DEVICE_NAME"),
         appearance: &appearance::UNKNOWN,
     }))
     .unwrap();
