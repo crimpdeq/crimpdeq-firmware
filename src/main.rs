@@ -101,8 +101,12 @@ async fn main(spawner: Spawner) -> ! {
     let bluetooth = peripherals.BT;
     let connector = BleConnector::new(esp_wifi_ctrl, bluetooth);
     let controller: ExternalController<_, 20> = ExternalController::new(connector);
-    let address: Address = Address::random([0x0a, 0x0a, 0x0a, 0x0a, 0x0a, 0x0a]);
-    // info!("Our address = {}", address);
+    let device_name = env!("DEVICE_NAME");
+    // Use the last 6 bytes of the DEVIC_NAME for the address
+    let mut buff: [u8; 6] = [0u8; 6];
+    buff.copy_from_slice(&device_name.as_bytes()[device_name.len() - 6..]);
+    buff[5] |= 0xC0;
+    let address: Address = Address::random(buff);
     let mut resources: HostResources<CONNECTIONS_MAX, L2CAP_CHANNELS_MAX, L2CAP_MTU> =
         HostResources::new();
     let stack = trouble_host::new(controller, &mut resources).set_random_address(address);

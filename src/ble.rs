@@ -63,7 +63,8 @@ pub async fn advertise<'a, 'b, C: Controller>(
     peripheral: &mut Peripheral<'a, C>,
     server: &'b Server<'_>,
 ) -> Result<GattConnection<'a, 'b>, BleHostError<C::Error>> {
-    let advertising_data = advertising_data(b"Progressor_7125").expect("Valid advertising data");
+    let name = env!("DEVICE_NAME");
+    let advertising_data = advertising_data(name.as_bytes()).expect("Valid advertising data");
 
     debug!("Advertising BLE");
     let advertiser = peripheral
