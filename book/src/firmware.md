@@ -45,6 +45,11 @@ To flash the released binary using your browser:
 ## Code Structure
 ### `hx711`
 This module implements the load cell functionality, it's an `async` version of the [loadcell](https://crates.io/crates/loadcell) crate with additional modifications.
+### `ble`
+This module implements the Bluetooth Low Energy (BLE) functionality:
+- Defines the GATT server and services
+- Handles advertising and connections
+- Defines the Progressor service with data point and control point characteristics
 ### `progressor`
 The `progressor` module implements the [Tindeq API](https://tindeq.com/progressor_api/), enabling BLE (Bluetooth Low Energy) communication between the ESP32-C3 and a smartphone.
 ## Main Tasks
@@ -53,7 +58,10 @@ The `main.rs` file defines several asynchronous tasks that run concurrently:
   - Initializes the load cell
   - Handles taring and reading measurements from the sensor.
 - `ble_task`:
-  - Initializes BLE, setting all the services and characteristics.
-  - Manages BLE communication, processing received commands and sending measurements.
+  - This is a background task that is required to run forever alongside any other BLE tasks.
+- `gatt_events_task`:
+  - Processes GATT events like control point writes
+- `data_processing_task`:
+  - Handles sending notifications with data points
 
 Communication between tasks occurs via a [`Channel`](https://docs.embassy.dev/embassy-sync/git/default/channel/struct.Channel.html).

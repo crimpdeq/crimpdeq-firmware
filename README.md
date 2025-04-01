@@ -60,6 +60,6 @@ This repository is licensed under either of:
 at your option.
 
 ## Kudos
-- @bjoernQ for helping me during the development and developing the [`bleps`](https://github.com/bjoernQ/bleps) crate, which is fundamental for this project.
+- @bjoernQ for helping me during the development and developing the [`bleps`](https://github.com/bjoernQ/bleps) crate, which was fundamental for this project.
 - [hangman](https://github.com/kesyog/hangman) for being an improved version of this project and a great source of inspiration for this project.
 - Tindeq for having its API public and allowing for projects like this to exist!
