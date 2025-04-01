@@ -33,8 +33,6 @@ pub enum MeasurementTaskStatus {
     Calibration(f32),
     /// Taring the scale (used in ClimbHarder App)
     Tare,
-    /// Soft taring the scale - subtract the current weight (used in Tindeq App)
-    SoftTare,
     /// Restores default calibration values
     DefaultCalibration,
 }
@@ -72,11 +70,7 @@ impl DeviceState {
     /// Start a measurement
     pub fn start_measurement(&mut self) {
         self.start_time = (time::Instant::now().duration_since_epoch()).as_micros() as u32;
-        if self.tared {
-            self.measurement_status = MeasurementTaskStatus::Enabled;
-        } else {
-            self.measurement_status = MeasurementTaskStatus::SoftTare;
-        }
+        self.measurement_status = MeasurementTaskStatus::Enabled;
     }
 
     /// Stop the current measurement

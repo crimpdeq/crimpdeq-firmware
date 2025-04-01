@@ -184,7 +184,7 @@ async fn measurement_task(
                 // Do nothing when disabled
                 Timer::after(Duration::from_millis(10)).await;
             }
-            MeasurementTaskStatus::Tare | MeasurementTaskStatus::SoftTare => {
+            MeasurementTaskStatus::Tare => {
                 // Perform taring operation
                 load_cell.tare().await;
 
@@ -192,12 +192,8 @@ async fn measurement_task(
                     let mut state = DEVICE_STATE.borrow_ref_mut(cs);
                     state.tared = true;
 
-                    // For soft tare, immediately enable measurements
-                    if status == MeasurementTaskStatus::SoftTare {
-                        state.measurement_status = MeasurementTaskStatus::Enabled;
-                    } else {
-                        state.measurement_status = MeasurementTaskStatus::Disabled;
-                    }
+                    // After taring, always return to disabled state
+                    state.measurement_status = MeasurementTaskStatus::Disabled;
                 });
             }
             MeasurementTaskStatus::Enabled => {
