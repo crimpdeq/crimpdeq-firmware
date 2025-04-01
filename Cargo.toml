@@ -46,7 +46,7 @@ trouble-host = { version = "0.1.0", features = [
 ] }
 
 [profile.dev]
-# Rust debug is too slow.arrayvec = { version = "0.7.6", default-features = false }
+# Rust debug is too slow.
 # For debug builds always builds with some optimization
 opt-level = "s"
 

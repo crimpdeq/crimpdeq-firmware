@@ -205,7 +205,7 @@ impl From<u8> for ControlOpCode {
             0x74 => ControlOpCode::DefaultCalibration,
             _ => {
                 error!("Invalid OpCode received: {:#x}", op_code);
-                ControlOpCode::Shutdown
+                ControlOpCode::StopMeasurement
             }
         }
     }

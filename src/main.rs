@@ -4,7 +4,6 @@
 use core::cell::RefCell;
 
 use bt_hci::controller::ExternalController;
-// use bytemuck::cast;
 use critical_section::Mutex;
 use defmt::{debug, error, info, warn};
 use defmt_rtt as _;
@@ -101,8 +100,8 @@ async fn main(spawner: Spawner) -> ! {
     let bluetooth = peripherals.BT;
     let connector = BleConnector::new(esp_wifi_ctrl, bluetooth);
     let controller: ExternalController<_, 20> = ExternalController::new(connector);
-    let device_name = env!("DEVICE_NAME");
     // Use the last 6 bytes of the DEVIC_NAME for the address
+    let device_name = env!("DEVICE_NAME");
     let mut buff: [u8; 6] = [0u8; 6];
     buff.copy_from_slice(&device_name.as_bytes()[device_name.len() - 6..]);
     buff[5] |= 0xC0;
@@ -118,7 +117,7 @@ async fn main(spawner: Spawner) -> ! {
 
     info!("Starting advertising and GATT service");
     let server = Server::new_with_config(GapConfig::Peripheral(PeripheralConfig {
-        name: env!("DEVICE_NAME"),
+        name: device_name,
         appearance: &appearance::UNKNOWN,
     }))
     .unwrap();
@@ -195,8 +194,6 @@ async fn measurement_task(
                 critical_section::with(|cs| {
                     let mut state = DEVICE_STATE.borrow_ref_mut(cs);
                     state.tared = true;
-
-                    // After taring, always return to disabled state
                     state.measurement_status = MeasurementTaskStatus::Disabled;
                 });
             }
