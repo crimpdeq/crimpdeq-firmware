@@ -59,7 +59,7 @@ static DEVICE_STATE: Mutex<RefCell<DeviceState>> = Mutex::new(RefCell::new(Devic
     measurement_status: MeasurementTaskStatus::Disabled,
     tared: false,
     start_time: 0,
-    calibration_points: [-1.0, -1.0],
+    calibration_points: [None, None],
 }));
 
 #[esp_hal_embassy::main]
@@ -207,18 +207,21 @@ async fn measurement_task(
                     let mut state = DEVICE_STATE.borrow_ref_mut(cs);
 
                     // Store calibration point (either first or second)
-                    if state.calibration_points[0] == -1.0 {
-                        state.calibration_points[0] = calibration_point;
+                    if state.calibration_points[0].is_none() {
+                        state.calibration_points[0] = Some(calibration_point);
                     } else {
-                        state.calibration_points[1] = calibration_point;
+                        state.calibration_points[1] = Some(calibration_point);
 
                         // Calculate and apply calibration if we have both points
-                        if !load_cell.apply_two_point_calibration(state.calibration_points, weight)
+                        if let (Some(point1), Some(point2)) =
+                            (state.calibration_points[0], state.calibration_points[1])
                         {
-                            error!(
-                                "Failed to apply calibration points: {:?}",
-                                state.calibration_points
-                            );
+                            if !load_cell.apply_two_point_calibration([point1, point2], weight) {
+                                error!(
+                                    "Failed to apply calibration points: {:?}",
+                                    state.calibration_points
+                                );
+                            }
                         }
                     }
 

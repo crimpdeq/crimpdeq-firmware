@@ -47,7 +47,7 @@ pub struct DeviceState {
     /// Start time of the measurement in microseconds
     pub start_time: u32,
     /// Calibration points [point1, point2]
-    pub calibration_points: [f32; 2],
+    pub calibration_points: [Option<f32>; 2],
 }
 
 impl Default for DeviceState {
@@ -56,7 +56,7 @@ impl Default for DeviceState {
             measurement_status: MeasurementTaskStatus::Disabled,
             tared: false,
             start_time: 0,
-            calibration_points: [-1.0, -1.0],
+            calibration_points: [None, None],
         }
     }
 }
