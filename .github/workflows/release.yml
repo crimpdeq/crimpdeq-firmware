@@ -1,0 +1,51 @@
+name: Releases Deployment
+
+on:
+  release:
+    types: [created]
+
+env:
+  CARGO_TERM_COLOR: always
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+jobs:
+  publish-release:
+    name: Generating binary
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+          target: riscv32imc-unknown-none-elf
+      - name: Enable caching
+        uses: Swatinem/rust-cache@v2
+      - name: Install espflash
+        run: |
+          curl -L "https://github.com/esp-rs/espflash/releases/latest/download/espflash-x86_64-unknown-linux-gnu.zip" -o "${HOME}/.cargo/bin/espflash.zip" && \
+          unzip "${HOME}/.cargo/bin/espflash.zip" -d "${HOME}/.cargo/bin/" && \
+          rm "${HOME}/.cargo/bin/espflash.zip" && \
+          chmod u+x "${HOME}/.cargo/bin/espflash"
+
+      - name: Cargo build
+        run: cargo build --release
+      - name: Generate binary
+        run: |
+          ${HOME}/.cargo/bin/espflash save-image --chip esp32c3 target/riscv32imc-unknown-none-elf/release/crimpdeq crimpdeq.bin
+
+      - name: Compress (Unix)
+        run: zip -j crimpdeq.zip crimpdeq.bin
+      - name: Upload compressed artifact
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: crimpdeq.zip
+          tag: ${{ github.ref }}
+      - name: Upload binary artifact
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: crimpdeq.bin
+          tag: ${{ github.ref }}
