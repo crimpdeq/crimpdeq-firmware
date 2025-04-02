@@ -1,3 +1,7 @@
+/// BLE module
+///
+/// This module provides the BLE functionality for the Progressor.
+/// It includes the BLE advertising data, the GATT server, and the BLE connection.
 use arrayvec::ArrayVec;
 use defmt::{debug, info};
 use trouble_host::{

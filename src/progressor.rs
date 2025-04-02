@@ -1,12 +1,11 @@
-use core::cell::UnsafeCell;
-
 /// Progressor data types
 ///
 /// See [Tindeq API documentation] for more information
 ///
 /// [Tindeq API documentation]: https://tindeq.com/progressor_api/
+use core::cell::UnsafeCell;
+
 use arrayvec::ArrayVec;
-use bytemuck_derive::{Pod, Zeroable};
 use defmt::{debug, error, info, trace, Format};
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
 use esp_hal::time;
@@ -206,7 +205,7 @@ impl From<u8> for ControlOpCode {
             0x74 => ControlOpCode::DefaultCalibration,
             _ => {
                 error!("Invalid OpCode received: {:#x}", op_code);
-                ControlOpCode::Shutdown
+                ControlOpCode::StopMeasurement
             }
         }
     }
@@ -230,7 +229,7 @@ impl Format for ControlOpCode {
 }
 
 /// Data point characteristic is where we receive data from the Progressor
-#[derive(Copy, Debug, Clone, Pod, Zeroable)]
+#[derive(Copy, Debug, Clone)]
 #[repr(C, packed)]
 pub struct DataPoint {
     /// Response code
