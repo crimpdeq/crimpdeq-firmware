@@ -5,7 +5,6 @@
 /// [Tindeq API documentation]: https://tindeq.com/progressor_api/
 use core::cell::UnsafeCell;
 
-use arrayvec::ArrayVec;
 use defmt::{debug, error, info, trace, Format};
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
 use esp_hal::time;
@@ -20,6 +19,9 @@ pub type DataPointChannel = Channel<NoopRawMutex, DataPoint, DATA_POINT_COMMAND_
 
 /// Maximum size of the data payload in bytes for any data point
 pub const MAX_PAYLOAD_SIZE: usize = 10;
+
+/// Number of bytes in the device ID
+const DEVICE_ID_SIZE: usize = 6;
 
 /// Status of the weight measurement task
 #[derive(Copy, Debug, Clone, PartialEq)]
@@ -138,17 +140,30 @@ impl ControlOpCode {
             }
             ControlOpCode::GetAppVersion => {
                 let response = ResponseCode::AppVersion(env!("DEVICE_VERSION_NUMBER").as_bytes());
-                debug!("AppVersion: {:#x}", response);
+                info!("AppVersion: {:#x}", response);
                 DataPoint::from(response).send(channel);
             }
             ControlOpCode::GetProgressorId => {
+                /// Number of hex characters needed per byte (2 hex chars = 1 byte)
+                const HEX_CHARS_PER_BYTE: usize = 2;
+                /// Hex radix for parsing hex strings
+                const HEX_RADIX: u32 = 16;
+
                 let device_id = env!("DEVICE_ID");
-                let mut id = 0;
-                for (i, c) in device_id.chars().enumerate() {
-                    id |= (c as u64) << (i * 8);
+                let mut bytes = [0u8; DEVICE_ID_SIZE];
+                for (i, byte) in bytes.iter_mut().enumerate() {
+                    let char_pos = i * HEX_CHARS_PER_BYTE;
+                    let next_char_pos = char_pos + HEX_CHARS_PER_BYTE;
+                    if next_char_pos <= device_id.len() {
+                        if let Ok(parsed_byte) =
+                            u8::from_str_radix(&device_id[char_pos..next_char_pos], HEX_RADIX)
+                        {
+                            *byte = parsed_byte;
+                        }
+                    }
                 }
-                let response = ResponseCode::ProgressorId(id);
-                debug!("ProgressorId: {:?}", response);
+                let response = ResponseCode::ProgressorId(bytes);
+                info!("ProgressorId: {:?}", response);
                 DataPoint::from(response).send(channel);
             }
             ControlOpCode::GetCalibration => {
@@ -179,9 +194,9 @@ impl ControlOpCode {
             }
             ControlOpCode::SampleBattery => {
                 // Hardcoded for now
-                let voltage = 3300;
+                let voltage = 4300;
                 let response = ResponseCode::SampleBatteryVoltage(voltage);
-                debug!("SampleBattery: {:?}", response);
+                info!("SampleBattery: {:?}", response);
                 DataPoint::from(response).send(channel);
             }
             // Currently unimplemented operations
@@ -349,7 +364,7 @@ pub enum ResponseCode {
     /// Response to app version request command
     AppVersion(&'static [u8]),
     /// Response to progressor ID request command
-    ProgressorId(u64),
+    ProgressorId([u8; DEVICE_ID_SIZE]),
 }
 
 impl Format for ResponseCode {
@@ -367,8 +382,8 @@ impl Format for ResponseCode {
                 )
             }
             ResponseCode::LowPowerWarning => defmt::write!(fmt, "LowPowerWarning"),
-            ResponseCode::AppVersion(version) => defmt::write!(fmt, "AppVersion: {:?}", version),
-            ResponseCode::ProgressorId(id) => defmt::write!(fmt, "ProgressorId({})", id),
+            ResponseCode::AppVersion(version) => defmt::write!(fmt, "AppVersion: {:x}", version),
+            ResponseCode::ProgressorId(id) => defmt::write!(fmt, "ProgressorId: {:x}", id),
         }
     }
 }
@@ -392,7 +407,7 @@ impl ResponseCode {
             ResponseCode::WeightMeasurement(..) => 8,
             ResponseCode::LowPowerWarning => 0,
             ResponseCode::AppVersion(version) => version.len() as u8,
-            ResponseCode::ProgressorId(..) => 6,
+            ResponseCode::ProgressorId(..) => DEVICE_ID_SIZE as u8,
         }
     }
 
@@ -409,8 +424,10 @@ impl ResponseCode {
             }
             ResponseCode::LowPowerWarning => (),
             ResponseCode::ProgressorId(id) => {
-                let bytes = to_le_bytes_without_trailing_zeros(*id);
-                value[0..bytes.len()].copy_from_slice(&bytes);
+                // Reverse the bytes as they are LE
+                let mut reversed = *id;
+                reversed.reverse();
+                value[..DEVICE_ID_SIZE].copy_from_slice(&reversed);
             }
             ResponseCode::AppVersion(version) => {
                 value[0..version.len()].copy_from_slice(version);
@@ -418,21 +435,4 @@ impl ResponseCode {
         };
         value
     }
-}
-
-/// Convert an integer into an array of bytes with any zeros on the MSB side trimmed
-fn to_le_bytes_without_trailing_zeros<T: Into<u64>>(input: T) -> ArrayVec<u8, 8> {
-    let input = input.into();
-    if input == 0 {
-        return ArrayVec::try_from([0_u8].as_slice()).unwrap();
-    }
-
-    let mut out: ArrayVec<u8, 8> = input
-        .to_le_bytes()
-        .into_iter()
-        .rev()
-        .skip_while(|&i| i == 0)
-        .collect();
-    out.reverse();
-    out
 }
