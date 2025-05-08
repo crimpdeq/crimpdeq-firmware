@@ -16,16 +16,22 @@
         ![Crane connections](assets/crane_connections.png)
     3. Unscrew and remove the PCB along with the display.
 3. Soldering Instructions
-    1. Modify the HX711 Module: Most HX711 modules come with the `RATE` pin connected to `GND`, meaning that they sample at 10 Hz, if you want to sample at 80 Hz:
-        ![HX711 Pinout](assets/hx711_pinout.png)
-       1. Break the track of `RATE` pin.
+    1. Modify the HX711 Module:
+       1. Update the sample rate: Most HX711 modules come with the `RATE` pin connected to `GND`, meaning that they sample at 10 Hz, if you want to sample at 80 Hz:
+           ![HX711 Pinout](assets/hx711_pinout.png)
+          1. Break the track of `RATE` pin.
           1. I did this by scratching the module with a knife.
-       2. Verify with a multimeter that `GND` and the `RATE` pin are not connected anymore.
+          2. Verify with a multimeter that `GND` and the `RATE` pin are not connected anymore.
             - Make sure that you don't break the next connection.
-       3. Solder the `RATE` to `VDD` pin.
-       4. Verify with a multimeter.
+          3. Solder the `RATE` to `DVDD` pin.
+          4. Verify with a multimeter.
+       2. Optimize the measurements for 3.3V: Most HX711 modules come with a setup for 5V, if you want to optimize the measurements for 3.3V:
+          1. Connect, in parallel, a resistor between 20k and 27k to `R1`. `R1` is the highlighted resistor in the image:
+          ![Resistor to modify](assets/hx711_resistor.jpg)
+          - For more information, see [this blogpost](https://en.kohacraft.com/archives/modify-the-circuit-of-the-hx711-module-to-operate-at-3-3v-and-measure-the-weight-with-esp32.html).
+          - This step is not mandatory, but it improves the measurements.
     2. Connect the Crane Scale to the HX711:
-      - Solder the 4 wires of the crane scale to the HX711. Usually the colors are:
+       - Solder the 4 wires of the crane scale to the HX711. Usually the colors are:
 
         | **HX711 Pin** | **Load Cell Pin** | **Description**                    |
         | ------------- | ----------------- | ---------------------------------- |
