@@ -1,8 +1,7 @@
 # Crimpdeq
 
-[![Rust CI](https://github.com/SergioGasquez/crimpdeq/actions/workflows/rust_ci.yml/badge.svg)](https://github.com/SergioGasquez/crimpdeq/actions/workflows/rust_ci.yml)
-[![Book CI](https://github.com/SergioGasquez/crimpdeq/actions/workflows/book_ci.yml/badge.svg)](https://github.com/SergioGasquez/crimpdeq/actions/workflows/book_ci.yml)
-[![Documentation](https://img.shields.io/badge/Documentation-Book-orange.svg)](https://sergiogasquez.github.io/crimpdeq/)
+[![Rust CI](https://github.com/crimpdeq/crimpdeq-firmware/actions/workflows/rust_ci.yml/badge.svg)](https://github.com/crimpdeq/crimpdeq-firmware/actions/workflows/rust_ci.yml)
+[![Documentation](https://img.shields.io/badge/Documentation-Book-orange.svg)](https://crimpdeq.github.io/book/)
 
 Crimpdeq is a bluetooth dynamometer designed for finger training, powered by an [ESP32-C3](https://github.com/esp-rs/esp-rust-board) and a WH-C100 crane scale, with firmware fully written in Rust!
 
@@ -24,17 +23,17 @@ Crimpdeq is a bluetooth dynamometer designed for finger training, powered by an 
 - Dimension: 80 mm x 90 mm x 35 mm
 - Uses the [Tindeq Progressor API](https://tindeq.com/progressor_api/)
 
-## [Book](https://sergiogasquez.github.io/crimpdeq/)
-For detailed guidance on assembly, calibration, and charging of Crimpdeq, refer to the [Crimpdeq book](https://sergiogasquez.github.io/crimpdeq/).
+## [Book](https://crimpdeq.github.io/book/)
+For detailed guidance on assembly, calibration, and charging of Crimpdeq, refer to the [Crimpdeq book](https://crimpdeq.github.io/book/).
 
 The book covers everything you need to know, from building your own Crimpdeq to firmware installation and PCB details. Below is the list of available sections:
 
-- [Introduction](https://sergiogasquez.github.io/crimpdeq/introduction.html)
-- [Making your own Crimpdeq](https://sergiogasquez.github.io/crimpdeq/assembly.html)
-- [Calibration](https://sergiogasquez.github.io/crimpdeq/calibration.html)
-- [Charging the Battery](https://sergiogasquez.github.io/crimpdeq/battery.html)
-- [Firmware](https://sergiogasquez.github.io/crimpdeq/firmware.html)
-- [PCB](https://sergiogasquez.github.io/crimpdeq/pcb.html)
+- [Introduction](https://crimpdeq.github.io/book/introduction.html)
+- [Making your own Crimpdeq](https://crimpdeq.github.io/book/assembly.html)
+- [Calibration](https://crimpdeq.github.io/book/calibration.html)
+- [Charging the Battery](https://crimpdeq.github.io/book/battery.html)
+- [Firmware](https://crimpdeq.github.io/book/firmware.html)
+- [PCB](https://crimpdeq.github.io/book/pcb.html)
 
 ## Prototype
 
