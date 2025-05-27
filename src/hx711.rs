@@ -8,7 +8,7 @@
 /// [loadcell]: https://crates.io/crates/loadcell
 use core::fmt;
 
-use defmt::{debug, error, info, Format};
+use defmt::{debug, error, info};
 use embedded_hal::delay::DelayNs;
 use embedded_storage::{ReadStorage, Storage};
 use esp_hal::{
@@ -34,11 +34,8 @@ const NVS_ADDR: u32 = 0x9000;
 const DEFAULT_TARING_SAMPLES: usize = 16;
 /// The default number of samples for calibration
 const DEFAULT_CALIBRATION_SAMPLES: usize = 100;
-/// The default calibration values.
-const DEFAULT_CALIBRATION: Calibration = Calibration {
-    offset: 0.0,
-    factor: 0.066,
-};
+/// The default calibration value.
+const DEFAULT_CALIBRATION_FACTOR: f32 = 0.066;
 
 /// Custom error type for HX711 operations
 #[derive(Debug)]
@@ -72,36 +69,6 @@ pub enum GainMode {
     A64 = 3,
 }
 
-/// Calibration values
-#[derive(Debug, Clone, Copy)]
-pub struct Calibration {
-    /// Calibration offset
-    offset: f32,
-    /// Calibration factor
-    factor: f32,
-}
-
-impl Format for Calibration {
-    fn format(&self, fmt: defmt::Formatter) {
-        defmt::write!(
-            fmt,
-            "{{
-                    - Offset: {}
-                    - Factor: {}
-                }}",
-            self.offset,
-            self.factor
-        );
-    }
-}
-
-impl Calibration {
-    /// Check if the calibration values are valid
-    pub fn is_valid(&self) -> bool {
-        !self.offset.is_nan() && !self.factor.is_nan() && self.factor != 0.0
-    }
-}
-
 /// HX711 24-bit ADC driver
 pub struct Hx711<'d> {
     /// Data pin
@@ -115,7 +82,7 @@ pub struct Hx711<'d> {
     /// Tare value
     tare_value: i32,
     /// Calibration
-    calibration: Calibration,
+    calibration_factor: f32,
 }
 
 impl<'d> Hx711<'d> {
@@ -129,99 +96,94 @@ impl<'d> Hx711<'d> {
             delay,
             gain_mode: GainMode::A64,
             tare_value: 0,
-            calibration: Self::get_calibration().unwrap_or(DEFAULT_CALIBRATION),
+            calibration_factor: Self::get_calibration_factor()
+                .unwrap_or(DEFAULT_CALIBRATION_FACTOR),
         }
     }
 
-    /// Read calibration values from flash
-    fn read_from_flash() -> Result<Calibration, Hx711Error> {
+    /// Read calibration factor from flash
+    fn read_from_flash() -> Result<f32, Hx711Error> {
         let mut flash = FlashStorage::new();
-        let mut bytes = [0u8; 8];
+        let mut bytes = [0u8; 4];
 
         flash.read(NVS_ADDR, &mut bytes).map_err(|_| {
-            error!("Failed to read calibration from flash");
+            error!("Failed to read calibration factor from flash");
             Hx711Error::FlashError
         })?;
 
-        let offset = f32::from_le_bytes(bytes[0..4].try_into().unwrap());
-        let factor = f32::from_le_bytes(bytes[4..8].try_into().unwrap());
-        let calibration = Calibration { offset, factor };
+        let factor = f32::from_le_bytes(bytes[0..4].try_into().unwrap());
 
-        if !calibration.is_valid() {
-            info!("Invalid calibration values read from flash");
+        if !Self::is_valid_calibration_factor(factor) {
+            info!("Invalid calibration factor read from flash");
             return Err(Hx711Error::InvalidCalibration);
         }
 
-        Ok(calibration)
+        Ok(factor)
     }
 
-    /// Write calibration values to flash
-    fn write_to_flash(calibration: Calibration) -> Result<(), Hx711Error> {
-        if !calibration.is_valid() {
+    /// Check if the calibration factor is valid
+    pub fn is_valid_calibration_factor(factor: f32) -> bool {
+        !factor.is_nan() && factor != 0.0
+    }
+
+    /// Write calibration factor to flash
+    fn write_to_flash(calibration_factor: f32) -> Result<(), Hx711Error> {
+        if !Self::is_valid_calibration_factor(calibration_factor) {
             return Err(Hx711Error::InvalidCalibration);
         }
 
         let mut flash = FlashStorage::new();
-        let mut bytes = [0u8; 8];
+        let mut bytes = [0u8; 4];
 
-        bytes[0..4].copy_from_slice(&calibration.offset.to_le_bytes());
-        bytes[4..8].copy_from_slice(&calibration.factor.to_le_bytes());
+        bytes[0..4].copy_from_slice(&calibration_factor.to_le_bytes());
 
         flash.write(NVS_ADDR, &bytes).map_err(|_| {
-            error!("Failed to write calibration to flash");
+            error!("Failed to write calibration factor to flash");
             Hx711Error::FlashError
         })?;
 
         Ok(())
     }
 
-    /// Update the calibration values in memory and flash.
-    pub fn update_calibration(&mut self, offset: f32, factor: f32) -> Result<(), Hx711Error> {
-        let calibration = Calibration { offset, factor };
-
-        if !calibration.is_valid() {
-            error!(
-                "Invalid calibration values: offset={}, factor={}",
-                offset, factor
-            );
+    /// Update the calibration factor in memory and flash.
+    pub fn update_calibration_factor(&mut self, factor: f32) -> Result<(), Hx711Error> {
+        if !Self::is_valid_calibration_factor(factor) {
+            error!("Invalid calibration factor: {}", factor);
             return Err(Hx711Error::InvalidCalibration);
         }
 
-        debug!(
-            "Updating calibration: offset: {}, factor: {}",
-            offset, factor
-        );
-        Self::write_to_flash(calibration)?;
+        debug!("Updating calibration factor: {}", factor);
+        Self::write_to_flash(factor)?;
 
-        self.calibration = calibration;
+        (*self).calibration_factor = factor;
         Ok(())
     }
 
-    pub fn get_calibration() -> Result<Calibration, Hx711Error> {
-        // Get the calibration values from the NVS flash storage.
+    pub fn get_calibration_factor() -> Result<f32, Hx711Error> {
+        // Get the calibration factor from the NVS flash storage.
         match Self::read_from_flash() {
-            Ok(calibration) => {
-                info!("Read Calibration values: {:?}", calibration);
-                Ok(calibration)
+            Ok(factor) => {
+                info!("Read calibration factor: {:?}", factor);
+                Ok(factor)
             }
             Err(Hx711Error::InvalidCalibration) => {
-                info!("Using default calibration values");
-                Ok(DEFAULT_CALIBRATION)
+                info!("Using default calibration factor");
+                Ok(DEFAULT_CALIBRATION_FACTOR)
             }
             Err(e) => Err(e),
         }
     }
 
-    /// Get the current calibration values.
-    pub fn current_calibration(&self) -> Calibration {
-        self.calibration
+    /// Get the current calibration factor.
+    pub fn current_calibration_factor(&self) -> f32 {
+        self.calibration_factor
     }
 
-    /// Set the default calibration values.
-    pub fn default_calibration(&mut self) -> Result<(), Hx711Error> {
-        debug!("Restoring default calibration");
-        Self::write_to_flash(DEFAULT_CALIBRATION)?;
-        self.calibration = DEFAULT_CALIBRATION;
+    /// Set the default calibration factor.
+    pub fn default_calibration_factor(&mut self) -> Result<(), Hx711Error> {
+        debug!("Restoring default calibration factor");
+        Self::write_to_flash(DEFAULT_CALIBRATION_FACTOR)?;
+        self.calibration_factor = DEFAULT_CALIBRATION_FACTOR;
         Ok(())
     }
 
@@ -305,8 +267,8 @@ impl<'d> Hx711<'d> {
     /// Tares the sensor by measuring the average of several readings.
     pub async fn tare(&mut self) {
         debug!("Taring the scale");
-        if !self.calibration.is_valid() {
-            info!("Invalid calibration values, skipping tare");
+        if !Self::is_valid_calibration_factor(self.calibration_factor) {
+            info!("Invalid calibration factor, skipping tare");
             return;
         }
 
@@ -330,7 +292,7 @@ impl<'d> Hx711<'d> {
     /// Reads a calibrated value, in kg.
     pub async fn read_calibrated(&mut self) -> f32 {
         let raw_tared = self.read_tared().await;
-        let calibrated_value = raw_tared as f32 * self.calibration.factor - self.calibration.offset;
+        let calibrated_value = raw_tared as f32 * self.calibration_factor;
         // Convert to kg
         calibrated_value / 1000.0
     }
@@ -343,7 +305,7 @@ impl<'d> Hx711<'d> {
     /// Returns the average raw value for the calibration point.
     pub async fn perform_calibration(&mut self, _target_weight: f32) -> f32 {
         // Reset calibration to raw values first
-        let _ = self.update_calibration(0.0, 1.0);
+        let _ = self.update_calibration_factor(1.0);
 
         // Take multiple readings and average them for stability
         let average_value = self.take_samples(DEFAULT_CALIBRATION_SAMPLES).await;
@@ -378,18 +340,20 @@ impl<'d> Hx711<'d> {
             return false;
         }
 
-        // Calculate calibration parameters (convert weight to raw value range)
+        // Calculate calibration factor (scale factor)
         let scale_factor = target_weight / (point2 - point1);
-        let offset = scale_factor * point1;
 
-        // Apply the calibration
-        match self.update_calibration(offset, scale_factor) {
+        // Apply the calibration factor
+        match self.update_calibration_factor(scale_factor) {
             Ok(_) => {
-                debug!("Calibration successfully applied");
+                debug!("Calibration factor successfully applied");
                 true
             }
             Err(e) => {
-                error!("Failed to apply calibration: {:?}", defmt::Debug2Format(&e));
+                error!(
+                    "Failed to apply calibration factor: {:?}",
+                    defmt::Debug2Format(&e)
+                );
                 false
             }
         }
