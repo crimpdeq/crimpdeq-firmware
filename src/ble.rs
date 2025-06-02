@@ -63,11 +63,11 @@ pub struct ProgressorService {
 }
 
 /// Create an advertiser to use to connect to a BLE Central, and wait for it to connect.
-pub async fn advertise<'a, 'b, C: Controller>(
-    peripheral: &mut Peripheral<'a, C>,
-    server: &'b Server<'_>,
-) -> Result<GattConnection<'a, 'b>, BleHostError<C::Error>> {
-    let name = env!("DEVICE_NAME");
+pub async fn advertise<'values, 'server, C: Controller>(
+    name: &'values str,
+    peripheral: &mut Peripheral<'values, C, DefaultPacketPool>,
+    server: &'server Server<'values>,
+) -> Result<GattConnection<'values, 'server, DefaultPacketPool>, BleHostError<C::Error>> {
     let advertising_data = advertising_data(name.as_bytes()).expect("Valid advertising data");
 
     debug!("Advertising BLE");
