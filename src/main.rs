@@ -106,8 +106,12 @@ async fn main(spawner: Spawner) -> ! {
     buff.copy_from_slice(&device_name.as_bytes()[device_name.len() - 6..]);
     buff[5] |= 0xC0;
     let address: Address = Address::random(buff);
-    let mut resources: HostResources<CONNECTIONS_MAX, L2CAP_CHANNELS_MAX, L2CAP_MTU> =
-        HostResources::new();
+    let mut resources: HostResources<
+        DefaultPacketPool,
+        CONNECTIONS_MAX,
+        L2CAP_CHANNELS_MAX,
+        L2CAP_MTU,
+    > = HostResources::new();
     let stack = trouble_host::new(controller, &mut resources).set_random_address(address);
     let Host {
         mut peripheral,
@@ -132,7 +136,7 @@ async fn main(spawner: Spawner) -> ! {
 
     let _ = join(ble_task(runner), async {
         loop {
-            match advertise(&mut peripheral, &server).await {
+            match advertise(device_name, &mut peripheral, &server).await {
                 Ok(conn) => {
                     // run until any task ends (usually because the connection has been closed),
                     // then return to advertising state.
@@ -157,7 +161,7 @@ async fn main(spawner: Spawner) -> ! {
     }
 }
 
-async fn ble_task<C: Controller>(mut runner: Runner<'_, C>) {
+async fn ble_task<C: Controller, P: PacketPool>(mut runner: Runner<'_, C, P>) {
     loop {
         if let Err(e) = runner.run().await {
             let e = defmt::Debug2Format(&e);
@@ -276,9 +280,9 @@ async fn send_weight_measurement(
 ///
 /// This function will handle the GATT events and process them.
 /// This is how we interact with read and write requests.
-async fn gatt_events_task(
+async fn gatt_events_task<P: PacketPool>(
     server: &Server<'_>,
-    conn: &GattConnection<'_, '_>,
+    conn: &GattConnection<'_, '_, P>,
     channel: &'static DataPointChannel,
 ) -> Result<(), Error> {
     let control_point = server.progressor.control_point;
@@ -328,9 +332,9 @@ async fn gatt_events_task(
 }
 
 /// Process data and send notifications to the client
-async fn data_processing_task(
+async fn data_processing_task<P: PacketPool>(
     server: &Server<'_>,
-    conn: &GattConnection<'_, '_>,
+    conn: &GattConnection<'_, '_, P>,
     channel: &'static DataPointChannel,
 ) {
     let data_point_handle = server.progressor.data_point;
