@@ -155,7 +155,7 @@ impl<'d> Hx711<'d> {
         debug!("Updating calibration factor: {}", factor);
         Self::write_to_flash(factor)?;
 
-        (*self).calibration_factor = factor;
+        self.calibration_factor = factor;
         Ok(())
     }
 
