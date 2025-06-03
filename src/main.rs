@@ -178,6 +178,7 @@ async fn measurement_task(
     delay: Delay,
 ) {
     let mut load_cell = Hx711::new(data_pin, clock_pin, delay);
+    load_cell.tare().await;
 
     loop {
         // Get current device state
