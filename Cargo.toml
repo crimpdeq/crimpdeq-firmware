@@ -20,16 +20,16 @@ embassy-sync = { version = "0.7.0", features = ["defmt"] }
 embassy-time = { version = "0.4.0", features = ["defmt"] }
 embedded-hal = "1.0.0"
 embedded-storage = "0.3.1"
-esp-alloc = { version = "0.7.0", features = ["defmt"] }
-esp-hal = { version = "1.0.0-beta.0", features = [
+esp-alloc = { version = "0.8.0", features = ["defmt"] }
+esp-hal = { version = "1.0.0-beta.1", features = [
     "defmt",
     "esp32c3",
     "unstable",
 ] }
-esp-hal-embassy = { version = "0.7.0", features = ["defmt", "esp32c3"] }
-esp-println = { version = "0.13.1", features = ["esp32c3", "log-04"] }
-esp-storage = { version = "0.5.0", features = ["esp32c3"] }
-esp-wifi = { version = "0.13.0", default-features = false, features = [
+esp-hal-embassy = { version = "0.8.0", features = ["defmt", "esp32c3"] }
+esp-println = { version = "0.14.0", features = ["esp32c3", "log-04"] }
+esp-storage = { version = "0.6.0", features = ["esp32c3"] }
+esp-wifi = { version = "0.14.0", default-features = false, features = [
     "ble",
     "builtin-scheduler",
     "defmt",
@@ -55,11 +55,4 @@ opt-level        = 's'
 overflow-checks  = false
 
 [patch.crates-io]
-# bt-hci          = { git = "https://github.com/embassy-rs/bt-hci", rev = "50c443e088ab9c405e44a10e98915b445ed7b750" }
-esp-alloc       = { git = "https://github.com/esp-rs/esp-hal/", package = "esp-alloc", rev = "f5287c3ef949818e30cf58558f6fb2ee37692c7a" }
-esp-backtrace   = { git = "https://github.com/esp-rs/esp-hal/", package = "esp-backtrace", rev = "f5287c3ef949818e30cf58558f6fb2ee37692c7a" }
-esp-hal         = { git = "https://github.com/esp-rs/esp-hal/", package = "esp-hal", rev = "f5287c3ef949818e30cf58558f6fb2ee37692c7a" }
-esp-hal-embassy = { git = "https://github.com/esp-rs/esp-hal/", package = "esp-hal-embassy", rev = "f5287c3ef949818e30cf58558f6fb2ee37692c7a" }
-esp-println     = { git = "https://github.com/esp-rs/esp-hal/", package = "esp-println", rev = "f5287c3ef949818e30cf58558f6fb2ee37692c7a" }
-esp-wifi        = { git = "https://github.com/esp-rs/esp-hal/", package = "esp-wifi", rev = "f5287c3ef949818e30cf58558f6fb2ee37692c7a" }
-trouble-host    = { git = "https://github.com/embassy-rs/trouble", rev = "cb4b2cd424cdb2af54bad52922798a58d8786d7f" }
+trouble-host = { git = "https://github.com/embassy-rs/trouble", rev = "cb4b2cd424cdb2af54bad52922798a58d8786d7f" }
