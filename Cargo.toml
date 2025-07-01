@@ -38,7 +38,7 @@ esp-wifi = { version = "0.14.0", default-features = false, features = [
 ] }
 panic-rtt-target = { version = "0.2.0", features = ["defmt"] }
 static_cell = "2.1.0"
-trouble-host = { version = "0.1.0", features = ["defmt"] }
+trouble-host = { version = "0.2.0", features = ["defmt"] }
 
 [profile.dev]
 # Rust debug is too slow.
@@ -53,6 +53,3 @@ incremental      = false
 lto              = 'fat'
 opt-level        = 's'
 overflow-checks  = false
-
-[patch.crates-io]
-trouble-host = { git = "https://github.com/embassy-rs/trouble", rev = "cb4b2cd424cdb2af54bad52922798a58d8786d7f" }
