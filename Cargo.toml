@@ -26,10 +26,10 @@ esp-hal = { version = "1.0.0-beta.1", features = [
     "esp32c3",
     "unstable",
 ] }
-esp-hal-embassy = { version = "0.8.0", features = ["defmt", "esp32c3"] }
+esp-hal-embassy = { version = "0.8.1", features = ["defmt", "esp32c3"] }
 esp-println = { version = "0.14.0", features = ["esp32c3", "log-04"] }
 esp-storage = { version = "0.6.0", features = ["esp32c3"] }
-esp-wifi = { version = "0.14.0", default-features = false, features = [
+esp-wifi = { version = "0.14.1", default-features = false, features = [
     "ble",
     "builtin-scheduler",
     "defmt",
@@ -37,8 +37,8 @@ esp-wifi = { version = "0.14.0", default-features = false, features = [
     "esp32c3",
 ] }
 panic-rtt-target = { version = "0.2.0", features = ["defmt"] }
-static_cell = "2.1.0"
-trouble-host = { version = "0.1.0", features = ["defmt"] }
+static_cell = "2.1.1"
+trouble-host = { version = "0.2.3", features = ["defmt"] }
 
 [profile.dev]
 # Rust debug is too slow.

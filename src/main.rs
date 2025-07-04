@@ -294,29 +294,25 @@ async fn gatt_events_task<P: PacketPool>(
                 break;
             }
             GattConnectionEvent::Gatt { event } => {
-                if let Ok(event) = event {
-                    // Handle write events to the control point
-                    if let GattEvent::Write(write_event) = &event {
-                        if write_event.handle() == control_point.handle {
-                            let cmd_data = write_event.data();
-                            let op_code = ControlOpCode::from(cmd_data[0]);
-                            info!("Control Point Received: {:?}", op_code);
+                // Handle write events to the control point
+                if let GattEvent::Write(write_event) = &event {
+                    if write_event.handle() == control_point.handle {
+                        let cmd_data = write_event.data();
+                        let op_code = ControlOpCode::from(cmd_data[0]);
+                        info!("Control Point Received: {:?}", op_code);
 
-                            critical_section::with(|cs| {
-                                let mut device_state = DEVICE_STATE.borrow_ref_mut(cs);
-                                op_code.process(cmd_data, channel, &mut device_state);
-                            });
-                        }
+                        critical_section::with(|cs| {
+                            let mut device_state = DEVICE_STATE.borrow_ref_mut(cs);
+                            op_code.process(cmd_data, channel, &mut device_state);
+                        });
                     }
+                }
 
-                    // Ensure reply is sent
-                    if let Ok(reply) = event.accept() {
-                        reply.send().await;
-                    } else {
-                        warn!("Error sending response");
-                    }
+                // Ensure reply is sent
+                if let Ok(reply) = event.accept() {
+                    reply.send().await;
                 } else {
-                    warn!("Error processing event");
+                    warn!("Error sending response");
                 }
             }
             _ => {}
