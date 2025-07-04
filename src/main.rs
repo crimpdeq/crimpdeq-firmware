@@ -70,7 +70,7 @@ async fn main(spawner: Spawner) -> ! {
     // Allocate 72KB of heap memory
     esp_alloc::heap_allocator!(size: 72 * 1024);
 
-    debug!("{}", Hx711::get_calibration().unwrap());
+    debug!("{}", Hx711::get_calibration_factor().unwrap());
 
     // Initialize BLE controller
     let timg0 = TimerGroup::new(peripherals.TIMG0);
@@ -178,6 +178,7 @@ async fn measurement_task(
     delay: Delay,
 ) {
     let mut load_cell = Hx711::new(data_pin, clock_pin, delay);
+    load_cell.tare().await;
 
     loop {
         // Get current device state
@@ -236,7 +237,7 @@ async fn measurement_task(
             }
             MeasurementTaskStatus::DefaultCalibration => {
                 // Reset calibration to default values
-                if let Err(e) = load_cell.default_calibration() {
+                if let Err(e) = load_cell.default_calibration_factor() {
                     error!(
                         "Error applying default calibration: {:?}",
                         defmt::Debug2Format(&e)

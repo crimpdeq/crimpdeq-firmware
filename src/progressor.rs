@@ -167,7 +167,10 @@ impl ControlOpCode {
                 DataPoint::from(response).send(channel);
             }
             ControlOpCode::GetCalibration => {
-                info!("GetCalibration: {:?}", Hx711::get_calibration().unwrap());
+                info!(
+                    "GetCalibration: {:?}",
+                    Hx711::get_calibration_factor().unwrap()
+                );
             }
             ControlOpCode::AddCalibrationPoint => {
                 if data.len() < 5 {
