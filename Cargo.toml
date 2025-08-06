@@ -21,15 +21,15 @@ embassy-time = { version = "0.4.0", features = ["defmt"] }
 embedded-hal = "1.0.0"
 embedded-storage = "0.3.1"
 esp-alloc = { version = "0.8.0", features = ["defmt"] }
-esp-hal = { version = "1.0.0-beta.1", features = [
+esp-hal = { version = "1.0.0-rc.0", features = [
     "defmt",
     "esp32c3",
     "unstable",
 ] }
-esp-hal-embassy = { version = "0.8.1", features = ["defmt", "esp32c3"] }
-esp-println = { version = "0.14.0", features = ["esp32c3", "log-04"] }
-esp-storage = { version = "0.6.0", features = ["esp32c3"] }
-esp-wifi = { version = "0.14.1", default-features = false, features = [
+esp-hal-embassy = { version = "0.9.0", features = ["defmt", "esp32c3"] }
+esp-println = { version = "0.15.0", features = ["esp32c3"] }
+esp-storage = { version = "0.7.0", features = ["esp32c3"] }
+esp-wifi = { version = "0.15.0", default-features = false, features = [
     "ble",
     "builtin-scheduler",
     "defmt",
@@ -38,7 +38,7 @@ esp-wifi = { version = "0.14.1", default-features = false, features = [
 ] }
 panic-rtt-target = { version = "0.2.0", features = ["defmt"] }
 static_cell = "2.1.1"
-trouble-host = { version = "0.2.3", features = ["defmt"] }
+trouble-host = { version = "0.2.4", features = ["defmt"] }
 
 [profile.dev]
 # Rust debug is too slow.
