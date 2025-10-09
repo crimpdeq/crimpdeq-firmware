@@ -6,25 +6,27 @@ use core::cell::RefCell;
 use bt_hci::controller::ExternalController;
 use critical_section::Mutex;
 use defmt::{debug, error, info, warn};
-use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_futures::{join::join, select::select};
 use embassy_sync::channel::Channel;
 use embassy_time::{Duration, Timer};
-use esp_alloc as _;
 use esp_hal::{
     clock::CpuClock,
     delay::Delay,
     gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull},
-    rng::Rng,
+    interrupt::software::SoftwareInterruptControl,
+    ram,
     time,
-    timer::{systimer::SystemTimer, timg::TimerGroup},
+    timer::timg::TimerGroup,
     Config,
 };
 use esp_println as _;
-use esp_wifi::{ble::controller::BleConnector, init, EspWifiController};
+use esp_radio::ble::controller::BleConnector;
 use panic_rtt_target as _;
+use static_cell::StaticCell;
 use trouble_host::prelude::*;
+
+extern crate alloc;
 
 use crate::{
     ble::{advertise, Server, CONNECTIONS_MAX, L2CAP_CHANNELS_MAX, L2CAP_MTU},
@@ -64,23 +66,31 @@ static DEVICE_STATE: Mutex<RefCell<DeviceState>> = Mutex::new(RefCell::new(Devic
 // ESP-IDF App Descriptor
 esp_bootloader_esp_idf::esp_app_desc!();
 
-#[esp_hal_embassy::main]
+#[esp_rtos::main]
 async fn main(spawner: Spawner) -> ! {
+    // Initialize RTT for defmt logging
+    rtt_target::rtt_init_defmt!();
+
     // System initialization
     let config = Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
 
-    // Allocate 72KB of heap memory
-    esp_alloc::heap_allocator!(size: 72 * 1024);
+    // Allocate heap memory
+    esp_alloc::heap_allocator!(#[ram(reclaimed)] size: 66320);
 
-    debug!("{}", Hx711::get_calibration_factor().unwrap());
-
-    // Initialize BLE controller
+    // Initialize RTOS
     let timg0 = TimerGroup::new(peripherals.TIMG0);
-    let esp_wifi_ctrl = &*mk_static!(
-        EspWifiController<'static>,
-        init(timg0.timer0, Rng::new(peripherals.RNG),).unwrap()
-    );
+    let sw_interrupt = SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
+    esp_rtos::start(timg0.timer0, sw_interrupt.software_interrupt0);
+
+    // Initialize radio
+    static RADIO: StaticCell<esp_radio::Controller<'static>> = StaticCell::new();
+    let radio = RADIO.init(esp_radio::init().unwrap());
+
+    // Initialize BLE
+    let bluetooth = peripherals.BT;
+    let connector = BleConnector::new(radio, bluetooth, Default::default()).unwrap();
+    let controller: ExternalController<_, 20> = ExternalController::new(connector);
 
     // Initialize load cell pins
     let clock_pin = Output::new(peripherals.GPIO5, Level::Low, OutputConfig::default());
@@ -90,14 +100,6 @@ async fn main(spawner: Spawner) -> ! {
     );
     let delay = Delay::new();
 
-    // Initialize embassy
-    let systimer = SystemTimer::new(peripherals.SYSTIMER);
-    esp_hal_embassy::init(systimer.alarm0);
-
-    // Initialize BLE
-    let bluetooth = peripherals.BT;
-    let connector = BleConnector::new(esp_wifi_ctrl, bluetooth);
-    let controller: ExternalController<_, 20> = ExternalController::new(connector);
     // Use the last 6 bytes of the DEVIC_NAME for the address
     let device_name = env!("DEVICE_NAME");
     let mut buff: [u8; 6] = [0u8; 6];

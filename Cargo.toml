@@ -7,39 +7,52 @@ version = "0.1.0"
 
 [dependencies]
 arrayvec = { version = "0.7.6", default-features = false }
-bt-hci = { version = "0.3.2", features = ["defmt"] }
+bt-hci = { version = "0.6.0", features = ["defmt"] }
 critical-section = "1.2.0"
 defmt = "1.0.1"
-defmt-rtt = "1.0.0"
-embassy-executor = { version = "0.7.0", features = [
-    "defmt",
-    "task-arena-size-20480",
-] }
+embassy-executor = { version = "0.9.1", features = ["defmt"] }
 embassy-futures = "0.1.2"
 embassy-sync = { version = "0.7.2", features = ["defmt"] }
-embassy-time = { version = "0.4.0", features = ["defmt"] }
+embassy-time = { version = "0.5.0", features = ["defmt"] }
 embedded-hal = "1.0.0"
 embedded-storage = "0.3.1"
-esp-alloc = { version = "0.8.0", features = ["defmt"] }
-esp-bootloader-esp-idf = { version = "0.2.0", features = ["esp32c3"] }
-esp-hal = { version = "1.0.0-rc.0", features = [
+esp-alloc = { git = "https://github.com/esp-rs/esp-hal", package = "esp-alloc", rev = "452c042", features = [
+    "defmt",
+] }
+esp-bootloader-esp-idf = { git = "https://github.com/esp-rs/esp-hal", package = "esp-bootloader-esp-idf", rev = "452c042", features = [
+    "esp32c3",
+] }
+esp-hal = { git = "https://github.com/esp-rs/esp-hal", package = "esp-hal", rev = "452c042", features = [
     "defmt",
     "esp32c3",
     "unstable",
 ] }
-esp-hal-embassy = { version = "0.9.0", features = ["defmt", "esp32c3"] }
-esp-println = { version = "0.15.0", features = ["esp32c3"] }
-esp-storage = { version = "0.7.0", features = ["esp32c3"] }
-esp-wifi = { version = "0.15.0", default-features = false, features = [
+esp-println = { git = "https://github.com/esp-rs/esp-hal", package = "esp-println", rev = "452c042", features = [
+    "esp32c3",
+] }
+esp-radio = { git = "https://github.com/esp-rs/esp-hal", package = "esp-radio", rev = "452c042", features = [
     "ble",
-    "builtin-scheduler",
     "defmt",
     "esp-alloc",
     "esp32c3",
+    "unstable",
+] }
+esp-rtos = { git = "https://github.com/esp-rs/esp-hal", package = "esp-rtos", rev = "452c042", features = [
+    "defmt",
+    "embassy",
+    "esp-alloc",
+    "esp-radio",
+    "esp32c3",
+
+] }
+esp-storage = { git = "https://github.com/esp-rs/esp-hal", package = "esp-storage", rev = "452c042", features = [
+    "defmt",
+    "esp32c3",
 ] }
 panic-rtt-target = { version = "0.2.0", features = ["defmt"] }
+rtt-target = { version = "0.6.1", features = ["defmt"] }
 static_cell = "2.1.1"
-trouble-host = { version = "0.2.4", features = ["defmt"] }
+trouble-host = { version = "0.4.0", features = ["defmt"] }
 
 [profile.dev]
 # Rust debug is too slow.
