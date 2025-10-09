@@ -10,8 +10,6 @@ use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
 use esp_hal::time;
 use trouble_host::types::gatt_traits::{AsGatt, FromGatt, FromGattError};
 
-use crate::hx711::Hx711;
-
 /// Size of the channel used to send data points
 const DATA_POINT_COMMAND_CHANNEL_SIZE: usize = 80;
 /// Channel used to send data points
@@ -36,6 +34,8 @@ pub enum MeasurementTaskStatus {
     Tare,
     /// Restores default calibration values
     DefaultCalibration,
+    /// Get the calibration values
+    GetCalibration,
 }
 
 /// Device state management
@@ -87,6 +87,10 @@ impl DeviceState {
     /// Set calibration mode with the given weight
     pub fn calibrate(&mut self, weight: f32) {
         self.measurement_status = MeasurementTaskStatus::Calibration(weight);
+    }
+
+    pub fn get_calibration(&mut self) {
+        self.measurement_status = MeasurementTaskStatus::GetCalibration;
     }
 
     /// Reset to default calibration
@@ -167,10 +171,8 @@ impl ControlOpCode {
                 DataPoint::from(response).send(channel);
             }
             ControlOpCode::GetCalibration => {
-                info!(
-                    "GetCalibration: {:?}",
-                    Hx711::get_calibration_factor().unwrap()
-                );
+                info!("GetCalibration requested");
+                device_state.get_calibration();
             }
             ControlOpCode::AddCalibrationPoint => {
                 if data.len() < 5 {

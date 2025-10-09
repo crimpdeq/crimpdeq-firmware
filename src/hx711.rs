@@ -77,6 +77,8 @@ pub struct Hx711<'d> {
     clock: Output<'d>,
     /// Delay instance
     delay: Delay,
+    /// Flash storage
+    flash: FlashStorage<'d>,
     /// Gain mode
     gain_mode: GainMode,
     /// Tare value
@@ -87,26 +89,37 @@ pub struct Hx711<'d> {
 
 impl<'d> Hx711<'d> {
     /// Create a new HX711 driver.
-    pub fn new(data: Input<'d>, mut clock: Output<'d>, delay: Delay) -> Self {
+    pub fn new(
+        data: Input<'d>,
+        mut clock: Output<'d>,
+        delay: Delay,
+        flash: FlashStorage<'d>,
+    ) -> Self {
         info!("HX711 initialized");
         clock.set_low();
-        Self {
+
+        let mut hx711 = Self {
             data,
             clock,
             delay,
+            flash,
             gain_mode: GainMode::A64,
             tare_value: 0,
-            calibration_factor: Self::get_calibration_factor()
-                .unwrap_or(DEFAULT_CALIBRATION_FACTOR),
-        }
+            calibration_factor: 0.0,
+        };
+
+        hx711.calibration_factor = hx711
+            .get_calibration_factor()
+            .unwrap_or(DEFAULT_CALIBRATION_FACTOR);
+
+        hx711
     }
 
     /// Read calibration factor from flash
-    fn read_from_flash() -> Result<f32, Hx711Error> {
-        let mut flash = FlashStorage::new();
+    fn read_from_flash(&mut self) -> Result<f32, Hx711Error> {
         let mut bytes = [0u8; 4];
 
-        flash.read(NVS_ADDR, &mut bytes).map_err(|_| {
+        self.flash.read(NVS_ADDR, &mut bytes).map_err(|_| {
             error!("Failed to read calibration factor from flash");
             Hx711Error::FlashError
         })?;
@@ -127,17 +140,16 @@ impl<'d> Hx711<'d> {
     }
 
     /// Write calibration factor to flash
-    fn write_to_flash(calibration_factor: f32) -> Result<(), Hx711Error> {
+    fn write_to_flash(&mut self, calibration_factor: f32) -> Result<(), Hx711Error> {
         if !Self::is_valid_calibration_factor(calibration_factor) {
             return Err(Hx711Error::InvalidCalibration);
         }
 
-        let mut flash = FlashStorage::new();
         let mut bytes = [0u8; 4];
 
         bytes[0..4].copy_from_slice(&calibration_factor.to_le_bytes());
 
-        flash.write(NVS_ADDR, &bytes).map_err(|_| {
+        self.flash.write(NVS_ADDR, &bytes).map_err(|_| {
             error!("Failed to write calibration factor to flash");
             Hx711Error::FlashError
         })?;
@@ -153,15 +165,15 @@ impl<'d> Hx711<'d> {
         }
 
         debug!("Updating calibration factor: {}", factor);
-        Self::write_to_flash(factor)?;
+        self.write_to_flash(factor)?;
 
         self.calibration_factor = factor;
         Ok(())
     }
 
-    pub fn get_calibration_factor() -> Result<f32, Hx711Error> {
+    pub fn get_calibration_factor(&mut self) -> Result<f32, Hx711Error> {
         // Get the calibration factor from the NVS flash storage.
-        match Self::read_from_flash() {
+        match self.read_from_flash() {
             Ok(factor) => {
                 info!("Read calibration factor: {:?}", factor);
                 Ok(factor)
@@ -182,7 +194,7 @@ impl<'d> Hx711<'d> {
     /// Set the default calibration factor.
     pub fn default_calibration_factor(&mut self) -> Result<(), Hx711Error> {
         debug!("Restoring default calibration factor");
-        Self::write_to_flash(DEFAULT_CALIBRATION_FACTOR)?;
+        self.write_to_flash(DEFAULT_CALIBRATION_FACTOR)?;
         self.calibration_factor = DEFAULT_CALIBRATION_FACTOR;
         Ok(())
     }

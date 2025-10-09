@@ -22,6 +22,7 @@ use esp_hal::{
 };
 use esp_println as _;
 use esp_radio::ble::controller::BleConnector;
+use esp_storage::FlashStorage;
 use panic_rtt_target as _;
 use static_cell::StaticCell;
 use trouble_host::prelude::*;
@@ -99,6 +100,7 @@ async fn main(spawner: Spawner) -> ! {
         InputConfig::default().with_pull(Pull::None),
     );
     let delay = Delay::new();
+    let flash = FlashStorage::new(peripherals.FLASH);
 
     // Use the last 6 bytes of the DEVIC_NAME for the address
     let device_name = env!("DEVICE_NAME");
@@ -131,7 +133,7 @@ async fn main(spawner: Spawner) -> ! {
 
     // Spawn tasks
     spawner
-        .spawn(measurement_task(channel, clock_pin, data_pin, delay))
+        .spawn(measurement_task(channel, clock_pin, data_pin, delay, flash))
         .unwrap();
 
     let _ = join(ble_task(runner), async {
@@ -176,8 +178,9 @@ async fn measurement_task(
     clock_pin: Output<'static>,
     data_pin: Input<'static>,
     delay: Delay,
+    flash: FlashStorage<'static>,
 ) {
-    let mut load_cell = Hx711::new(data_pin, clock_pin, delay);
+    let mut load_cell = Hx711::new(data_pin, clock_pin, delay, flash);
     load_cell.tare().await;
 
     loop {
@@ -243,6 +246,13 @@ async fn measurement_task(
                         defmt::Debug2Format(&e)
                     );
                 }
+                critical_section::with(|cs| {
+                    let mut state = DEVICE_STATE.borrow_ref_mut(cs);
+                    state.measurement_status = MeasurementTaskStatus::Disabled;
+                });
+            }
+            MeasurementTaskStatus::GetCalibration => {
+                load_cell.get_calibration_factor().unwrap();
                 critical_section::with(|cs| {
                     let mut state = DEVICE_STATE.borrow_ref_mut(cs);
                     state.measurement_status = MeasurementTaskStatus::Disabled;
