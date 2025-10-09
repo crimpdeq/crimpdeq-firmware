@@ -15,7 +15,6 @@ use esp_hal::{
     delay::Delay,
     gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull},
     interrupt::software::SoftwareInterruptControl,
-    ram,
     time,
     timer::timg::TimerGroup,
     Config,
@@ -76,8 +75,8 @@ async fn main(spawner: Spawner) -> ! {
     let config = Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
 
-    // Allocate heap memory
-    esp_alloc::heap_allocator!(#[ram(reclaimed)] size: 66320);
+    // Allocate 72KB of heap memory
+    esp_alloc::heap_allocator!(size: 72 * 1024);
 
     // Initialize RTOS
     let timg0 = TimerGroup::new(peripherals.TIMG0);

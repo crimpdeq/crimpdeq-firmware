@@ -16,28 +16,28 @@ embassy-sync = { version = "0.7.2", features = ["defmt"] }
 embassy-time = { version = "0.5.0", features = ["defmt"] }
 embedded-hal = "1.0.0"
 embedded-storage = "0.3.1"
-esp-alloc = { git = "https://github.com/esp-rs/esp-hal", package = "esp-alloc", rev = "452c042", features = [
+esp-alloc = { git = "https://github.com/esp-rs/esp-hal", package = "esp-alloc", rev = "4ee4d73", features = [
     "defmt",
 ] }
-esp-bootloader-esp-idf = { git = "https://github.com/esp-rs/esp-hal", package = "esp-bootloader-esp-idf", rev = "452c042", features = [
+esp-bootloader-esp-idf = { git = "https://github.com/esp-rs/esp-hal", package = "esp-bootloader-esp-idf", rev = "4ee4d73", features = [
     "esp32c3",
 ] }
-esp-hal = { git = "https://github.com/esp-rs/esp-hal", package = "esp-hal", rev = "452c042", features = [
+esp-hal = { git = "https://github.com/esp-rs/esp-hal", package = "esp-hal", rev = "4ee4d73", features = [
     "defmt",
     "esp32c3",
     "unstable",
 ] }
-esp-println = { git = "https://github.com/esp-rs/esp-hal", package = "esp-println", rev = "452c042", features = [
+esp-println = { git = "https://github.com/esp-rs/esp-hal", package = "esp-println", rev = "4ee4d73", features = [
     "esp32c3",
 ] }
-esp-radio = { git = "https://github.com/esp-rs/esp-hal", package = "esp-radio", rev = "452c042", features = [
+esp-radio = { git = "https://github.com/esp-rs/esp-hal", package = "esp-radio", rev = "4ee4d73", features = [
     "ble",
     "defmt",
     "esp-alloc",
     "esp32c3",
     "unstable",
 ] }
-esp-rtos = { git = "https://github.com/esp-rs/esp-hal", package = "esp-rtos", rev = "452c042", features = [
+esp-rtos = { git = "https://github.com/esp-rs/esp-hal", package = "esp-rtos", rev = "4ee4d73", features = [
     "defmt",
     "embassy",
     "esp-alloc",
@@ -45,7 +45,7 @@ esp-rtos = { git = "https://github.com/esp-rs/esp-hal", package = "esp-rtos", re
     "esp32c3",
 
 ] }
-esp-storage = { git = "https://github.com/esp-rs/esp-hal", package = "esp-storage", rev = "452c042", features = [
+esp-storage = { git = "https://github.com/esp-rs/esp-hal", package = "esp-storage", rev = "4ee4d73", features = [
     "defmt",
     "esp32c3",
 ] }
