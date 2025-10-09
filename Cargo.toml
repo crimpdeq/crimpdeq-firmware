@@ -21,6 +21,7 @@ embassy-time = { version = "0.4.0", features = ["defmt"] }
 embedded-hal = "1.0.0"
 embedded-storage = "0.3.1"
 esp-alloc = { version = "0.8.0", features = ["defmt"] }
+esp-bootloader-esp-idf = { version = "0.2.0", features = ["esp32c3"] }
 esp-hal = { version = "1.0.0-rc.0", features = [
     "defmt",
     "esp32c3",

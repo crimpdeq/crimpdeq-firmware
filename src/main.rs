@@ -61,6 +61,9 @@ static DEVICE_STATE: Mutex<RefCell<DeviceState>> = Mutex::new(RefCell::new(Devic
     calibration_points: [None, None],
 }));
 
+// ESP-IDF App Descriptor
+esp_bootloader_esp_idf::esp_app_desc!();
+
 #[esp_hal_embassy::main]
 async fn main(spawner: Spawner) -> ! {
     // System initialization
