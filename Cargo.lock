@@ -145,7 +145,6 @@ dependencies = [
  "esp-alloc",
  "esp-bootloader-esp-idf",
  "esp-hal",
- "esp-println",
  "esp-radio",
  "esp-rtos",
  "esp-storage",
@@ -681,18 +680,6 @@ dependencies = [
  "esp-metadata-generated",
  "esp-sync",
  "esp-wifi-sys",
-]
-
-[[package]]
-name = "esp-println"
-version = "0.15.0"
-source = "git+https://github.com/esp-rs/esp-hal?rev=4ee4d73#4ee4d738531e7e5b7517fe8723e8f093233facd1"
-dependencies = [
- "document-features",
- "esp-metadata-generated",
- "esp-sync",
- "log",
- "portable-atomic",
 ]
 
 [[package]]

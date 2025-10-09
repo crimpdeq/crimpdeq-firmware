@@ -27,9 +27,6 @@ esp-hal = { git = "https://github.com/esp-rs/esp-hal", package = "esp-hal", rev 
     "esp32c3",
     "unstable",
 ] }
-esp-println = { git = "https://github.com/esp-rs/esp-hal", package = "esp-println", rev = "4ee4d73", features = [
-    "esp32c3",
-] }
 esp-radio = { git = "https://github.com/esp-rs/esp-hal", package = "esp-radio", rev = "4ee4d73", features = [
     "ble",
     "defmt",

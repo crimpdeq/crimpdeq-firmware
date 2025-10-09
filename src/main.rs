@@ -19,7 +19,6 @@ use esp_hal::{
     timer::timg::TimerGroup,
     Config,
 };
-use esp_println as _;
 use esp_radio::ble::controller::BleConnector;
 use esp_storage::FlashStorage;
 use panic_rtt_target as _;
