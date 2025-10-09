@@ -147,7 +147,6 @@ async fn main(spawner: Spawner) -> ! {
                     .await;
                 }
                 Err(e) => {
-                    let e = defmt::Debug2Format(&e);
                     panic!("BLE error: {:?}", e);
                 }
             }
@@ -164,7 +163,6 @@ async fn main(spawner: Spawner) -> ! {
 async fn ble_task<C: Controller, P: PacketPool>(mut runner: Runner<'_, C, P>) {
     loop {
         if let Err(e) = runner.run().await {
-            let e = defmt::Debug2Format(&e);
             panic!("BLE error: {:?}", e);
         }
     }
