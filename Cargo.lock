@@ -1621,8 +1621,7 @@ dependencies = [
 [[package]]
 name = "trouble-host"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "78a852f6e193f71732ce3c33661fea2575ba3dac6f48bbe1713059373f96e864"
+source = "git+https://github.com/embassy-rs/trouble?branch=feature-gate-conn-param-accept#3c13ec7fc365d150ec6626258f653cb5d0f9c746"
 dependencies = [
  "bt-hci",
  "defmt 1.0.1",
@@ -1641,8 +1640,7 @@ dependencies = [
 [[package]]
 name = "trouble-host-macros"
 version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bcb85bec3a8393c22ca1a7c25c82c2d33689ab412f3487c492fd01a033ede7c2"
+source = "git+https://github.com/embassy-rs/trouble?branch=feature-gate-conn-param-accept#3c13ec7fc365d150ec6626258f653cb5d0f9c746"
 dependencies = [
  "convert_case",
  "darling 0.20.11",

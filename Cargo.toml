@@ -49,7 +49,7 @@ esp-storage = { git = "https://github.com/esp-rs/esp-hal", package = "esp-storag
 panic-rtt-target = { version = "0.2.0", features = ["defmt"] }
 rtt-target = { version = "0.6.1", features = ["defmt"] }
 static_cell = "2.1.1"
-trouble-host = { version = "0.4.0", features = ["defmt"] }
+trouble-host = { git = "https://github.com/embassy-rs/trouble", branch = "feature-gate-conn-param-accept", features = ["defmt"] }
 
 [profile.dev]
 # Rust debug is too slow.
