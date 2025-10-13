@@ -308,8 +308,9 @@ impl DataPoint {
     pub fn new(response_code: u8, length: u8, data: &[u8]) -> Self {
         let mut value = [0; MAX_PAYLOAD_SIZE];
         let len = length.min(MAX_PAYLOAD_SIZE as u8) as usize;
-        if len > 0 && !data.is_empty() {
-            value[..len.min(data.len())].copy_from_slice(&data[..len.min(data.len())]);
+        let copy_len = len.min(data.len());
+        if copy_len > 0 {
+            value[..copy_len].copy_from_slice(&data[..copy_len]);
         }
 
         Self {

@@ -100,7 +100,7 @@ async fn main(spawner: Spawner) -> ! {
     let delay = Delay::new();
     let flash = FlashStorage::new(peripherals.FLASH);
 
-    // Use the last 6 bytes of the DEVIC_NAME for the address
+    // Use the last 6 bytes of the DEVICE_NAME for the address
     let device_name = env!("DEVICE_NAME");
     let mut buff: [u8; 6] = [0u8; 6];
     buff.copy_from_slice(&device_name.as_bytes()[device_name.len() - 6..]);

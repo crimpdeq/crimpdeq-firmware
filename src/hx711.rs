@@ -304,7 +304,7 @@ impl<'d> Hx711<'d> {
     /// Reads a calibrated value, in kg.
     pub async fn read_calibrated(&mut self) -> f32 {
         let raw_tared = self.read_tared().await;
-        let calibrated_value = raw_tared as f32 * self.calibration_factor;
+        let calibrated_value = (raw_tared as f32) * self.calibration_factor;
         // Convert to kg
         calibrated_value / 1000.0
     }
