@@ -16,25 +16,21 @@ embassy-sync = { version = "0.7.2", features = ["defmt"] }
 embassy-time = { version = "0.5.0", features = ["defmt"] }
 embedded-hal = "1.0.0"
 embedded-storage = "0.3.1"
-esp-alloc = { git = "https://github.com/esp-rs/esp-hal", package = "esp-alloc", rev = "4ee4d73", features = [
-    "defmt",
-] }
-esp-bootloader-esp-idf = { git = "https://github.com/esp-rs/esp-hal", package = "esp-bootloader-esp-idf", rev = "4ee4d73", features = [
-    "esp32c3",
-] }
-esp-hal = { git = "https://github.com/esp-rs/esp-hal", package = "esp-hal", rev = "4ee4d73", features = [
+esp-alloc = { version = "0.9.0", features = ["defmt"] }
+esp-bootloader-esp-idf = { version = "0.3.0", features = ["esp32c3"] }
+esp-hal = { version = "1.0.0-rc.1", features = [
     "defmt",
     "esp32c3",
     "unstable",
 ] }
-esp-radio = { git = "https://github.com/esp-rs/esp-hal", package = "esp-radio", rev = "4ee4d73", features = [
+esp-radio = { version = "0.16.0", features = [
     "ble",
     "defmt",
     "esp-alloc",
     "esp32c3",
     "unstable",
 ] }
-esp-rtos = { git = "https://github.com/esp-rs/esp-hal", package = "esp-rtos", rev = "4ee4d73", features = [
+esp-rtos = { version = "0.1.0", features = [
     "defmt",
     "embassy",
     "esp-alloc",
@@ -42,14 +38,13 @@ esp-rtos = { git = "https://github.com/esp-rs/esp-hal", package = "esp-rtos", re
     "esp32c3",
 
 ] }
-esp-storage = { git = "https://github.com/esp-rs/esp-hal", package = "esp-storage", rev = "4ee4d73", features = [
-    "defmt",
-    "esp32c3",
-] }
+esp-storage = { version = "0.8.0", features = ["defmt", "esp32c3"] }
 panic-rtt-target = { version = "0.2.0", features = ["defmt"] }
 rtt-target = { version = "0.6.1", features = ["defmt"] }
 static_cell = "2.1.1"
-trouble-host = { git = "https://github.com/embassy-rs/trouble", branch = "feature-gate-conn-param-accept", features = ["defmt"] }
+trouble-host = { git = "https://github.com/embassy-rs/trouble", branch = "feature-gate-conn-param-accept", features = [
+    "defmt",
+] }
 
 [profile.dev]
 # Rust debug is too slow.
