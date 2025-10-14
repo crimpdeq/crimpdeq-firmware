@@ -13,7 +13,7 @@ Crimpdeq is a bluetooth dynamometer designed for finger training, powered by an 
 - Open-source PCB design
 - USB-C rechargeable battery
 - Compatible with Tindeq Progressor app ([Android](https://play.google.com/store/apps/details?id=com.progressor&hl=es_419) [iOs](https://apps.apple.com/es/app/tindeq-progressor/id1380412428))
-- Compatible with ClimbHarder app ([Android](https://play.google.com/store/apps/details?id=com.holdtight.climbharder&pcampaignid=web_share) [iOs](https://apps.apple.com/us/app/climbharder-no-hang-training/id6730120024))
+- Compatible with Frez (formerly ClimbHarder) app ([Android](https://play.google.com/store/apps/details?id=com.holdtight.climbharder&pcampaignid=web_share) [iOs](https://apps.apple.com/us/app/climbharder-no-hang-training/id6730120024))
 - Sampling Frequency: 80 Hz
 - Design Load: 1500 N (150 kg) (Full Scale)
 - Precision:

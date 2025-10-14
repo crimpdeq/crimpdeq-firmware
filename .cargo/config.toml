@@ -14,13 +14,8 @@ DEVICE_ID             = "AAAAAA"
 DEVICE_NAME           = "Progressor_7125"
 DEVICE_VERSION_NUMBER = "1.1.4"
 
-# esp-wifi config
-ESP_WIFI_CONFIG_TICK_RATE_HZ = "200"
-
 [build]
 rustflags = [
-  "-C",
-  "link-arg=-Tlinkall.x",
   # Required to obtain backtraces (e.g. when using the "esp-backtrace" crate.)
   # NOTE: May negatively impact performance of produced code
   "-C",
@@ -28,6 +23,9 @@ rustflags = [
   # Defmt support
   "-C",
   "link-arg=-Tdefmt.x",
+  # Link all sections
+  "-C",
+  "link-arg=-Tlinkall.x",
 ]
 
 target = "riscv32imc-unknown-none-elf"
