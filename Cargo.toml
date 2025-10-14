@@ -40,11 +40,9 @@ esp-rtos = { version = "0.1.0", features = [
 ] }
 esp-storage = { version = "0.8.0", features = ["defmt", "esp32c3"] }
 panic-rtt-target = { version = "0.2.0", features = ["defmt"] }
-rtt-target = { version = "0.6.1", features = ["defmt"] }
+rtt-target = { version = "0.6.2", features = ["defmt"] }
 static_cell = "2.1.1"
-trouble-host = { git = "https://github.com/embassy-rs/trouble", branch = "feature-gate-conn-param-accept", features = [
-    "defmt",
-] }
+trouble-host = { version = "0.5.0", features = ["defmt"] }
 
 [profile.dev]
 # Rust debug is too slow.
