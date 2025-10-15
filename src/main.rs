@@ -89,7 +89,7 @@ async fn main(spawner: Spawner) -> ! {
     // Initialize BLE
     let bluetooth = peripherals.BT;
     let connector = BleConnector::new(radio, bluetooth, Default::default()).unwrap();
-    let controller: ExternalController<_, 20> = ExternalController::new(connector);
+    let controller: ExternalController<_, 1> = ExternalController::new(connector);
 
     // Initialize load cell pins
     let clock_pin = Output::new(peripherals.GPIO5, Level::Low, OutputConfig::default());

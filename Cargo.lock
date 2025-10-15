@@ -754,9 +754,9 @@ dependencies = [
 
 [[package]]
 name = "esp-rtos"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7844233ccdf92eaf4134c08c56c1b4a874f7d59e6249c579e912ecc6c9312fda"
+checksum = "d01dbf6e54315b6e05da3ad828c7da1ba98f541eb8b0c5d5d260b8eb3b64a8cd"
 dependencies = [
  "allocator-api2",
  "cfg-if",

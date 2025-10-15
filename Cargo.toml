@@ -30,7 +30,7 @@ esp-radio = { version = "0.16.0", features = [
     "esp32c3",
     "unstable",
 ] }
-esp-rtos = { version = "0.1.0", features = [
+esp-rtos = { version = "0.1.1", features = [
     "defmt",
     "embassy",
     "esp-alloc",
