@@ -6,10 +6,12 @@ on:
       - "**/README.md"
       - "**/*.md"
       - "**/*.kicad*"
+      - .github/workflows/release.yml
   pull_request:
     paths-ignore:
       - "**/README.md"
       - "**/*.kicad*"
+      - .github/workflows/release.yml
   workflow_dispatch:
 
 env:

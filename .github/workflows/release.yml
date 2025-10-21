@@ -11,6 +11,7 @@ env:
 jobs:
   publish-release:
     name: Generating binary
+    permissions: write-all
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
