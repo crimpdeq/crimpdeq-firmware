@@ -49,6 +49,8 @@ pub struct DeviceState {
     pub start_time: u32,
     /// Calibration points [point1, point2]
     pub calibration_points: [Option<f32>; 2],
+    /// Battery voltage in millivolts
+    pub battery_voltage: u32,
 }
 
 impl Default for DeviceState {
@@ -58,6 +60,7 @@ impl Default for DeviceState {
             tared: false,
             start_time: 0,
             calibration_points: [None, None],
+            battery_voltage: 4300,
         }
     }
 }
@@ -198,8 +201,7 @@ impl ControlOpCode {
                 device_state.reset_calibration();
             }
             ControlOpCode::SampleBattery => {
-                // Hardcoded for now
-                let voltage = 4300;
+                let voltage = device_state.battery_voltage;
                 let response = ResponseCode::SampleBatteryVoltage(voltage);
                 info!("SampleBattery: {:?}", response);
                 DataPoint::from(response).send(channel);

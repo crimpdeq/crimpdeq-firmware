@@ -11,12 +11,15 @@ use embassy_futures::{join::join, select::select};
 use embassy_sync::channel::Channel;
 use embassy_time::{Duration, Timer};
 use esp_hal::{
+    analog::adc::{Adc, AdcCalCurve, AdcConfig, AdcPin, Attenuation},
     clock::CpuClock,
     delay::Delay,
     gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull},
     interrupt::software::SoftwareInterruptControl,
+    peripherals,
     time,
     timer::timg::TimerGroup,
+    Async,
     Config,
 };
 use esp_radio::ble::controller::BleConnector;
@@ -60,6 +63,7 @@ static DEVICE_STATE: Mutex<RefCell<DeviceState>> = Mutex::new(RefCell::new(Devic
     tared: false,
     start_time: 0,
     calibration_points: [None, None],
+    battery_voltage: 4300,
 }));
 
 // ESP-IDF App Descriptor
@@ -100,6 +104,13 @@ async fn main(spawner: Spawner) -> ! {
     let delay = Delay::new();
     let flash = FlashStorage::new(peripherals.FLASH);
 
+    // Initialize battery voltage reading
+    let mut adc_config = AdcConfig::new();
+    let analog_pin = peripherals.GPIO1;
+    let battery_pin =
+        adc_config.enable_pin_with_cal::<_, AdcCalCurve<_>>(analog_pin, Attenuation::_11dB);
+    let battery_adc = Adc::new(peripherals.ADC1, adc_config).into_async();
+
     // Use the last 6 bytes of the DEVICE_NAME for the address
     let device_name = env!("DEVICE_NAME");
     let mut buff: [u8; 6] = [0u8; 6];
@@ -133,6 +144,9 @@ async fn main(spawner: Spawner) -> ! {
     spawner
         .spawn(measurement_task(channel, clock_pin, data_pin, delay, flash))
         .unwrap();
+    spawner
+        .spawn(battery_voltage_task(battery_adc, battery_pin))
+        .unwrap();
 
     let _ = join(ble_task(runner), async {
         loop {
@@ -165,6 +179,34 @@ async fn ble_task<C: Controller, P: PacketPool>(mut runner: Runner<'_, C, P>) {
         if let Err(e) = runner.run().await {
             panic!("BLE error: {:?}", e);
         }
+    }
+}
+
+#[embassy_executor::task]
+async fn battery_voltage_task(
+    mut adc: Adc<'static, peripherals::ADC1<'static>, Async>,
+    mut pin: AdcPin<
+        peripherals::GPIO1<'static>,
+        peripherals::ADC1<'static>,
+        AdcCalCurve<peripherals::ADC1<'static>>,
+    >,
+) {
+    loop {
+        let adc_voltage_mv: u16 = adc.read_oneshot(&mut pin).await;
+        debug!("ADC voltage: {:?}", adc_voltage_mv);
+
+        // Calculate battery voltage using voltage divider formula
+        // Voltage divider: R1=33k, R2=10k
+        // Formula: V_battery = (V_adc * R1 + R2) / R2
+        let battery_voltage_mv = (adc_voltage_mv as u32 * 43) / 10;
+        info!("Battery voltage: {:?}", battery_voltage_mv);
+
+        // Update device state
+        critical_section::with(|cs| {
+            let mut state = DEVICE_STATE.borrow_ref_mut(cs);
+            state.battery_voltage = battery_voltage_mv;
+        });
+        Timer::after(Duration::from_secs(45)).await;
     }
 }
 
