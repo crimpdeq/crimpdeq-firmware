@@ -39,7 +39,7 @@ pub enum MeasurementTaskStatus {
 }
 
 /// Device state management
-#[derive(Copy, Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DeviceState {
     /// Measurement status
     pub measurement_status: MeasurementTaskStatus,
@@ -51,6 +51,8 @@ pub struct DeviceState {
     pub calibration_points: [Option<f32>; 2],
     /// Battery voltage in millivolts
     pub battery_voltage: u32,
+    /// BLE disconnection time in milliseconds (None when connected)
+    pub ble_disconnection_time: Option<u32>,
 }
 
 impl Default for DeviceState {
@@ -61,6 +63,7 @@ impl Default for DeviceState {
             start_time: 0,
             calibration_points: [None, None],
             battery_voltage: 4300,
+            ble_disconnection_time: None,
         }
     }
 }
@@ -99,6 +102,26 @@ impl DeviceState {
     /// Reset to default calibration
     pub fn reset_calibration(&mut self) {
         self.measurement_status = MeasurementTaskStatus::DefaultCalibration;
+    }
+
+    /// Mark BLE as connected (clear disconnection time)
+    pub fn on_ble_connected(&mut self) {
+        self.ble_disconnection_time = None;
+    }
+
+    /// Mark BLE as disconnected (record current time)
+    pub fn on_ble_disconnected(&mut self) {
+        self.ble_disconnection_time =
+            Some((time::Instant::now().duration_since_epoch()).as_millis() as u32);
+    }
+
+    /// Get elapsed time since BLE disconnection in milliseconds
+    /// Returns None if BLE is currently connected
+    pub fn get_ble_disconnection_elapsed_ms(&self) -> Option<u32> {
+        self.ble_disconnection_time.map(|disconnect_time| {
+            let current_time = (time::Instant::now().duration_since_epoch()).as_millis() as u32;
+            current_time.saturating_sub(disconnect_time)
+        })
     }
 }
 

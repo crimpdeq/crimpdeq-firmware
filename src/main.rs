@@ -17,6 +17,7 @@ use esp_hal::{
     gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull},
     interrupt::software::SoftwareInterruptControl,
     peripherals,
+    rtc_cntl::Rtc,
     time,
     timer::timg::TimerGroup,
     Async,
@@ -64,6 +65,7 @@ static DEVICE_STATE: Mutex<RefCell<DeviceState>> = Mutex::new(RefCell::new(Devic
     start_time: 0,
     calibration_points: [None, None],
     battery_voltage: 4300,
+    ble_disconnection_time: None,
 }));
 
 // ESP-IDF App Descriptor
@@ -102,7 +104,12 @@ async fn main(spawner: Spawner) -> ! {
         InputConfig::default().with_pull(Pull::None),
     );
     let delay = Delay::new();
+
+    // Initialize Flash Storage
     let flash = FlashStorage::new(peripherals.FLASH);
+
+    // Initialize RTC
+    let rtc = Rtc::new(peripherals.LPWR);
 
     // Initialize battery voltage reading
     let mut adc_config = AdcConfig::new();
@@ -147,11 +154,16 @@ async fn main(spawner: Spawner) -> ! {
     spawner
         .spawn(battery_voltage_task(battery_adc, battery_pin))
         .unwrap();
+    spawner.spawn(deep_sleep_task(rtc)).unwrap();
 
     let _ = join(ble_task(runner), async {
         loop {
             match advertise(device_name, &mut peripheral, &server).await {
                 Ok(conn) => {
+                    info!("BLE connection established");
+                    critical_section::with(|cs| {
+                        DEVICE_STATE.borrow_ref_mut(cs).on_ble_connected();
+                    });
                     // run until any task ends (usually because the connection has been closed),
                     // then return to advertising state.
                     select(
@@ -159,6 +171,14 @@ async fn main(spawner: Spawner) -> ! {
                         data_processing_task(&server, &conn, channel),
                     )
                     .await;
+                    critical_section::with(|cs| {
+                        let mut state = DEVICE_STATE.borrow_ref_mut(cs);
+                        state.on_ble_disconnected();
+                        debug!(
+                            "BLE connection closed, disconnection time: {:?}",
+                            state.ble_disconnection_time
+                        );
+                    });
                 }
                 Err(e) => {
                     panic!("BLE error: {:?}", e);
@@ -179,6 +199,33 @@ async fn ble_task<C: Controller, P: PacketPool>(mut runner: Runner<'_, C, P>) {
         if let Err(e) = runner.run().await {
             panic!("BLE error: {:?}", e);
         }
+    }
+}
+
+#[embassy_executor::task]
+async fn deep_sleep_task(mut rtc: Rtc<'static>) {
+    const TIMEOUT_MS: u32 = 5 * 60 * 1000; // 5 minutes
+
+    loop {
+        let elapsed_ms = critical_section::with(|cs| {
+            DEVICE_STATE
+                .borrow_ref(cs)
+                .get_ble_disconnection_elapsed_ms()
+        });
+
+        if let Some(elapsed) = elapsed_ms {
+            debug!("BLE disconnected for {:?} ms", elapsed);
+
+            if elapsed >= TIMEOUT_MS {
+                info!(
+                    "Entering deep sleep after {} minutes of BLE disconnection",
+                    TIMEOUT_MS / 60000
+                );
+                Timer::after(Duration::from_millis(10)).await;
+                rtc.sleep_deep(&[]);
+            }
+        }
+        Timer::after(Duration::from_secs(10)).await;
     }
 }
 
