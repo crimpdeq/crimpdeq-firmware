@@ -193,12 +193,12 @@ async fn battery_voltage_task(
 ) {
     loop {
         // Read the battery voltage 20 times and average the results
-        let mut adc_voltage_mv: u16 = 0;
+        let mut adc_voltage_mv: u32 = 0;
         for _ in 0..20 {
-            adc_voltage_mv += adc.read_oneshot(&mut pin).await;
+            adc_voltage_mv += adc.read_oneshot(&mut pin).await as u32;
             Timer::after(Duration::from_millis(10)).await;
         }
-        adc_voltage_mv /= 20;
+        let adc_voltage_mv = (adc_voltage_mv / 20) as u16;
         debug!("ADC voltage: {:?}", adc_voltage_mv);
 
         // Calculate battery voltage using voltage divider formula
