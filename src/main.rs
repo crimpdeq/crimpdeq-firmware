@@ -153,6 +153,11 @@ async fn main(spawner: Spawner) -> ! {
     // Data point channel for communication between tasks
     let channel = mk_static!(DataPointChannel, Channel::new());
 
+    // Start idle timer: if no BLE connection happens within TIMEOUT_MS, deep_sleep_task will sleep.
+    critical_section::with(|cs| {
+        DEVICE_STATE.borrow_ref_mut(cs).on_ble_disconnected();
+    });
+
     // Spawn tasks
     spawner
         .spawn(measurement_task(channel, clock_pin, data_pin, delay, flash))
