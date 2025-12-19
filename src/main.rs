@@ -120,10 +120,16 @@ async fn main(spawner: Spawner) -> ! {
 
     // Use the last 6 bytes of the DEVICE_NAME for the address
     let device_name = env!("DEVICE_NAME");
-    let mut buff: [u8; 6] = [0u8; 6];
-    buff.copy_from_slice(&device_name.as_bytes()[device_name.len() - 6..]);
-    buff[5] |= 0xC0;
-    let address: Address = Address::random(buff);
+    let name_bytes = device_name.as_bytes();
+    let mut address_seed = [0u8; 6];
+    let seed_len = address_seed.len();
+    if name_bytes.len() >= seed_len {
+        address_seed.copy_from_slice(&name_bytes[name_bytes.len() - seed_len..]);
+    } else {
+        address_seed[..name_bytes.len()].copy_from_slice(name_bytes);
+    }
+    address_seed[5] |= 0xC0;
+    let address: Address = Address::random(address_seed);
     let mut resources: HostResources<
         DefaultPacketPool,
         CONNECTIONS_MAX,
@@ -171,6 +177,9 @@ async fn main(spawner: Spawner) -> ! {
                         data_processing_task(&server, &conn, channel),
                     )
                     .await;
+                    critical_section::with(|cs| {
+                        DEVICE_STATE.borrow_ref_mut(cs).stop_measurement();
+                    });
                     critical_section::with(|cs| {
                         let mut state = DEVICE_STATE.borrow_ref_mut(cs);
                         state.on_ble_disconnected();
@@ -365,7 +374,8 @@ async fn send_weight_measurement(
     channel: &'static DataPointChannel,
 ) {
     let weight = load_cell.read_calibrated().await;
-    let timestamp = (time::Instant::now().duration_since_epoch()).as_micros() as u32 - start_time;
+    let now = (time::Instant::now().duration_since_epoch()).as_micros() as u32;
+    let timestamp = now.wrapping_sub(start_time);
 
     debug!(
         "Sending measurement: Weight: {}kg, Timestamp: {:?}",
@@ -399,7 +409,11 @@ async fn gatt_events_task<P: PacketPool>(
                 if let GattEvent::Write(write_event) = &event {
                     if write_event.handle() == control_point.handle {
                         let cmd_data = write_event.data();
-                        let op_code = ControlOpCode::from(cmd_data[0]);
+                        let Some(&op_code_byte) = cmd_data.first() else {
+                            warn!("Control Point write with empty payload");
+                            continue;
+                        };
+                        let op_code = ControlOpCode::from(op_code_byte);
                         info!("Control Point Received: {:?}", op_code);
 
                         critical_section::with(|cs| {
