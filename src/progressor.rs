@@ -3,8 +3,6 @@
 /// See [Tindeq API documentation] for more information
 ///
 /// [Tindeq API documentation]: https://tindeq.com/progressor_api/
-use core::cell::UnsafeCell;
-
 use defmt::{debug, error, info, trace, Format};
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
 use esp_hal::time;
@@ -39,7 +37,7 @@ pub enum MeasurementTaskStatus {
 }
 
 /// Device state management
-#[derive(Copy, Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DeviceState {
     /// Measurement status
     pub measurement_status: MeasurementTaskStatus,
@@ -49,6 +47,10 @@ pub struct DeviceState {
     pub start_time: u32,
     /// Calibration points [point1, point2]
     pub calibration_points: [Option<f32>; 2],
+    /// Battery voltage in millivolts
+    pub battery_voltage: u32,
+    /// BLE disconnection time in milliseconds (None when connected)
+    pub ble_disconnection_time: Option<u32>,
 }
 
 impl Default for DeviceState {
@@ -58,6 +60,8 @@ impl Default for DeviceState {
             tared: false,
             start_time: 0,
             calibration_points: [None, None],
+            battery_voltage: 4300,
+            ble_disconnection_time: None,
         }
     }
 }
@@ -96,6 +100,26 @@ impl DeviceState {
     /// Reset to default calibration
     pub fn reset_calibration(&mut self) {
         self.measurement_status = MeasurementTaskStatus::DefaultCalibration;
+    }
+
+    /// Mark BLE as connected (clear disconnection time)
+    pub fn on_ble_connected(&mut self) {
+        self.ble_disconnection_time = None;
+    }
+
+    /// Mark BLE as disconnected (record current time)
+    pub fn on_ble_disconnected(&mut self) {
+        self.ble_disconnection_time =
+            Some((time::Instant::now().duration_since_epoch()).as_millis() as u32);
+    }
+
+    /// Get elapsed time since BLE disconnection in milliseconds
+    /// Returns None if BLE is currently connected
+    pub fn get_ble_disconnection_elapsed_ms(&self) -> Option<u32> {
+        self.ble_disconnection_time.map(|disconnect_time| {
+            let current_time = (time::Instant::now().duration_since_epoch()).as_millis() as u32;
+            current_time.saturating_sub(disconnect_time)
+        })
     }
 }
 
@@ -198,8 +222,7 @@ impl ControlOpCode {
                 device_state.reset_calibration();
             }
             ControlOpCode::SampleBattery => {
-                // Hardcoded for now
-                let voltage = 4300;
+                let voltage = device_state.battery_voltage;
                 let response = ResponseCode::SampleBatteryVoltage(voltage);
                 info!("SampleBattery: {:?}", response);
                 DataPoint::from(response).send(channel);
@@ -260,36 +283,29 @@ pub struct DataPoint {
     pub(crate) value: [u8; MAX_PAYLOAD_SIZE],
 }
 
-// Thread-local buffer for preparing GATT data
-struct SyncUnsafeCell<T>(UnsafeCell<T>);
-
-unsafe impl<T> Sync for SyncUnsafeCell<T> {}
-
-static GATT_BUFFER: SyncUnsafeCell<[u8; MAX_PAYLOAD_SIZE + 2]> =
-    SyncUnsafeCell(UnsafeCell::new([0; MAX_PAYLOAD_SIZE + 2]));
-
 impl AsGatt for DataPoint {
-    const MIN_SIZE: usize = 3;
+    const MIN_SIZE: usize = 2;
     const MAX_SIZE: usize = MAX_PAYLOAD_SIZE + 2; // +2 for response_code and length
 
     fn as_gatt(&self) -> &[u8] {
-        let buffer = unsafe { &mut *GATT_BUFFER.0.get() };
-
-        buffer[0] = self.response_code;
-        buffer[1] = self.length;
-
-        if self.length > 0 {
-            buffer[2..2 + self.length as usize]
-                .copy_from_slice(&self.value[..self.length as usize]);
-        }
-
-        unsafe { core::slice::from_raw_parts(buffer.as_ptr(), 2 + self.length as usize) }
+        let len = (self.length as usize).min(MAX_PAYLOAD_SIZE);
+        unsafe { core::slice::from_raw_parts(self as *const DataPoint as *const u8, 2 + len) }
     }
 }
 
 impl FromGatt for DataPoint {
     fn from_gatt(data: &[u8]) -> Result<Self, FromGattError> {
-        Ok(DataPoint::new(data[0], data[1], &data[2..]))
+        if data.len() < 2 || data.len() > Self::MAX_SIZE {
+            return Err(FromGattError::InvalidLength);
+        }
+
+        let response_code = data[0];
+        let length = data[1] as usize;
+        if length > MAX_PAYLOAD_SIZE || data.len() != 2 + length {
+            return Err(FromGattError::InvalidLength);
+        }
+
+        Ok(DataPoint::new(response_code, data[1], &data[2..]))
     }
 }
 
@@ -307,15 +323,15 @@ impl DataPoint {
     /// Create a new data point with specified response code, length and data
     pub fn new(response_code: u8, length: u8, data: &[u8]) -> Self {
         let mut value = [0; MAX_PAYLOAD_SIZE];
-        let len = length.min(MAX_PAYLOAD_SIZE as u8) as usize;
-        let copy_len = len.min(data.len());
+        let max_len = length.min(MAX_PAYLOAD_SIZE as u8) as usize;
+        let copy_len = max_len.min(data.len());
         if copy_len > 0 {
             value[..copy_len].copy_from_slice(&data[..copy_len]);
         }
 
         Self {
             response_code,
-            length,
+            length: copy_len as u8,
             value,
         }
     }
@@ -337,12 +353,13 @@ impl DataPoint {
 
 impl Format for DataPoint {
     fn format(&self, fmt: defmt::Formatter) {
+        let len = (self.length as usize).min(MAX_PAYLOAD_SIZE);
         defmt::write!(
             fmt,
             "Code: {}, Length: {}, Data: {:x}",
             self.response_code,
             self.length,
-            &self.value[0..self.length as usize]
+            &self.value[0..len]
         );
     }
 }

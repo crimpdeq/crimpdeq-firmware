@@ -11,12 +11,16 @@ use embassy_futures::{join::join, select::select};
 use embassy_sync::channel::Channel;
 use embassy_time::{Duration, Timer};
 use esp_hal::{
+    analog::adc::{Adc, AdcCalCurve, AdcConfig, AdcPin, Attenuation},
     clock::CpuClock,
     delay::Delay,
     gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull},
     interrupt::software::SoftwareInterruptControl,
+    peripherals,
+    rtc_cntl::Rtc,
     time,
     timer::timg::TimerGroup,
+    Async,
     Config,
 };
 use esp_radio::ble::controller::BleConnector;
@@ -60,6 +64,8 @@ static DEVICE_STATE: Mutex<RefCell<DeviceState>> = Mutex::new(RefCell::new(Devic
     tared: false,
     start_time: 0,
     calibration_points: [None, None],
+    battery_voltage: 4300,
+    ble_disconnection_time: None,
 }));
 
 // ESP-IDF App Descriptor
@@ -98,14 +104,32 @@ async fn main(spawner: Spawner) -> ! {
         InputConfig::default().with_pull(Pull::None),
     );
     let delay = Delay::new();
+
+    // Initialize Flash Storage
     let flash = FlashStorage::new(peripherals.FLASH);
+
+    // Initialize RTC
+    let rtc = Rtc::new(peripherals.LPWR);
+
+    // Initialize battery voltage reading
+    let mut adc_config = AdcConfig::new();
+    let analog_pin = peripherals.GPIO1;
+    let battery_pin =
+        adc_config.enable_pin_with_cal::<_, AdcCalCurve<_>>(analog_pin, Attenuation::_11dB);
+    let battery_adc = Adc::new(peripherals.ADC1, adc_config).into_async();
 
     // Use the last 6 bytes of the DEVICE_NAME for the address
     let device_name = env!("DEVICE_NAME");
-    let mut buff: [u8; 6] = [0u8; 6];
-    buff.copy_from_slice(&device_name.as_bytes()[device_name.len() - 6..]);
-    buff[5] |= 0xC0;
-    let address: Address = Address::random(buff);
+    let name_bytes = device_name.as_bytes();
+    let mut address_seed = [0u8; 6];
+    let seed_len = address_seed.len();
+    if name_bytes.len() >= seed_len {
+        address_seed.copy_from_slice(&name_bytes[name_bytes.len() - seed_len..]);
+    } else {
+        address_seed[..name_bytes.len()].copy_from_slice(name_bytes);
+    }
+    address_seed[5] |= 0xC0;
+    let address: Address = Address::random(address_seed);
     let mut resources: HostResources<
         DefaultPacketPool,
         CONNECTIONS_MAX,
@@ -129,15 +153,28 @@ async fn main(spawner: Spawner) -> ! {
     // Data point channel for communication between tasks
     let channel = mk_static!(DataPointChannel, Channel::new());
 
+    // Start idle timer: if no BLE connection happens within TIMEOUT_MS, deep_sleep_task will sleep.
+    critical_section::with(|cs| {
+        DEVICE_STATE.borrow_ref_mut(cs).on_ble_disconnected();
+    });
+
     // Spawn tasks
     spawner
         .spawn(measurement_task(channel, clock_pin, data_pin, delay, flash))
         .unwrap();
+    spawner
+        .spawn(battery_voltage_task(battery_adc, battery_pin))
+        .unwrap();
+    spawner.spawn(deep_sleep_task(rtc)).unwrap();
 
     let _ = join(ble_task(runner), async {
         loop {
             match advertise(device_name, &mut peripheral, &server).await {
                 Ok(conn) => {
+                    info!("BLE connection established");
+                    critical_section::with(|cs| {
+                        DEVICE_STATE.borrow_ref_mut(cs).on_ble_connected();
+                    });
                     // run until any task ends (usually because the connection has been closed),
                     // then return to advertising state.
                     select(
@@ -145,6 +182,17 @@ async fn main(spawner: Spawner) -> ! {
                         data_processing_task(&server, &conn, channel),
                     )
                     .await;
+                    critical_section::with(|cs| {
+                        DEVICE_STATE.borrow_ref_mut(cs).stop_measurement();
+                    });
+                    critical_section::with(|cs| {
+                        let mut state = DEVICE_STATE.borrow_ref_mut(cs);
+                        state.on_ble_disconnected();
+                        debug!(
+                            "BLE connection closed, disconnection time: {:?}",
+                            state.ble_disconnection_time
+                        );
+                    });
                 }
                 Err(e) => {
                     panic!("BLE error: {:?}", e);
@@ -165,6 +213,67 @@ async fn ble_task<C: Controller, P: PacketPool>(mut runner: Runner<'_, C, P>) {
         if let Err(e) = runner.run().await {
             panic!("BLE error: {:?}", e);
         }
+    }
+}
+
+#[embassy_executor::task]
+async fn deep_sleep_task(mut rtc: Rtc<'static>) {
+    const TIMEOUT_MS: u32 = 5 * 60 * 1000; // 5 minutes
+
+    loop {
+        let elapsed_ms = critical_section::with(|cs| {
+            DEVICE_STATE
+                .borrow_ref(cs)
+                .get_ble_disconnection_elapsed_ms()
+        });
+
+        if let Some(elapsed) = elapsed_ms {
+            debug!("BLE disconnected for {:?} ms", elapsed);
+
+            if elapsed >= TIMEOUT_MS {
+                info!(
+                    "Entering deep sleep after {} minutes of BLE disconnection",
+                    TIMEOUT_MS / 60000
+                );
+                Timer::after(Duration::from_millis(10)).await;
+                rtc.sleep_deep(&[]);
+            }
+        }
+        Timer::after(Duration::from_secs(10)).await;
+    }
+}
+
+#[embassy_executor::task]
+async fn battery_voltage_task(
+    mut adc: Adc<'static, peripherals::ADC1<'static>, Async>,
+    mut pin: AdcPin<
+        peripherals::GPIO1<'static>,
+        peripherals::ADC1<'static>,
+        AdcCalCurve<peripherals::ADC1<'static>>,
+    >,
+) {
+    loop {
+        // Read the battery voltage 20 times and average the results
+        let mut adc_voltage_mv: u32 = 0;
+        for _ in 0..20 {
+            adc_voltage_mv += adc.read_oneshot(&mut pin).await as u32;
+            Timer::after(Duration::from_millis(10)).await;
+        }
+        let adc_voltage_mv = (adc_voltage_mv / 20) as u16;
+        debug!("ADC voltage: {:?}", adc_voltage_mv);
+
+        // Calculate battery voltage using voltage divider formula
+        // Voltage divider: R1=33k, R2=10k
+        // Formula: V_battery = (V_adc * R1 + R2) / R2
+        let battery_voltage_mv = (adc_voltage_mv as u32 * 43) / 10;
+        info!("Battery voltage: {:?}", battery_voltage_mv);
+
+        // Update device state
+        critical_section::with(|cs| {
+            let mut state = DEVICE_STATE.borrow_ref_mut(cs);
+            state.battery_voltage = battery_voltage_mv;
+        });
+        Timer::after(Duration::from_secs(45)).await;
     }
 }
 
@@ -270,7 +379,8 @@ async fn send_weight_measurement(
     channel: &'static DataPointChannel,
 ) {
     let weight = load_cell.read_calibrated().await;
-    let timestamp = (time::Instant::now().duration_since_epoch()).as_micros() as u32 - start_time;
+    let now = (time::Instant::now().duration_since_epoch()).as_micros() as u32;
+    let timestamp = now.wrapping_sub(start_time);
 
     debug!(
         "Sending measurement: Weight: {}kg, Timestamp: {:?}",
@@ -304,7 +414,11 @@ async fn gatt_events_task<P: PacketPool>(
                 if let GattEvent::Write(write_event) = &event {
                     if write_event.handle() == control_point.handle {
                         let cmd_data = write_event.data();
-                        let op_code = ControlOpCode::from(cmd_data[0]);
+                        let Some(&op_code_byte) = cmd_data.first() else {
+                            warn!("Control Point write with empty payload");
+                            continue;
+                        };
+                        let op_code = ControlOpCode::from(op_code_byte);
                         info!("Control Point Received: {:?}", op_code);
 
                         critical_section::with(|cs| {
