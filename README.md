@@ -13,19 +13,21 @@ Crimpdeq is a fully open-source project based on an [ESP32-C3](https://github.co
 > If you're interested in reproducing this project or giving it a try, please, reach out! You can contact me via email (sergio.gasquez@gmail.com), [Twitter](https://x.com/Sergio_Gasquez) or [Bluesky](https://bsky.app/profile/sergiogasquez.bsky.social).
 
 ## Specs
+
+- Rechargeable battery with USB‑C charging
+- Communicates via Bluetooth Low Energy (BLE)
 - Open-source firmware written in Rust
 - Open-source PCB design
-- USB-C rechargeable battery
-- Battery saving when inactive
+- Automatic sleep when inactive
 - Compatible with Tindeq Progressor app ([Android](https://play.google.com/store/apps/details?id=com.progressor&hl=es_419) | [iOS](https://apps.apple.com/es/app/tindeq-progressor/id1380412428))
-- Compatible with Frez (formerly ClimbHarder) app ([Android](https://play.google.com/store/apps/details?id=com.holdtight.climbharder&pcampaignid=web_share) | [iOS](https://apps.apple.com/us/app/climbharder-no-hang-training/id6730120024))
+- Compatible with Frez app (formerly ClimbHarder) app ([Android](https://play.google.com/store/apps/details?id=com.holdtight.climbharder&pcampaignid=web_share) | [iOS](https://apps.apple.com/us/app/climbharder-no-hang-training/id6730120024))
 - Sampling frequency: 80 Hz
-- Design load: 1500 N (150 kg) (Full Scale)
+- Design load: 1500 N (≈150 kg), full scale
 - Precision:
-    - *0.05 kg* between 0 and 99 kg
-    - *0.1 kg* between 100 and 150 kg
-- Working temperature: 0ºC - 40ºC
-- Dimension: 80 mm x 90 mm x 35 mm
+    - 0.05 kg between 0 and 99 kg
+    - 0.1 kg between 100 and 150 kg
+- Operating temperature: 0–40 °C
+- Dimensions: 80 × 90 × 35 mm
 - Uses the [Tindeq Progressor API](https://tindeq.com/progressor_api/)
 
 ## Building and Running the Firmware
