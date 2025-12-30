@@ -3,7 +3,7 @@ authors = ["Sergio Gasquez <sergio.gasquez@gmail.com>"]
 edition = "2021"
 license = "MIT OR Apache-2.0"
 name    = "crimpdeq"
-version = "0.1.0"
+version = "0.2.2"
 
 [dependencies]
 arrayvec = { version = "0.7.6", default-features = false }
@@ -38,7 +38,7 @@ esp-storage = { version = "0.8.1", features = ["defmt", "esp32c3"] }
 panic-rtt-target = { version = "0.2.0", features = ["defmt"] }
 rtt-target = { version = "0.6.2", features = ["defmt"] }
 static_cell = "2.1.1"
-trouble-host = { version = "0.5.0", features = ["defmt"] }
+trouble-host = { version = "0.5.1", features = ["defmt"] }
 
 [profile.dev]
 # Rust debug is too slow.
