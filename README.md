@@ -1,21 +1,26 @@
-# Crimpdeq
+# Crimpdeq Firmware
 
 [![Rust CI](https://github.com/crimpdeq/crimpdeq-firmware/actions/workflows/rust_ci.yml/badge.svg)](https://github.com/crimpdeq/crimpdeq-firmware/actions/workflows/rust_ci.yml)
 [![Documentation](https://img.shields.io/badge/Documentation-Book-orange.svg)](https://crimpdeq.github.io/book/)
 
-Crimpdeq is a bluetooth dynamometer designed for finger training, powered by an [ESP32-C3](https://github.com/esp-rs/esp-rust-board) and a WH-C100 crane scale, with firmware fully written in Rust!
+
+Meet Crimpdeq, a portable digital force sensor designed for climbers, coaches, and therapists to measure and train finger strength, pulling power, and endurance.
+
+Crimpdeq is a fully open-source project based on an [ESP32-C3](https://github.com/esp-rs/esp-rust-board) and a WH-C100 crane scale, with firmware fully written in Rust!
+
 
 > [!NOTE]
 > If you're interested in reproducing this project or giving it a try, please, reach out! You can contact me via email (sergio.gasquez@gmail.com), [Twitter](https://x.com/Sergio_Gasquez) or [Bluesky](https://bsky.app/profile/sergiogasquez.bsky.social).
 
-## Features
+## Specs
 - Open-source firmware written in Rust
 - Open-source PCB design
 - USB-C rechargeable battery
-- Compatible with Tindeq Progressor app ([Android](https://play.google.com/store/apps/details?id=com.progressor&hl=es_419) [iOs](https://apps.apple.com/es/app/tindeq-progressor/id1380412428))
-- Compatible with Frez (formerly ClimbHarder) app ([Android](https://play.google.com/store/apps/details?id=com.holdtight.climbharder&pcampaignid=web_share) [iOs](https://apps.apple.com/us/app/climbharder-no-hang-training/id6730120024))
-- Sampling Frequency: 80 Hz
-- Design Load: 1500 N (150 kg) (Full Scale)
+- Battery saving when inactive
+- Compatible with Tindeq Progressor app ([Android](https://play.google.com/store/apps/details?id=com.progressor&hl=es_419) | [iOS](https://apps.apple.com/es/app/tindeq-progressor/id1380412428))
+- Compatible with Frez (formerly ClimbHarder) app ([Android](https://play.google.com/store/apps/details?id=com.holdtight.climbharder&pcampaignid=web_share) | [iOS](https://apps.apple.com/us/app/climbharder-no-hang-training/id6730120024))
+- Sampling frequency: 80 Hz
+- Design load: 1500 N (150 kg) (Full Scale)
 - Precision:
     - *0.05 kg* between 0 and 99 kg
     - *0.1 kg* between 100 and 150 kg
@@ -23,23 +28,9 @@ Crimpdeq is a bluetooth dynamometer designed for finger training, powered by an 
 - Dimension: 80 mm x 90 mm x 35 mm
 - Uses the [Tindeq Progressor API](https://tindeq.com/progressor_api/)
 
-## [Book](https://crimpdeq.github.io/book/)
-For detailed guidance on assembly, calibration, and charging of Crimpdeq, refer to the [Crimpdeq book](https://crimpdeq.github.io/book/).
+## Building and Running the Firmware
 
-The book covers everything you need to know, from building your own Crimpdeq to firmware installation and PCB details. Below is the list of available sections:
-
-- [Introduction](https://crimpdeq.github.io/book/introduction.html)
-- [Making your own Crimpdeq](https://crimpdeq.github.io/book/assembly.html)
-- [Calibration](https://crimpdeq.github.io/book/calibration.html)
-- [Charging the Battery](https://crimpdeq.github.io/book/battery.html)
-- [Firmware](https://crimpdeq.github.io/book/firmware.html)
-- [PCB](https://crimpdeq.github.io/book/pcb.html)
-
-## Prototype
-
-Here is how the current prototype looks like:
-
-![Prototype](assets/prototype.png)
+The [Crimpdeq Book](https://crimpdeq.github.io/book/) covers assembly, calibration, charging, and general usage. For repository-specific instructions, see the [Firmware](https://crimpdeq.github.io/book/firmware.html) chapter for prerequisites, how to build, flash, and run the firmware, how to enable logs, and troubleshooting.
 
 ## Contributing
 Contributions are welcome! Feel free to:
@@ -48,7 +39,7 @@ Contributions are welcome! Feel free to:
 - Suggest improvements to documentation
 
 ## Issues
-If you encounter any issue or want to leave any feedback, please [open an issue](https://github.com/SergioGasquez/crimpdeq/issues/new)
+If you encounter any issue or want to leave any feedback, please [open an issue](https://github.com/crimpdeq/crimpdeq-firmware/issues/new)
 
 ## License
 This repository is licensed under either of:
