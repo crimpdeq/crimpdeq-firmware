@@ -264,7 +264,7 @@ async fn battery_voltage_task(
 
         // Calculate battery voltage using voltage divider formula
         // Voltage divider: R1=33k, R2=10k
-        // Formula: V_battery = (V_adc * R1 + R2) / R2
+        // Formula: V_battery = V_adc * (R1 + R2) / R2
         let battery_voltage_mv = (adc_voltage_mv as u32 * 43) / 10;
         info!("Battery voltage: {:?}", battery_voltage_mv);
 
@@ -315,7 +315,7 @@ async fn measurement_task(
             }
             MeasurementTaskStatus::Calibration(weight) => {
                 // Use the load cell's own calibration method to collect a calibration point
-                let calibration_point = load_cell.perform_calibration(weight).await;
+                let calibration_point = load_cell.perform_calibration().await;
 
                 critical_section::with(|cs| {
                     let mut state = DEVICE_STATE.borrow_ref_mut(cs);

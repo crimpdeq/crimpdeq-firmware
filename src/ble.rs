@@ -18,7 +18,7 @@ pub const L2CAP_CHANNELS_MAX: usize = 2; // Signal + att
 /// Size of L2CAP packets
 pub const L2CAP_MTU: usize = 255;
 
-/// Progressor BLE Scanning Response
+/// Progressor BLE Scan Response
 const SCAN_RESPONSE_DATA: &[u8] = &[
     AD_FLAG_LE_LIMITED_DISCOVERABLE | SIMUL_LE_BR_HOST,
     7_u8, // BLE_GAP_AD_TYPE_128BIT_SERVICE_UUID_COMPLETE

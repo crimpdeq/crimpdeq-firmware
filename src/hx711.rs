@@ -315,7 +315,7 @@ impl<'d> Hx711<'d> {
     /// and averaging them for stability.
     ///
     /// Returns the average raw value for the calibration point.
-    pub async fn perform_calibration(&mut self, _target_weight: f32) -> f32 {
+    pub async fn perform_calibration(&mut self) -> f32 {
         // Reset calibration to raw values first
         let _ = self.update_calibration_factor(1.0);
 
