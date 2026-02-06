@@ -11,6 +11,7 @@ use embassy_futures::{join::join, select::select};
 use embassy_sync::channel::Channel;
 use embassy_time::{Duration, Timer};
 use esp_hal::{
+    Async, Config,
     analog::adc::{Adc, AdcCalCurve, AdcConfig, AdcPin, Attenuation},
     clock::CpuClock,
     delay::Delay,
@@ -20,8 +21,6 @@ use esp_hal::{
     rtc_cntl::Rtc,
     time,
     timer::timg::TimerGroup,
-    Async,
-    Config,
 };
 use esp_radio::ble::controller::BleConnector;
 use esp_storage::FlashStorage;
@@ -32,14 +31,10 @@ use trouble_host::prelude::*;
 extern crate alloc;
 
 use crate::{
-    ble::{advertise, Server, CONNECTIONS_MAX, L2CAP_CHANNELS_MAX, L2CAP_MTU},
+    ble::{CONNECTIONS_MAX, L2CAP_CHANNELS_MAX, L2CAP_MTU, Server, advertise},
     hx711::Hx711,
     progressor::{
-        ControlOpCode,
-        DataPoint,
-        DataPointChannel,
-        DeviceState,
-        MeasurementTaskStatus,
+        ControlOpCode, DataPoint, DataPointChannel, DeviceState, MeasurementTaskStatus,
         ResponseCode,
     },
 };
@@ -81,7 +76,7 @@ async fn main(spawner: Spawner) -> ! {
     let peripherals = esp_hal::init(config);
 
     // Allocate 72KB of heap memory
-    esp_alloc::heap_allocator!(size: 72 * 1024);
+    esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 72 * 1024);
 
     // Initialize RTOS
     let timg0 = TimerGroup::new(peripherals.TIMG0);

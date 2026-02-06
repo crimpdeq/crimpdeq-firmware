@@ -3,7 +3,7 @@
 /// See [Tindeq API documentation] for more information
 ///
 /// [Tindeq API documentation]: https://tindeq.com/progressor_api/
-use defmt::{debug, error, info, trace, Format};
+use defmt::{Format, debug, error, info, trace};
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
 use esp_hal::time;
 use trouble_host::types::gatt_traits::{AsGatt, FromGatt, FromGattError};
