@@ -182,12 +182,11 @@ impl ControlOpCode {
                 for (i, byte) in bytes.iter_mut().enumerate() {
                     let char_pos = i * HEX_CHARS_PER_BYTE;
                     let next_char_pos = char_pos + HEX_CHARS_PER_BYTE;
-                    if next_char_pos <= device_id.len() {
-                        if let Ok(parsed_byte) =
+                    if next_char_pos <= device_id.len()
+                        && let Ok(parsed_byte) =
                             u8::from_str_radix(&device_id[char_pos..next_char_pos], HEX_RADIX)
-                        {
-                            *byte = parsed_byte;
-                        }
+                    {
+                        *byte = parsed_byte;
                     }
                 }
                 let response = ResponseCode::ProgressorId(bytes);

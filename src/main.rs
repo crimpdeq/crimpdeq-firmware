@@ -11,7 +11,8 @@ use embassy_futures::{join::join, select::select};
 use embassy_sync::channel::Channel;
 use embassy_time::{Duration, Timer};
 use esp_hal::{
-    Async, Config,
+    Async,
+    Config,
     analog::adc::{Adc, AdcCalCurve, AdcConfig, AdcPin, Attenuation},
     clock::CpuClock,
     delay::Delay,
@@ -34,7 +35,11 @@ use crate::{
     ble::{CONNECTIONS_MAX, L2CAP_CHANNELS_MAX, L2CAP_MTU, Server, advertise},
     hx711::Hx711,
     progressor::{
-        ControlOpCode, DataPoint, DataPointChannel, DeviceState, MeasurementTaskStatus,
+        ControlOpCode,
+        DataPoint,
+        DataPointChannel,
+        DeviceState,
+        MeasurementTaskStatus,
         ResponseCode,
     },
 };
@@ -76,7 +81,7 @@ async fn main(spawner: Spawner) -> ! {
     let peripherals = esp_hal::init(config);
 
     // Allocate 72KB of heap memory
-    esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 72 * 1024);
+    esp_alloc::heap_allocator!(size: 72 * 1024);
 
     // Initialize RTOS
     let timg0 = TimerGroup::new(peripherals.TIMG0);
@@ -324,13 +329,12 @@ async fn measurement_task(
                         // Calculate and apply calibration if we have both points
                         if let (Some(point1), Some(point2)) =
                             (state.calibration_points[0], state.calibration_points[1])
+                            && !load_cell.apply_two_point_calibration([point1, point2], weight)
                         {
-                            if !load_cell.apply_two_point_calibration([point1, point2], weight) {
-                                error!(
-                                    "Failed to apply calibration points: {:?}",
-                                    state.calibration_points
-                                );
-                            }
+                            error!(
+                                "Failed to apply calibration points: {:?}",
+                                state.calibration_points
+                            );
                         }
                     }
 
@@ -406,21 +410,21 @@ async fn gatt_events_task<P: PacketPool>(
             }
             GattConnectionEvent::Gatt { event } => {
                 // Handle write events to the control point
-                if let GattEvent::Write(write_event) = &event {
-                    if write_event.handle() == control_point.handle {
-                        let cmd_data = write_event.data();
-                        let Some(&op_code_byte) = cmd_data.first() else {
-                            warn!("Control Point write with empty payload");
-                            continue;
-                        };
-                        let op_code = ControlOpCode::from(op_code_byte);
-                        info!("Control Point Received: {:?}", op_code);
+                if let GattEvent::Write(write_event) = &event
+                    && write_event.handle() == control_point.handle
+                {
+                    let cmd_data = write_event.data();
+                    let Some(&op_code_byte) = cmd_data.first() else {
+                        warn!("Control Point write with empty payload");
+                        continue;
+                    };
+                    let op_code = ControlOpCode::from(op_code_byte);
+                    info!("Control Point Received: {:?}", op_code);
 
-                        critical_section::with(|cs| {
-                            let mut device_state = DEVICE_STATE.borrow_ref_mut(cs);
-                            op_code.process(cmd_data, channel, &mut device_state);
-                        });
-                    }
+                    critical_section::with(|cs| {
+                        let mut device_state = DEVICE_STATE.borrow_ref_mut(cs);
+                        op_code.process(cmd_data, channel, &mut device_state);
+                    });
                 }
 
                 // Ensure reply is sent
