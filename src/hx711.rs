@@ -328,36 +328,36 @@ impl<'d> Hx711<'d> {
         average_value
     }
 
-    /// Apply two-point calibration using the collected calibration points
+    /// Apply multi-point calibration using the collected calibration points.
     ///
-    /// This method calculates and applies calibration parameters based on
-    /// two previously measured calibration points and a target weight.
+    /// This method calculates and applies a best-fit calibration factor
+    /// based on the provided (raw_value, weight) pairs.
     ///
     /// Returns true if calibration was successfully applied, false otherwise.
-    pub fn apply_two_point_calibration(
-        &mut self,
-        calibration_points: [f32; 2],
-        target_weight: f32,
-    ) -> bool {
-        debug!("Calibration points: {:?}", calibration_points);
-
-        let (point1, point2) = (calibration_points[0], calibration_points[1]);
-
-        // Check for invalid calibration points
-        if (point2 - point1).abs() < f32::EPSILON {
-            error!("Invalid calibration - points are too close together");
+    pub fn apply_multi_point_calibration(&mut self, calibration_points: &[(f32, f32)]) -> bool {
+        if calibration_points.len() < 2 {
+            error!("Calibration requires at least two points");
             return false;
         }
 
-        if target_weight <= 0.0 {
-            error!("Invalid target weight: {}", target_weight);
+        let mut sum_raw_weight = 0.0;
+        let mut sum_raw_sq = 0.0;
+
+        for (raw_value, weight) in calibration_points {
+            if *weight < 0.0 {
+                error!("Invalid target weight: {}", weight);
+                return false;
+            }
+            sum_raw_weight += raw_value * weight;
+            sum_raw_sq += raw_value * raw_value;
+        }
+
+        if sum_raw_sq.abs() < f32::EPSILON {
+            error!("Invalid calibration - raw values are too small");
             return false;
         }
 
-        // Calculate calibration factor (scale factor)
-        let scale_factor = target_weight / (point2 - point1);
-
-        // Apply the calibration factor
+        let scale_factor = sum_raw_weight / sum_raw_sq;
         match self.update_calibration_factor(scale_factor) {
             Ok(_) => {
                 info!("Calibration factor successfully applied: {:?}", scale_factor);
@@ -371,5 +371,20 @@ impl<'d> Hx711<'d> {
                 false
             }
         }
+    }
+
+    /// Apply two-point calibration using the collected calibration points
+    ///
+    /// Returns true if calibration was successfully applied, false otherwise.
+    pub fn apply_two_point_calibration(
+        &mut self,
+        calibration_points: [f32; 2],
+        target_weight: f32,
+    ) -> bool {
+        let points = [
+            (calibration_points[0], 0.0),
+            (calibration_points[1], target_weight),
+        ];
+        self.apply_multi_point_calibration(&points)
     }
 }

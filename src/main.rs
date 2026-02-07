@@ -35,12 +35,14 @@ use crate::{
     ble::{CONNECTIONS_MAX, L2CAP_CHANNELS_MAX, L2CAP_MTU, Server, advertise},
     hx711::Hx711,
     progressor::{
+        CalibrationPoint,
         ControlOpCode,
         DataPoint,
         DataPointChannel,
         DeviceState,
         MeasurementTaskStatus,
         ResponseCode,
+        MAX_CALIBRATION_POINTS,
     },
 };
 
@@ -63,7 +65,8 @@ static DEVICE_STATE: Mutex<RefCell<DeviceState>> = Mutex::new(RefCell::new(Devic
     measurement_status: MeasurementTaskStatus::Disabled,
     tared: false,
     start_time: 0,
-    calibration_points: [None, None],
+    calibration_points: [(0.0, 0.0); MAX_CALIBRATION_POINTS],
+    calibration_point_count: 0,
     battery_voltage: 4300,
     ble_disconnection_time: None,
 }));
@@ -319,23 +322,28 @@ async fn measurement_task(
 
                 critical_section::with(|cs| {
                     let mut state = DEVICE_STATE.borrow_ref_mut(cs);
-
-                    // Store calibration point (either first or second)
-                    if state.calibration_points[0].is_none() {
-                        state.calibration_points[0] = Some(calibration_point);
+                    let new_point: CalibrationPoint = (calibration_point, weight);
+                    if state.calibration_point_count < MAX_CALIBRATION_POINTS {
+                        let index = state.calibration_point_count;
+                        state.calibration_points[index] = new_point;
+                        state.calibration_point_count += 1;
                     } else {
-                        state.calibration_points[1] = Some(calibration_point);
+                        warn!(
+                            "Calibration point buffer full (max {}), ignoring new point",
+                            MAX_CALIBRATION_POINTS
+                        );
+                    }
 
-                        // Calculate and apply calibration if we have both points
-                        if let (Some(point1), Some(point2)) =
-                            (state.calibration_points[0], state.calibration_points[1])
-                            && !load_cell.apply_two_point_calibration([point1, point2], weight)
-                        {
+                    if state.calibration_point_count >= 2 {
+                        let points = &state.calibration_points[..state.calibration_point_count];
+                        if !load_cell.apply_multi_point_calibration(points) {
                             error!(
                                 "Failed to apply calibration points: {:?}",
                                 state.calibration_points
                             );
                         }
+                    } else {
+                        info!("Calibration needs at least two points before applying.");
                     }
 
                     // Disable measurement mode after capturing point
@@ -352,6 +360,7 @@ async fn measurement_task(
                 }
                 critical_section::with(|cs| {
                     let mut state = DEVICE_STATE.borrow_ref_mut(cs);
+                    state.calibration_point_count = 0;
                     state.measurement_status = MeasurementTaskStatus::Disabled;
                 });
             }
