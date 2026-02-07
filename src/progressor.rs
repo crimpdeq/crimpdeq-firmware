@@ -18,6 +18,11 @@ pub const MAX_PAYLOAD_SIZE: usize = 10;
 
 /// Number of bytes in the device ID
 const DEVICE_ID_SIZE: usize = 6;
+/// Maximum number of calibration points to store
+pub const MAX_CALIBRATION_POINTS: usize = 8;
+
+/// Calibration point storing raw value and known weight
+pub type CalibrationPoint = (f32, f32);
 
 /// Status of the weight measurement task
 #[derive(Copy, Debug, Clone, PartialEq)]
@@ -45,8 +50,10 @@ pub struct DeviceState {
     pub tared: bool,
     /// Start time of the measurement in microseconds
     pub start_time: u32,
-    /// Calibration points [point1, point2]
-    pub calibration_points: [Option<f32>; 2],
+    /// Calibration points (raw value, weight)
+    pub calibration_points: [CalibrationPoint; MAX_CALIBRATION_POINTS],
+    /// Number of calibration points currently stored
+    pub calibration_point_count: usize,
     /// Battery voltage in millivolts
     pub battery_voltage: u32,
     /// BLE disconnection time in milliseconds (None when connected)
@@ -59,7 +66,8 @@ impl Default for DeviceState {
             measurement_status: MeasurementTaskStatus::Disabled,
             tared: false,
             start_time: 0,
-            calibration_points: [None, None],
+            calibration_points: [(0.0, 0.0); MAX_CALIBRATION_POINTS],
+            calibration_point_count: 0,
             battery_voltage: 4300,
             ble_disconnection_time: None,
         }
