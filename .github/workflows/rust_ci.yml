@@ -2,6 +2,8 @@ name: Rust CI
 
 on:
   push:
+    branches:
+      - main
     paths-ignore:
       - "**/README.md"
       - "**/*.md"
