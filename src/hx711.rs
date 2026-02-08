@@ -124,7 +124,7 @@ impl<'d> Hx711<'d> {
             Hx711Error::FlashError
         })?;
 
-        let factor = f32::from_le_bytes(bytes[0..4].try_into().unwrap());
+        let factor = f32::from_le_bytes(bytes);
 
         if !Self::is_valid_calibration_factor(factor) {
             info!("Invalid calibration factor read from flash");
@@ -145,9 +145,7 @@ impl<'d> Hx711<'d> {
             return Err(Hx711Error::InvalidCalibration);
         }
 
-        let mut bytes = [0u8; 4];
-
-        bytes[0..4].copy_from_slice(&calibration_factor.to_le_bytes());
+        let bytes = calibration_factor.to_le_bytes();
 
         self.flash.write(NVS_ADDR, &bytes).map_err(|_| {
             error!("Failed to write calibration factor to flash");
@@ -175,7 +173,7 @@ impl<'d> Hx711<'d> {
         // Get the calibration factor from the NVS flash storage.
         match self.read_from_flash() {
             Ok(factor) => {
-                info!("Read calibration factor: {:?}", factor);
+                info!("Calibration factor read from flash: {:?}", factor);
                 Ok(factor)
             }
             Err(Hx711Error::InvalidCalibration) => {
@@ -317,8 +315,12 @@ impl<'d> Hx711<'d> {
     /// Returns the average raw value for the calibration point.
     pub async fn perform_calibration(&mut self) -> f32 {
         // Reset calibration to raw values first
-        let _ = self.update_calibration_factor(1.0);
-
+        if let Err(e) = self.update_calibration_factor(1.0) {
+            error!(
+                "Failed to reset calibration factor before calibration: {:?}",
+                defmt::Debug2Format(&e)
+            );
+        }
         // Take multiple readings and average them for stability
         let average_value = self.take_samples(DEFAULT_CALIBRATION_SAMPLES).await;
         debug!("Calibration point collected: {}", average_value);
@@ -358,7 +360,7 @@ impl<'d> Hx711<'d> {
         // Apply the calibration factor
         match self.update_calibration_factor(scale_factor) {
             Ok(_) => {
-                debug!("Calibration factor successfully applied");
+                info!("Calibration factor successfully applied: {:?}", scale_factor);
                 true
             }
             Err(e) => {

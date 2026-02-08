@@ -356,7 +356,13 @@ async fn measurement_task(
                 });
             }
             MeasurementTaskStatus::GetCalibration => {
-                load_cell.get_calibration_factor().unwrap();
+                match load_cell.get_calibration_factor() {
+                    Ok(factor) => info!("Calibration factor: {:?}", factor),
+                    Err(e) => error!(
+                        "Failed to read calibration factor: {:?}",
+                        defmt::Debug2Format(&e)
+                    ),
+                }
                 critical_section::with(|cs| {
                     let mut state = DEVICE_STATE.borrow_ref_mut(cs);
                     state.measurement_status = MeasurementTaskStatus::Disabled;
