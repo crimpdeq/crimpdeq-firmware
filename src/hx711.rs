@@ -374,15 +374,4 @@ impl<'d> Hx711<'d> {
         }
     }
 
-    /// Apply two-point calibration using the collected calibration points
-    ///
-    /// Returns true if calibration was successfully applied, false otherwise.
-    pub fn apply_two_point_calibration(
-        &mut self,
-        calibration_points: [f32; 2],
-        target_weight: f32,
-    ) -> bool {
-        let points = [(calibration_points[0], 0.0), (calibration_points[1], target_weight)];
-        self.apply_multi_point_calibration(&points)
-    }
 }
