@@ -40,9 +40,9 @@ use crate::{
         DataPoint,
         DataPointChannel,
         DeviceState,
-        MAX_CALIBRATION_POINTS,
         MeasurementTaskStatus,
         ResponseCode,
+        MAX_CALIBRATION_POINTS,
     },
 };
 
@@ -335,8 +335,7 @@ async fn measurement_task(
                     }
 
                     if state.calibration_point_count >= 2 {
-                        let points =
-                            &state.calibration_points[..state.calibration_point_count];
+                        let points = &state.calibration_points[..state.calibration_point_count];
                         if !load_cell.apply_multi_point_calibration(points) {
                             error!(
                                 "Failed to apply calibration points: {:?}",
@@ -375,7 +374,7 @@ async fn measurement_task(
                             &state.calibration_points[..state.calibration_point_count]
                         );
                     } else {
-                        info!("Calibration points: []");
+                        info!("No calibration points found (Calibration points are lost on device power off)");
                     }
                     state.measurement_status = MeasurementTaskStatus::Disabled;
                 });

@@ -3,7 +3,7 @@
 /// See [Tindeq API documentation] for more information
 ///
 /// [Tindeq API documentation]: https://tindeq.com/progressor_api/
-use defmt::{debug, error, info, trace, Format};
+use defmt::{error, info, trace, Format};
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
 use esp_hal::time;
 use trouble_host::types::gatt_traits::{AsGatt, FromGatt, FromGattError};
@@ -19,7 +19,7 @@ pub const MAX_PAYLOAD_SIZE: usize = 10;
 /// Number of bytes in the device ID
 const DEVICE_ID_SIZE: usize = 6;
 /// Maximum number of calibration points to store
-pub const MAX_CALIBRATION_POINTS: usize = 8;
+pub const MAX_CALIBRATION_POINTS: usize = 20;
 
 /// Calibration point storing raw value and known weight
 pub type CalibrationPoint = (f32, f32);
@@ -221,7 +221,7 @@ impl ControlOpCode {
                 };
 
                 device_state.calibrate(weight);
-                debug!(
+                info!(
                     "Received AddCalibrationPoint command with measurement: {}",
                     weight
                 );

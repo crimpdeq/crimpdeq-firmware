@@ -164,7 +164,7 @@ impl<'d> Hx711<'d> {
             return Err(Hx711Error::InvalidCalibration);
         }
 
-        debug!("Updating calibration factor: {}", factor);
+        info!("Updating calibration factor: {}", factor);
         self.write_to_flash(factor)?;
 
         self.calibration_factor = factor;
@@ -373,5 +373,4 @@ impl<'d> Hx711<'d> {
             }
         }
     }
-
 }
