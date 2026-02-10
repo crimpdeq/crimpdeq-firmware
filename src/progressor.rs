@@ -3,7 +3,7 @@
 /// See [Tindeq API documentation] for more information
 ///
 /// [Tindeq API documentation]: https://tindeq.com/progressor_api/
-use defmt::{error, info, trace, Format};
+use defmt::{error, info, trace, warn, Format};
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
 use esp_hal::time;
 use trouble_host::types::gatt_traits::{AsGatt, FromGatt, FromGattError};
@@ -133,6 +133,8 @@ impl DeviceState {
 
 /// Progressor Commands
 #[derive(Debug, Clone, Copy)]
+/// Commands that Tindeq app can send to the device
+// Source: Tindeq API documentation and https://github.com/blims/Tindeq-Progressor-API/blob/78a0bd244303589d0c773ee15ede53e0299712ee/progressor_client.py#L21-L33
 pub enum ControlOpCode {
     /// Command used to zero weight when no load is applied
     TareScale = 0x64,
@@ -140,7 +142,25 @@ pub enum ControlOpCode {
     StartMeasurement = 0x65,
     /// Stop weight measurement. This should be done before sampling the battery voltage
     StopMeasurement = 0x66,
-    /// Turn the Progressor off
+    /// Start peak RFD measurement
+    // TODO: Implement it
+    StartPeakRFDMeasurement = 0x67,
+    /// Start peak RFD measurement series
+    // TODO: Implement it
+    StartPeakRFDMeasurementSeries = 0x68,
+    /// Adds a calibration point
+    AddCalibrationPoint = 0x69,
+    /// Save calibration
+    // TODO: Implement it
+    SaveCalibration = 0x6A,
+    /// Get the error information
+    // TODO: Implement it
+    GetErrorInformation = 0x6C,
+    /// Clear the error information
+    // TODO: Implement it
+    ClearErrorInformation = 0x6D,
+    /// Turn the Progressor off (enter sleep mode)
+    // TODO: Implement it
     Shutdown = 0x6E,
     /// Measures the battery voltage in millivolts
     SampleBattery = 0x6F,
@@ -149,10 +169,10 @@ pub enum ControlOpCode {
     /// Get the application version
     GetAppVersion = 0x6B,
     /// Get the calibration values
+    // Custom command, no part of Tindeq API
     GetCalibration = 0x72,
-    /// Adds a calibration point
-    AddCalibrationPoint = 0x73,
     /// Default calibration
+    // Custom command, no part of Tindeq API
     DefaultCalibration = 0x74,
 }
 
@@ -241,6 +261,11 @@ impl ControlOpCode {
             }
             // Currently unimplemented operations
             ControlOpCode::Shutdown => {}
+            ControlOpCode::StartPeakRFDMeasurement => {}
+            ControlOpCode::StartPeakRFDMeasurementSeries => {}
+            ControlOpCode::SaveCalibration => {}
+            ControlOpCode::ClearErrorInformation => {}
+            ControlOpCode::GetErrorInformation => {}
         }
     }
 }
@@ -279,6 +304,13 @@ impl Format for ControlOpCode {
             ControlOpCode::GetCalibration => defmt::write!(fmt, "GetCalibration"),
             ControlOpCode::AddCalibrationPoint => defmt::write!(fmt, "AddCalibrationPoint"),
             ControlOpCode::DefaultCalibration => defmt::write!(fmt, "DefaultCalibration"),
+            ControlOpCode::StartPeakRFDMeasurement => defmt::write!(fmt, "StartPeakRFDMeasurement"),
+            ControlOpCode::StartPeakRFDMeasurementSeries => {
+                defmt::write!(fmt, "StartPeakRFDMeasurementSeries")
+            }
+            ControlOpCode::SaveCalibration => defmt::write!(fmt, "SaveCalibration"),
+            ControlOpCode::GetErrorInformation => defmt::write!(fmt, "GetErrorInformation"),
+            ControlOpCode::ClearErrorInformation => defmt::write!(fmt, "ClearErrorInformation"),
         }
     }
 }
@@ -389,6 +421,8 @@ impl From<ResponseCode> for DataPoint {
 /// Data point response code
 #[derive(Copy, Clone, Debug)]
 #[repr(u8)]
+/// Response codes that the device can send to the Tindeq app
+// Source: Tindeq API documentation and https://github.com/blims/Tindeq-Progressor-API/blob/78a0bd244303589d0c773ee15ede53e0299712ee/progressor_client.py#L36-L40
 pub enum ResponseCode {
     /// Response to battery voltage sampling command
     SampleBatteryVoltage(u32),
@@ -404,6 +438,12 @@ pub enum ResponseCode {
     AppVersion(&'static [u8]),
     /// Response to progressor ID request command
     ProgressorId([u8; DEVICE_ID_SIZE]),
+    /// RFD peak response.
+    // TODO: Implement it
+    RfdPeak,
+    /// RFD peak series response.
+    // TODO: Implement it
+    RfdPeakSeries,
 }
 
 impl Format for ResponseCode {
@@ -429,6 +469,8 @@ impl Format for ResponseCode {
             ResponseCode::LowPowerWarning => defmt::write!(fmt, "LowPowerWarning"),
             ResponseCode::AppVersion(version) => defmt::write!(fmt, "AppVersion: {:x}", version),
             ResponseCode::ProgressorId(id) => defmt::write!(fmt, "ProgressorId: {:x}", id),
+            ResponseCode::RfdPeak => defmt::write!(fmt, "RfdPeak"),
+            ResponseCode::RfdPeakSeries => defmt::write!(fmt, "RfdPeakSeries"),
         }
     }
 }
@@ -441,6 +483,8 @@ impl ResponseCode {
             | ResponseCode::AppVersion(..)
             | ResponseCode::ProgressorId(..) => 0x00,
             ResponseCode::WeightMeasurement(..) => 0x01,
+            ResponseCode::RfdPeak => 0x02,
+            ResponseCode::RfdPeakSeries => 0x03,
             ResponseCode::LowPowerWarning => 0x04,
             ResponseCode::CalibrationFactor(..) => 0x05,
             ResponseCode::CalibrationPoint(..) => 0x06,
@@ -457,6 +501,8 @@ impl ResponseCode {
             ResponseCode::LowPowerWarning => 0,
             ResponseCode::AppVersion(version) => version.len() as u8,
             ResponseCode::ProgressorId(..) => DEVICE_ID_SIZE as u8,
+            ResponseCode::RfdPeak => 0,
+            ResponseCode::RfdPeakSeries => 0,
         }
     }
 
@@ -487,6 +533,12 @@ impl ResponseCode {
             }
             ResponseCode::AppVersion(version) => {
                 value[0..version.len()].copy_from_slice(version);
+            }
+            ResponseCode::RfdPeak => {
+                warn!("RfdPeak response not implemented");
+            }
+            ResponseCode::RfdPeakSeries => {
+                warn!("RfdPeakSeries response not implemented");
             }
         };
         value
