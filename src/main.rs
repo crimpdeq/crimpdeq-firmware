@@ -317,8 +317,25 @@ async fn measurement_task(
                 send_weight_measurement(&mut load_cell, start_time, channel).await;
             }
             MeasurementTaskStatus::Calibration(weight) => {
+                if !weight.is_finite() || weight < 0.0 {
+                    error!("Ignoring invalid calibration weight: {}", weight);
+                    critical_section::with(|cs| {
+                        DEVICE_STATE.borrow_ref_mut(cs).measurement_status =
+                            MeasurementTaskStatus::Disabled;
+                    });
+                    continue;
+                }
+
                 // Use the load cell's own calibration method to collect a calibration point
                 let calibration_point = load_cell.perform_calibration(weight).await;
+                if !calibration_point.is_finite() {
+                    error!("Ignoring invalid calibration raw point: {}", calibration_point);
+                    critical_section::with(|cs| {
+                        DEVICE_STATE.borrow_ref_mut(cs).measurement_status =
+                            MeasurementTaskStatus::Disabled;
+                    });
+                    continue;
+                }
 
                 critical_section::with(|cs| {
                     let mut state = DEVICE_STATE.borrow_ref_mut(cs);

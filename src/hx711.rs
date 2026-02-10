@@ -338,22 +338,38 @@ impl<'d> Hx711<'d> {
             return false;
         }
 
-        let (base_raw, base_weight) = calibration_points[0];
+        let mut valid_count = 0usize;
+        let mut base_point: Option<(f32, f32)> = None;
         let mut sum_delta_raw_weight = 0.0;
         let mut sum_delta_raw_sq = 0.0;
 
         for (raw_value, weight) in calibration_points {
-            if *weight < 0.0 {
-                error!("Invalid target weight: {}", weight);
-                return false;
+            if !raw_value.is_finite() || !weight.is_finite() || *weight < 0.0 {
+                error!(
+                    "Skipping invalid calibration point raw={}, weight={}",
+                    raw_value,
+                    weight
+                );
+                continue;
             }
-            let delta_raw = raw_value - base_raw;
-            // Incoming calibration weights are expressed in kg, while
-            // calibration_factor operates on grams before read_calibrated()
-            // converts back to kg.
-            let delta_weight = (weight - base_weight) * 1000.0;
-            sum_delta_raw_weight += delta_raw * delta_weight;
-            sum_delta_raw_sq += delta_raw * delta_raw;
+
+            valid_count += 1;
+            if let Some((base_raw, base_weight)) = base_point {
+                let delta_raw = raw_value - base_raw;
+                // Incoming calibration weights are expressed in kg, while
+                // calibration_factor operates on grams before read_calibrated()
+                // converts back to kg.
+                let delta_weight = (weight - base_weight) * 1000.0;
+                sum_delta_raw_weight += delta_raw * delta_weight;
+                sum_delta_raw_sq += delta_raw * delta_raw;
+            } else {
+                base_point = Some((*raw_value, *weight));
+            }
+        }
+
+        if valid_count < 2 {
+            error!("Calibration requires at least two valid points");
+            return false;
         }
 
         if sum_delta_raw_sq.abs() < f32::EPSILON {

@@ -220,6 +220,11 @@ impl ControlOpCode {
                     }
                 };
 
+                if !weight.is_finite() || weight < 0.0 {
+                    error!("AddCalibrationPoint: Invalid weight {}", weight);
+                    return;
+                }
+
                 device_state.calibrate(weight);
                 info!(
                     "Received AddCalibrationPoint command with measurement: {}",
