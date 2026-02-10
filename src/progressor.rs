@@ -3,7 +3,7 @@
 /// See [Tindeq API documentation] for more information
 ///
 /// [Tindeq API documentation]: https://tindeq.com/progressor_api/
-use defmt::{error, info, trace, warn, Format};
+use defmt::{Format, error, info, trace, warn};
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
 use esp_hal::time;
 use trouble_host::types::gatt_traits::{AsGatt, FromGatt, FromGattError};
@@ -276,13 +276,18 @@ impl From<u8> for ControlOpCode {
             0x64 => ControlOpCode::TareScale,
             0x65 => ControlOpCode::StartMeasurement,
             0x66 => ControlOpCode::StopMeasurement,
+            0x69 => ControlOpCode::AddCalibrationPoint,
             0x6E => ControlOpCode::Shutdown,
             0x6F => ControlOpCode::SampleBattery,
             0x70 => ControlOpCode::GetProgressorId,
             0x6B => ControlOpCode::GetAppVersion,
             0x72 => ControlOpCode::GetCalibration,
-            0x73 => ControlOpCode::AddCalibrationPoint,
             0x74 => ControlOpCode::DefaultCalibration,
+            0x6C => ControlOpCode::GetErrorInformation,
+            0x6D => ControlOpCode::ClearErrorInformation,
+            0x67 => ControlOpCode::StartPeakRFDMeasurement,
+            0x68 => ControlOpCode::StartPeakRFDMeasurementSeries,
+            0x6A => ControlOpCode::SaveCalibration,
             _ => {
                 error!("Invalid OpCode received: {:#x}", op_code);
                 ControlOpCode::StopMeasurement

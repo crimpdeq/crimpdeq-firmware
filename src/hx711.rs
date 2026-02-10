@@ -381,7 +381,10 @@ impl<'d> Hx711<'d> {
         let scale_factor = sum_delta_raw_weight / sum_delta_raw_sq;
         match self.update_calibration_factor(scale_factor) {
             Ok(_) => {
-                info!("Calibration factor successfully applied: {:?}", scale_factor);
+                info!(
+                    "Calibration factor successfully applied: {:?}",
+                    scale_factor
+                );
                 true
             }
             Err(e) => {

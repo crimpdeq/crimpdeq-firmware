@@ -40,9 +40,9 @@ use crate::{
         DataPoint,
         DataPointChannel,
         DeviceState,
+        MAX_CALIBRATION_POINTS,
         MeasurementTaskStatus,
         ResponseCode,
-        MAX_CALIBRATION_POINTS,
     },
 };
 
@@ -327,7 +327,7 @@ async fn measurement_task(
                 }
 
                 // Use the load cell's own calibration method to collect a calibration point
-                let calibration_point = load_cell.perform_calibration(weight).await;
+                let calibration_point = load_cell.perform_calibration().await;
                 if !calibration_point.is_finite() {
                     error!(
                         "Ignoring invalid calibration raw point: {}",

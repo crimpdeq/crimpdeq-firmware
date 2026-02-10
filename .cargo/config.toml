@@ -6,7 +6,7 @@ runner = "probe-rs run --chip esp32c3 --no-location --preverify --restore-unwrit
 
 [env]
 # Defmt Logging
-DEFMT_LOG = "off" # Use "trace/debug/info/error" to enable defmt logging
+DEFMT_LOG = "off" # Use "trace/debug/info/error/off,crimpdeq=debug" to enable defmt logging
 
 # Progressor
 CALIBRATION_CURVE     = "FFFFFFFFFFFFFFFF00000000"
