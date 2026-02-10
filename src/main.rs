@@ -11,6 +11,8 @@ use embassy_futures::{join::join, select::select};
 use embassy_sync::channel::Channel;
 use embassy_time::{Duration, Timer};
 use esp_hal::{
+    Async,
+    Config,
     analog::adc::{Adc, AdcCalCurve, AdcConfig, AdcPin, Attenuation},
     clock::CpuClock,
     delay::Delay,
@@ -20,8 +22,6 @@ use esp_hal::{
     rtc_cntl::Rtc,
     time,
     timer::timg::TimerGroup,
-    Async,
-    Config,
 };
 use esp_radio::ble::controller::BleConnector;
 use esp_storage::FlashStorage;
@@ -32,7 +32,7 @@ use trouble_host::prelude::*;
 extern crate alloc;
 
 use crate::{
-    ble::{advertise, Server, CONNECTIONS_MAX, L2CAP_CHANNELS_MAX, L2CAP_MTU},
+    ble::{CONNECTIONS_MAX, L2CAP_CHANNELS_MAX, L2CAP_MTU, Server, advertise},
     hx711::Hx711,
     progressor::{
         CalibrationPoint,
@@ -267,7 +267,7 @@ async fn battery_voltage_task(
 
         // Calculate battery voltage using voltage divider formula
         // Voltage divider: R1=33k, R2=10k
-        // Formula: V_battery = (V_adc * R1 + R2) / R2
+        // Formula: V_battery = V_adc * (R1 + R2) / R2
         let battery_voltage_mv = (adc_voltage_mv as u32 * 43) / 10;
         info!("Battery voltage: {:?}", battery_voltage_mv);
 
@@ -465,21 +465,21 @@ async fn gatt_events_task<P: PacketPool>(
             }
             GattConnectionEvent::Gatt { event } => {
                 // Handle write events to the control point
-                if let GattEvent::Write(write_event) = &event {
-                    if write_event.handle() == control_point.handle {
-                        let cmd_data = write_event.data();
-                        let Some(&op_code_byte) = cmd_data.first() else {
-                            warn!("Control Point write with empty payload");
-                            continue;
-                        };
-                        let op_code = ControlOpCode::from(op_code_byte);
-                        info!("Control Point Received: {:?}", op_code);
+                if let GattEvent::Write(write_event) = &event
+                    && write_event.handle() == control_point.handle
+                {
+                    let cmd_data = write_event.data();
+                    let Some(&op_code_byte) = cmd_data.first() else {
+                        warn!("Control Point write with empty payload");
+                        continue;
+                    };
+                    let op_code = ControlOpCode::from(op_code_byte);
+                    info!("Control Point Received: {:?}", op_code);
 
-                        critical_section::with(|cs| {
-                            let mut device_state = DEVICE_STATE.borrow_ref_mut(cs);
-                            op_code.process(cmd_data, channel, &mut device_state);
-                        });
-                    }
+                    critical_section::with(|cs| {
+                        let mut device_state = DEVICE_STATE.borrow_ref_mut(cs);
+                        op_code.process(cmd_data, channel, &mut device_state);
+                    });
                 }
 
                 // Ensure reply is sent
