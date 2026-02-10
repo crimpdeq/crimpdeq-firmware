@@ -347,8 +347,7 @@ impl<'d> Hx711<'d> {
             if !raw_value.is_finite() || !weight.is_finite() || *weight < 0.0 {
                 error!(
                     "Skipping invalid calibration point raw={}, weight={}",
-                    raw_value,
-                    weight
+                    raw_value, weight
                 );
                 continue;
             }
@@ -392,5 +391,4 @@ impl<'d> Hx711<'d> {
             }
         }
     }
-
 }

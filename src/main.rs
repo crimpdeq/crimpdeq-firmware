@@ -40,9 +40,9 @@ use crate::{
         DataPoint,
         DataPointChannel,
         DeviceState,
-        MAX_CALIBRATION_POINTS,
         MeasurementTaskStatus,
         ResponseCode,
+        MAX_CALIBRATION_POINTS,
     },
 };
 
@@ -329,7 +329,10 @@ async fn measurement_task(
                 // Use the load cell's own calibration method to collect a calibration point
                 let calibration_point = load_cell.perform_calibration(weight).await;
                 if !calibration_point.is_finite() {
-                    error!("Ignoring invalid calibration raw point: {}", calibration_point);
+                    error!(
+                        "Ignoring invalid calibration raw point: {}",
+                        calibration_point
+                    );
                     critical_section::with(|cs| {
                         DEVICE_STATE.borrow_ref_mut(cs).measurement_status =
                             MeasurementTaskStatus::Disabled;
@@ -352,8 +355,7 @@ async fn measurement_task(
                     }
 
                     if state.calibration_point_count >= 2 {
-                        let points =
-                            &state.calibration_points[..state.calibration_point_count];
+                        let points = &state.calibration_points[..state.calibration_point_count];
                         if !load_cell.apply_multi_point_calibration(points) {
                             error!(
                                 "Failed to apply calibration points: {:?}",
@@ -388,7 +390,10 @@ async fn measurement_task(
                         DataPoint::from(ResponseCode::CalibrationFactor(factor)).send(channel);
                     }
                     Err(e) => {
-                        error!("Failed to read calibration factor: {:?}", defmt::Debug2Format(&e));
+                        error!(
+                            "Failed to read calibration factor: {:?}",
+                            defmt::Debug2Format(&e)
+                        );
                     }
                 }
                 critical_section::with(|cs| {
