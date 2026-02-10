@@ -35,12 +35,14 @@ use crate::{
     ble::{CONNECTIONS_MAX, L2CAP_CHANNELS_MAX, L2CAP_MTU, Server, advertise},
     hx711::Hx711,
     progressor::{
+        CalibrationPoint,
         ControlOpCode,
         DataPoint,
         DataPointChannel,
         DeviceState,
         MeasurementTaskStatus,
         ResponseCode,
+        MAX_CALIBRATION_POINTS,
     },
 };
 
@@ -63,7 +65,8 @@ static DEVICE_STATE: Mutex<RefCell<DeviceState>> = Mutex::new(RefCell::new(Devic
     measurement_status: MeasurementTaskStatus::Disabled,
     tared: false,
     start_time: 0,
-    calibration_points: [None, None],
+    calibration_points: [(0.0, 0.0); MAX_CALIBRATION_POINTS],
+    calibration_point_count: 0,
     battery_voltage: 4300,
     ble_disconnection_time: None,
 }));
@@ -314,28 +317,53 @@ async fn measurement_task(
                 send_weight_measurement(&mut load_cell, start_time, channel).await;
             }
             MeasurementTaskStatus::Calibration(weight) => {
+                if !weight.is_finite() || weight < 0.0 {
+                    error!("Ignoring invalid calibration weight: {}", weight);
+                    critical_section::with(|cs| {
+                        DEVICE_STATE.borrow_ref_mut(cs).measurement_status =
+                            MeasurementTaskStatus::Disabled;
+                    });
+                    continue;
+                }
+
                 // Use the load cell's own calibration method to collect a calibration point
-                let calibration_point = load_cell.perform_calibration().await;
+                let calibration_point = load_cell.perform_calibration(weight).await;
+                if !calibration_point.is_finite() {
+                    error!(
+                        "Ignoring invalid calibration raw point: {}",
+                        calibration_point
+                    );
+                    critical_section::with(|cs| {
+                        DEVICE_STATE.borrow_ref_mut(cs).measurement_status =
+                            MeasurementTaskStatus::Disabled;
+                    });
+                    continue;
+                }
 
                 critical_section::with(|cs| {
                     let mut state = DEVICE_STATE.borrow_ref_mut(cs);
-
-                    // Store calibration point (either first or second)
-                    if state.calibration_points[0].is_none() {
-                        state.calibration_points[0] = Some(calibration_point);
+                    let new_point: CalibrationPoint = (calibration_point, weight);
+                    if state.calibration_point_count < MAX_CALIBRATION_POINTS {
+                        let index = state.calibration_point_count;
+                        state.calibration_points[index] = new_point;
+                        state.calibration_point_count += 1;
                     } else {
-                        state.calibration_points[1] = Some(calibration_point);
+                        warn!(
+                            "Calibration point buffer full (max {}), ignoring new point",
+                            MAX_CALIBRATION_POINTS
+                        );
+                    }
 
-                        // Calculate and apply calibration if we have both points
-                        if let (Some(point1), Some(point2)) =
-                            (state.calibration_points[0], state.calibration_points[1])
-                            && !load_cell.apply_two_point_calibration([point1, point2], weight)
-                        {
+                    if state.calibration_point_count >= 2 {
+                        let points = &state.calibration_points[..state.calibration_point_count];
+                        if !load_cell.apply_multi_point_calibration(points) {
                             error!(
                                 "Failed to apply calibration points: {:?}",
                                 state.calibration_points
                             );
                         }
+                    } else {
+                        info!("Calibration needs at least two points before applying.");
                     }
 
                     // Disable measurement mode after capturing point
@@ -352,19 +380,40 @@ async fn measurement_task(
                 }
                 critical_section::with(|cs| {
                     let mut state = DEVICE_STATE.borrow_ref_mut(cs);
+                    state.calibration_point_count = 0;
                     state.measurement_status = MeasurementTaskStatus::Disabled;
                 });
             }
             MeasurementTaskStatus::GetCalibration => {
                 match load_cell.get_calibration_factor() {
-                    Ok(factor) => info!("Calibration factor: {:?}", factor),
-                    Err(e) => error!(
-                        "Failed to read calibration factor: {:?}",
-                        defmt::Debug2Format(&e)
-                    ),
+                    Ok(factor) => {
+                        DataPoint::from(ResponseCode::CalibrationFactor(factor)).send(channel);
+                    }
+                    Err(e) => {
+                        error!(
+                            "Failed to read calibration factor: {:?}",
+                            defmt::Debug2Format(&e)
+                        );
+                    }
                 }
                 critical_section::with(|cs| {
                     let mut state = DEVICE_STATE.borrow_ref_mut(cs);
+                    for (raw_value, weight) in state
+                        .calibration_points
+                        .iter()
+                        .take(state.calibration_point_count)
+                    {
+                        DataPoint::from(ResponseCode::CalibrationPoint(*raw_value, *weight))
+                            .send(channel);
+                    }
+                    if state.calibration_point_count > 0 {
+                        info!(
+                            "Calibration points: {:?}",
+                            &state.calibration_points[..state.calibration_point_count]
+                        );
+                    } else {
+                        info!("Calibration points empty (possibly lost after device reset)");
+                    }
                     state.measurement_status = MeasurementTaskStatus::Disabled;
                 });
             }
