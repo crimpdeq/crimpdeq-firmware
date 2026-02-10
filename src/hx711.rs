@@ -326,36 +326,39 @@ impl<'d> Hx711<'d> {
         average_value
     }
 
-    /// Apply two-point calibration using the collected calibration points
+    /// Apply multi-point calibration using the collected calibration points.
     ///
-    /// This method calculates and applies calibration parameters based on
-    /// two previously measured calibration points and a target weight.
+    /// This method calculates and applies a best-fit calibration factor
+    /// based on the provided (raw_value, weight) pairs.
     ///
     /// Returns true if calibration was successfully applied, false otherwise.
-    pub fn apply_two_point_calibration(
-        &mut self,
-        calibration_points: [f32; 2],
-        target_weight: f32,
-    ) -> bool {
-        debug!("Calibration points: {:?}", calibration_points);
+    pub fn apply_multi_point_calibration(&mut self, calibration_points: &[(f32, f32)]) -> bool {
+        if calibration_points.len() < 2 {
+            error!("Calibration requires at least two points");
+            return false;
+        }
 
-        let (point1, point2) = (calibration_points[0], calibration_points[1]);
+        let (base_raw, base_weight) = calibration_points[0];
+        let mut sum_delta_raw_weight = 0.0;
+        let mut sum_delta_raw_sq = 0.0;
 
-        // Check for invalid calibration points
-        if (point2 - point1).abs() < f32::EPSILON {
+        for (raw_value, weight) in calibration_points {
+            if *weight < 0.0 {
+                error!("Invalid target weight: {}", weight);
+                return false;
+            }
+            let delta_raw = raw_value - base_raw;
+            let delta_weight = weight - base_weight;
+            sum_delta_raw_weight += delta_raw * delta_weight;
+            sum_delta_raw_sq += delta_raw * delta_raw;
+        }
+
+        if sum_delta_raw_sq.abs() < f32::EPSILON {
             error!("Invalid calibration - points are too close together");
             return false;
         }
 
-        if target_weight <= 0.0 {
-            error!("Invalid target weight: {}", target_weight);
-            return false;
-        }
-
-        // Calculate calibration factor (scale factor)
-        let scale_factor = target_weight / (point2 - point1);
-
-        // Apply the calibration factor
+        let scale_factor = sum_delta_raw_weight / sum_delta_raw_sq;
         match self.update_calibration_factor(scale_factor) {
             Ok(_) => {
                 debug!("Calibration factor successfully applied");
@@ -370,4 +373,5 @@ impl<'d> Hx711<'d> {
             }
         }
     }
+
 }

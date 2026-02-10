@@ -18,6 +18,11 @@ pub const MAX_PAYLOAD_SIZE: usize = 10;
 
 /// Number of bytes in the device ID
 const DEVICE_ID_SIZE: usize = 6;
+/// Maximum number of calibration points to store
+pub const MAX_CALIBRATION_POINTS: usize = 8;
+
+/// Calibration point storing raw value and known weight
+pub type CalibrationPoint = (f32, f32);
 
 /// Status of the weight measurement task
 #[derive(Copy, Debug, Clone, PartialEq)]
@@ -45,8 +50,10 @@ pub struct DeviceState {
     pub tared: bool,
     /// Start time of the measurement in microseconds
     pub start_time: u32,
-    /// Calibration points [point1, point2]
-    pub calibration_points: [Option<f32>; 2],
+    /// Calibration points (raw value, weight)
+    pub calibration_points: [CalibrationPoint; MAX_CALIBRATION_POINTS],
+    /// Number of calibration points currently stored
+    pub calibration_point_count: usize,
     /// Battery voltage in millivolts
     pub battery_voltage: u32,
     /// BLE disconnection time in milliseconds (None when connected)
@@ -59,7 +66,8 @@ impl Default for DeviceState {
             measurement_status: MeasurementTaskStatus::Disabled,
             tared: false,
             start_time: 0,
-            calibration_points: [None, None],
+            calibration_points: [(0.0, 0.0); MAX_CALIBRATION_POINTS],
+            calibration_point_count: 0,
             battery_voltage: 4300,
             ble_disconnection_time: None,
         }
@@ -382,6 +390,10 @@ pub enum ResponseCode {
     SampleBatteryVoltage(u32),
     /// Each measurement is sent together with a timestamp where the timestamp is the number of microseconds since the measurement was started
     WeightMeasurement(f32, u32),
+    /// Calibration factor response
+    CalibrationFactor(f32),
+    /// Calibration point response (raw value, weight)
+    CalibrationPoint(f32, f32),
     /// Low power warning indicating that the battery is empty. The Progressor will turn itself off after sending this warning
     LowPowerWarning,
     /// Response to app version request command
@@ -404,6 +416,12 @@ impl Format for ResponseCode {
                     timestamp
                 )
             }
+            ResponseCode::CalibrationFactor(factor) => {
+                defmt::write!(fmt, "CalibrationFactor: {}", factor)
+            }
+            ResponseCode::CalibrationPoint(raw, weight) => {
+                defmt::write!(fmt, "CalibrationPoint: Raw: {}, Weight: {}", raw, weight)
+            }
             ResponseCode::LowPowerWarning => defmt::write!(fmt, "LowPowerWarning"),
             ResponseCode::AppVersion(version) => defmt::write!(fmt, "AppVersion: {:x}", version),
             ResponseCode::ProgressorId(id) => defmt::write!(fmt, "ProgressorId: {:x}", id),
@@ -417,7 +435,9 @@ impl ResponseCode {
         match self {
             ResponseCode::SampleBatteryVoltage(..)
             | ResponseCode::AppVersion(..)
-            | ResponseCode::ProgressorId(..) => 0x00,
+            | ResponseCode::ProgressorId(..)
+            | ResponseCode::CalibrationFactor(..)
+            | ResponseCode::CalibrationPoint(..) => 0x00,
             ResponseCode::WeightMeasurement(..) => 0x01,
             ResponseCode::LowPowerWarning => 0x04,
         }
@@ -428,6 +448,8 @@ impl ResponseCode {
         match self {
             ResponseCode::SampleBatteryVoltage(..) => 4,
             ResponseCode::WeightMeasurement(..) => 8,
+            ResponseCode::CalibrationFactor(..) => 4,
+            ResponseCode::CalibrationPoint(..) => 8,
             ResponseCode::LowPowerWarning => 0,
             ResponseCode::AppVersion(version) => version.len() as u8,
             ResponseCode::ProgressorId(..) => DEVICE_ID_SIZE as u8,
@@ -444,6 +466,13 @@ impl ResponseCode {
             ResponseCode::WeightMeasurement(weight, timestamp) => {
                 value[0..4].copy_from_slice(&weight.to_le_bytes());
                 value[4..8].copy_from_slice(&timestamp.to_le_bytes());
+            }
+            ResponseCode::CalibrationFactor(factor) => {
+                value[0..4].copy_from_slice(&factor.to_le_bytes());
+            }
+            ResponseCode::CalibrationPoint(raw_value, weight) => {
+                value[0..4].copy_from_slice(&raw_value.to_le_bytes());
+                value[4..8].copy_from_slice(&weight.to_le_bytes());
             }
             ResponseCode::LowPowerWarning => (),
             ResponseCode::ProgressorId(id) => {
