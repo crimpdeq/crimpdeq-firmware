@@ -435,11 +435,11 @@ impl ResponseCode {
         match self {
             ResponseCode::SampleBatteryVoltage(..)
             | ResponseCode::AppVersion(..)
-            | ResponseCode::ProgressorId(..)
-            | ResponseCode::CalibrationFactor(..)
-            | ResponseCode::CalibrationPoint(..) => 0x00,
+            | ResponseCode::ProgressorId(..) => 0x00,
             ResponseCode::WeightMeasurement(..) => 0x01,
             ResponseCode::LowPowerWarning => 0x04,
+            ResponseCode::CalibrationFactor(..) => 0x05,
+            ResponseCode::CalibrationPoint(..) => 0x06,
         }
     }
 
