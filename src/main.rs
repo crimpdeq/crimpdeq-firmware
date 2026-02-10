@@ -390,7 +390,7 @@ async fn measurement_task(
                             &state.calibration_points[..state.calibration_point_count]
                         );
                     } else {
-                        info!("Calibration points: []");
+                        info!("Calibration points empty (possibly lost after device reset)");
                     }
                     state.measurement_status = MeasurementTaskStatus::Disabled;
                 });
