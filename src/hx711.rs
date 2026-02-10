@@ -348,7 +348,10 @@ impl<'d> Hx711<'d> {
                 return false;
             }
             let delta_raw = raw_value - base_raw;
-            let delta_weight = weight - base_weight;
+            // Incoming calibration weights are expressed in kg, while
+            // calibration_factor operates on grams before read_calibrated()
+            // converts back to kg.
+            let delta_weight = (weight - base_weight) * 1000.0;
             sum_delta_raw_weight += delta_raw * delta_weight;
             sum_delta_raw_sq += delta_raw * delta_raw;
         }
