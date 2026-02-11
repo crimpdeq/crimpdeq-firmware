@@ -340,7 +340,7 @@ async fn measurement_task(
                     continue;
                 }
 
-                critical_section::with(|cs| {
+                let (calibration_points, calibration_point_count) = critical_section::with(|cs| {
                     let mut state = DEVICE_STATE.borrow_ref_mut(cs);
                     let new_point: CalibrationPoint = (calibration_point, weight);
                     if state.calibration_point_count < MAX_CALIBRATION_POINTS {
@@ -354,21 +354,22 @@ async fn measurement_task(
                         );
                     }
 
-                    if state.calibration_point_count >= 2 {
-                        let points = &state.calibration_points[..state.calibration_point_count];
-                        if !load_cell.apply_multi_point_calibration(points) {
-                            error!(
-                                "Failed to apply calibration points: {:?}",
-                                state.calibration_points
-                            );
-                        }
-                    } else {
-                        info!("Calibration needs at least two points before applying.");
-                    }
-
                     // Disable measurement mode after capturing point
                     state.measurement_status = MeasurementTaskStatus::Disabled;
+                    (state.calibration_points, state.calibration_point_count)
                 });
+
+                if calibration_point_count >= 2 {
+                    let points = &calibration_points[..calibration_point_count];
+                    if !load_cell.apply_multi_point_calibration(points) {
+                        error!("Failed to apply calibration points: {:?}", points);
+                    } else {
+                        notify_calibration_factor(channel, load_cell.current_calibration_factor());
+                        notify_calibration_points(channel, points);
+                    }
+                } else {
+                    info!("Calibration needs at least two points before applying.");
+                }
             }
             MeasurementTaskStatus::DefaultCalibration => {
                 // Reset calibration to default values
@@ -377,6 +378,8 @@ async fn measurement_task(
                         "Error applying default calibration: {:?}",
                         defmt::Debug2Format(&e)
                     );
+                } else {
+                    notify_calibration_factor(channel, load_cell.current_calibration_factor());
                 }
                 critical_section::with(|cs| {
                     let mut state = DEVICE_STATE.borrow_ref_mut(cs);
@@ -398,14 +401,11 @@ async fn measurement_task(
                 }
                 critical_section::with(|cs| {
                     let mut state = DEVICE_STATE.borrow_ref_mut(cs);
-                    for (raw_value, weight) in state
-                        .calibration_points
-                        .iter()
-                        .take(state.calibration_point_count)
-                    {
-                        DataPoint::from(ResponseCode::CalibrationPoint(*raw_value, *weight))
-                            .send(channel);
-                    }
+                    let calibration_point_count = state.calibration_point_count;
+                    notify_calibration_points(
+                        channel,
+                        &state.calibration_points[..calibration_point_count],
+                    );
                     if state.calibration_point_count > 0 {
                         info!(
                             "Calibration points: {:?}",
@@ -445,6 +445,21 @@ async fn send_weight_measurement(
     let response = ResponseCode::WeightMeasurement(weight, timestamp);
     let data_point = DataPoint::from(response);
     data_point.send(channel);
+}
+
+fn notify_calibration_points(
+    channel: &'static DataPointChannel,
+    calibration_points: &[CalibrationPoint],
+) {
+    for (raw_value, weight) in calibration_points {
+        debug!("Notifying calibration point: {:?}", (raw_value, weight));
+        DataPoint::from(ResponseCode::CalibrationPoint(*raw_value, *weight)).send(channel);
+    }
+}
+
+fn notify_calibration_factor(channel: &'static DataPointChannel, calibration_factor: f32) {
+    debug!("Notifying calibration factor: {:?}", calibration_factor);
+    DataPoint::from(ResponseCode::CalibrationFactor(calibration_factor)).send(channel);
 }
 
 /// Stream Events until the connection closes.

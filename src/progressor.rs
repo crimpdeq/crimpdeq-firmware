@@ -232,7 +232,7 @@ impl ControlOpCode {
                 }
 
                 let weight = match data[1..5].try_into() {
-                    Ok(bytes) => f32::from_be_bytes(bytes),
+                    Ok(bytes) => f32::from_le_bytes(bytes),
                     Err(e) => {
                         error!("Failed to parse calibration point data: {:?}", e);
                         return;
