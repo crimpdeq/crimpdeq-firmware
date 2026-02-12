@@ -29,8 +29,6 @@ use panic_rtt_target as _;
 use static_cell::StaticCell;
 use trouble_host::prelude::*;
 
-extern crate alloc;
-
 use crate::{
     ble::{CONNECTIONS_MAX, L2CAP_CHANNELS_MAX, L2CAP_MTU, Server, advertise},
     hx711::Hx711,
@@ -63,7 +61,6 @@ macro_rules! mk_static {
 /// Static tracking the state of the device
 static DEVICE_STATE: Mutex<RefCell<DeviceState>> = Mutex::new(RefCell::new(DeviceState {
     measurement_status: MeasurementTaskStatus::Disabled,
-    tared: false,
     start_time: 0,
     calibration_points: [(0.0, 0.0); MAX_CALIBRATION_POINTS],
     calibration_point_count: 0,
@@ -186,10 +183,8 @@ async fn main(spawner: Spawner) -> ! {
                     )
                     .await;
                     critical_section::with(|cs| {
-                        DEVICE_STATE.borrow_ref_mut(cs).stop_measurement();
-                    });
-                    critical_section::with(|cs| {
                         let mut state = DEVICE_STATE.borrow_ref_mut(cs);
+                        state.stop_measurement();
                         state.on_ble_disconnected();
                         debug!(
                             "BLE connection closed, disconnection time: {:?}",
@@ -301,7 +296,6 @@ async fn measurement_task(
         match status {
             MeasurementTaskStatus::Disabled => {
                 // Do nothing when disabled
-                Timer::after(Duration::from_millis(10)).await;
             }
             MeasurementTaskStatus::Tare => {
                 // Perform taring operation
@@ -309,7 +303,6 @@ async fn measurement_task(
 
                 critical_section::with(|cs| {
                     let mut state = DEVICE_STATE.borrow_ref_mut(cs);
-                    state.tared = true;
                     state.measurement_status = MeasurementTaskStatus::Disabled;
                 });
             }
@@ -442,9 +435,7 @@ async fn send_weight_measurement(
         timestamp as f32 / 1000000.0
     );
 
-    let response = ResponseCode::WeightMeasurement(weight, timestamp);
-    let data_point = DataPoint::from(response);
-    data_point.send(channel);
+    DataPoint::weight_measurement(weight, timestamp).send(channel);
 }
 
 fn notify_calibration_points(
