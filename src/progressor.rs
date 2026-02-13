@@ -46,8 +46,6 @@ pub enum MeasurementTaskStatus {
 pub struct DeviceState {
     /// Measurement status
     pub measurement_status: MeasurementTaskStatus,
-    /// Tared status
-    pub tared: bool,
     /// Start time of the measurement in microseconds
     pub start_time: u32,
     /// Calibration points (raw value, weight)
@@ -64,7 +62,6 @@ impl Default for DeviceState {
     fn default() -> Self {
         Self {
             measurement_status: MeasurementTaskStatus::Disabled,
-            tared: false,
             start_time: 0,
             calibration_points: [(0.0, 0.0); MAX_CALIBRATION_POINTS],
             calibration_point_count: 0,
@@ -75,11 +72,6 @@ impl Default for DeviceState {
 }
 
 impl DeviceState {
-    /// Create a new device state with default values
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     /// Start a measurement
     pub fn start_measurement(&mut self) {
         self.start_time = (time::Instant::now().duration_since_epoch()).as_micros() as u32;
@@ -232,7 +224,7 @@ impl ControlOpCode {
                 }
 
                 let weight = match data[1..5].try_into() {
-                    Ok(bytes) => f32::from_be_bytes(bytes),
+                    Ok(bytes) => f32::from_le_bytes(bytes),
                     Err(e) => {
                         error!("Failed to parse calibration point data: {:?}", e);
                         return;
@@ -504,7 +496,7 @@ impl ResponseCode {
             ResponseCode::CalibrationFactor(..) => 4,
             ResponseCode::CalibrationPoint(..) => 8,
             ResponseCode::LowPowerWarning => 0,
-            ResponseCode::AppVersion(version) => version.len() as u8,
+            ResponseCode::AppVersion(version) => version.len().min(MAX_PAYLOAD_SIZE) as u8,
             ResponseCode::ProgressorId(..) => DEVICE_ID_SIZE as u8,
             ResponseCode::RfdPeak => 0,
             ResponseCode::RfdPeakSeries => 0,
@@ -537,7 +529,8 @@ impl ResponseCode {
                 value[..DEVICE_ID_SIZE].copy_from_slice(&reversed);
             }
             ResponseCode::AppVersion(version) => {
-                value[0..version.len()].copy_from_slice(version);
+                let len = version.len().min(MAX_PAYLOAD_SIZE);
+                value[0..len].copy_from_slice(&version[0..len]);
             }
             ResponseCode::RfdPeak => {
                 warn!("RfdPeak response not implemented");

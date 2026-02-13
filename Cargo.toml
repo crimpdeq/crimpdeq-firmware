@@ -3,7 +3,7 @@ authors = ["Sergio Gasquez <sergio.gasquez@gmail.com>"]
 edition = "2024"
 license = "MIT OR Apache-2.0"
 name    = "crimpdeq"
-version = "0.2.2"
+version = "0.3.0"
 
 [dependencies]
 arrayvec = { version = "0.7.6", default-features = false }
