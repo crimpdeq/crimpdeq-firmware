@@ -35,7 +35,7 @@ const DEFAULT_TARING_SAMPLES: usize = 16;
 /// The default number of samples for calibration
 const DEFAULT_CALIBRATION_SAMPLES: usize = 100;
 /// The default calibration value.
-const DEFAULT_CALIBRATION_FACTOR: f32 = 0.066;
+const DEFAULT_CALIBRATION_FACTOR: f32 = 0.0639;
 
 /// Custom error type for HX711 operations
 #[derive(Debug)]
