@@ -12,7 +12,7 @@ DEFMT_LOG = "off" # Use "trace/debug/info/error/off,crimpdeq=debug" to enable de
 CALIBRATION_CURVE     = "FFFFFFFFFFFFFFFF00000000"
 DEVICE_ID             = "AAAAAAAAAAAA"
 DEVICE_NAME           = "Progressor_7125"
-DEVICE_VERSION_NUMBER = "1.1.4"
+DEVICE_VERSION_NUMBER = "2.0.4"
 
 [build]
 rustflags = [
