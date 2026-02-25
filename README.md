@@ -1,10 +1,10 @@
 # Crimpdeq Firmware
 
 [![Rust CI](https://github.com/crimpdeq/crimpdeq-firmware/actions/workflows/rust_ci.yml/badge.svg)](https://github.com/crimpdeq/crimpdeq-firmware/actions/workflows/rust_ci.yml)
-[![Documentation](https://img.shields.io/badge/Documentation-Book-orange.svg)](https://crimpdeq.github.io/book/)
+[![Documentation](https://img.shields.io/badge/Documentation-Book-orange.svg)](https://book.crimpdeq.com/)
 
 
-Meet Crimpdeq, a portable digital force sensor designed for climbers, coaches, and therapists to measure and train finger strength, pulling power, and endurance.
+Meet [Crimpdeq](https://crimpdeq.com), a portable digital force sensor designed for climbers, coaches, and therapists to measure and train finger strength, pulling power, and endurance.
 
 Crimpdeq is a fully open-source project based on an [ESP32-C3](https://github.com/esp-rs/esp-rust-board) and a WH-C100 crane scale, with firmware fully written in Rust!
 
@@ -18,6 +18,7 @@ Crimpdeq is a fully open-source project based on an [ESP32-C3](https://github.co
 - Communicates via Bluetooth Low Energy (BLE)
 - Open-source firmware written in Rust
 - Open-source PCB design
+- Open-source 3D case design
 - Automatic sleep when inactive
 - Compatible with Tindeq Progressor app ([Android](https://play.google.com/store/apps/details?id=com.progressor&hl=es_419) | [iOS](https://apps.apple.com/es/app/tindeq-progressor/id1380412428))
 - Compatible with Frez app (formerly ClimbHarder) ([Android](https://play.google.com/store/apps/details?id=com.holdtight.climbharder&pcampaignid=web_share) | [iOS](https://apps.apple.com/us/app/climbharder-no-hang-training/id6730120024))
@@ -32,7 +33,7 @@ Crimpdeq is a fully open-source project based on an [ESP32-C3](https://github.co
 
 ## Building and Running the Firmware
 
-The [Crimpdeq Book](https://crimpdeq.github.io/book/) covers assembly, calibration, charging, and general usage. For repository-specific instructions, see the [Firmware](https://crimpdeq.github.io/book/firmware.html) chapter for prerequisites, how to build, flash, and run the firmware, how to enable logs, and troubleshooting.
+The [Crimpdeq Book](https://book.crimpdeq.com/) covers assembly, calibration, charging, and general usage. For repository-specific instructions, see the [Firmware](https://book.crimpdeq.com/firmware.html) chapter for prerequisites, how to build, flash, and run the firmware, how to enable logs, and troubleshooting.
 
 ## Contributing
 Contributions are welcome! Feel free to:
