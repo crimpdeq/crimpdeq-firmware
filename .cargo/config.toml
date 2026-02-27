@@ -1,5 +1,6 @@
 [alias]
 bin = "espflash save-image --chip esp32c3 crimpdeq.bin"
+bin-merged = "espflash save-image --chip esp32c3 crimpdeq.bin --merge"
 
 [target.riscv32imc-unknown-none-elf]
 runner = "probe-rs run --chip esp32c3 --no-location --preverify --restore-unwritten --always-print-stacktrace"

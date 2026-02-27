@@ -35,18 +35,23 @@ jobs:
       - name: Generate binary
         run: |
           ${HOME}/.cargo/bin/espflash save-image --chip esp32c3 target/riscv32imc-unknown-none-elf/release/crimpdeq crimpdeq.bin
+          ${HOME}/.cargo/bin/espflash save-image --chip esp32c3 target/riscv32imc-unknown-none-elf/release/crimpdeq crimpdeq-merged.bin --merge
 
       - name: Compress (Unix)
-        run: zip -j crimpdeq.zip crimpdeq.bin
+        run: |
+          zip -j crimpdeq.zip crimpdeq.bin
+          zip -j crimpdeq-merged.zip crimpdeq-merged.bin
       - name: Upload compressed artifact
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: crimpdeq.zip
+          file: crimpdeq*.zip
           tag: ${{ github.ref }}
+          file_glob: true
       - name: Upload binary artifact
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: crimpdeq.bin
+          file: crimpdeq*.bin
           tag: ${{ github.ref }}
+          file_glob: true
