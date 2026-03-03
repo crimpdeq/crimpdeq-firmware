@@ -4,10 +4,7 @@
 /// It includes the BLE advertising data, the GATT server, and the BLE connection.
 use arrayvec::ArrayVec;
 use defmt::{debug, info};
-use trouble_host::{
-    advertise::{AD_FLAG_LE_LIMITED_DISCOVERABLE, SIMUL_LE_BR_HOST},
-    prelude::*,
-};
+use trouble_host::prelude::*;
 
 use crate::progressor::{DataPoint, MAX_PAYLOAD_SIZE};
 
@@ -20,8 +17,8 @@ pub const L2CAP_MTU: usize = 255;
 
 /// Progressor BLE Scan Response
 const SCAN_RESPONSE_DATA: &[u8] = &[
-    AD_FLAG_LE_LIMITED_DISCOVERABLE | SIMUL_LE_BR_HOST,
-    7_u8, // BLE_GAP_AD_TYPE_128BIT_SERVICE_UUID_COMPLETE
+    17_u8, // Length of AD structure (type + 16-byte UUID)
+    0x07,  // BLE_GAP_AD_TYPE_128BIT_SERVICE_UUID_COMPLETE
     0x57,
     0xad,
     0xfe,
@@ -37,7 +34,7 @@ const SCAN_RESPONSE_DATA: &[u8] = &[
     0x01,
     0x17,
     0x4e,
-    0x7e, //UUID
+    0x7e, // UUID in little-endian order
 ];
 
 // GATT Server definition
