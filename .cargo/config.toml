@@ -1,9 +1,9 @@
 [alias]
-bin = "espflash save-image --chip esp32c3 crimpdeq.bin"
-bin-merged = "espflash save-image --chip esp32c3 crimpdeq.bin --merge"
+bin = "espflash save-image --chip esp32c3 --partition-table partitions.csv --target-app-partition factory crimpdeq.bin"
+bin-merged = "espflash save-image --chip esp32c3 --partition-table partitions.csv --target-app-partition factory crimpdeq.bin --merge"
 
 [target.riscv32imc-unknown-none-elf]
-runner = "probe-rs run --chip esp32c3 --no-location --preverify --restore-unwritten --always-print-stacktrace"
+runner = "probe-rs run --chip esp32c3 --idf-partition-table partitions.csv --idf-target-app-partition factory --no-location --preverify --restore-unwritten --always-print-stacktrace"
 
 [env]
 # Defmt Logging
@@ -11,6 +11,7 @@ DEFMT_LOG = "off" # Use "trace/debug/info/error/off,crimpdeq=debug" to enable de
 
 # Progressor
 CALIBRATION_CURVE     = "FFFFFFFFFFFFFFFF00000000"
+CALIBRATION_PARTITION_LABEL = "calib" # Must match the dedicated partition label in partitions.csv
 DEVICE_ID             = "AAAAAAAAAAAA"
 DEVICE_NAME           = "Progressor_7125"
 DEVICE_VERSION_NUMBER = "2.0.4"

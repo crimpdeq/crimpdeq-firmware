@@ -6,11 +6,12 @@
 /// Based on [loadcell] crate.
 ///
 /// [loadcell]: https://crates.io/crates/loadcell
-use core::fmt;
+use core::{fmt, mem::size_of};
 
-use defmt::{debug, error, info};
+use defmt::{debug, error, info, warn};
 use embedded_hal::delay::DelayNs;
 use embedded_storage::{ReadStorage, Storage};
+use esp_bootloader_esp_idf::partitions::{self, PartitionType};
 use esp_hal::{
     delay::Delay,
     gpio::{Input, Output},
@@ -28,8 +29,12 @@ const HX711_DATA_BITS: usize = 24;
 /// The sign bit position in the HX711 reading
 const HX711_SIGN_BIT: u32 = 0x800000;
 
-/// The default address of the NVS flash storage.
-const NVS_ADDR: u32 = 0x9000;
+/// Label of the dedicated data partition used to persist calibration data.
+const CALIBRATION_PARTITION_LABEL: &str = env!("CALIBRATION_PARTITION_LABEL");
+/// Offset in the dedicated partition where the calibration factor is stored.
+const CALIBRATION_FACTOR_STORAGE_OFFSET: u32 = 0;
+/// Number of bytes used to persist calibration factor.
+const CALIBRATION_FACTOR_STORAGE_LEN: u32 = size_of::<f32>() as u32;
 /// The default number of samples for taring
 const DEFAULT_TARING_SAMPLES: usize = 16;
 /// The default number of samples for calibration
@@ -42,6 +47,8 @@ const DEFAULT_CALIBRATION_FACTOR: f32 = 0.0639;
 pub enum Hx711Error {
     /// Flash storage error
     FlashError,
+    /// No valid calibration storage partition is available
+    StorageUnavailable,
     /// Invalid calibration value
     InvalidCalibration,
 }
@@ -50,6 +57,7 @@ impl fmt::Display for Hx711Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Hx711Error::FlashError => write!(f, "Flash storage error"),
+            Hx711Error::StorageUnavailable => write!(f, "Calibration storage unavailable"),
             Hx711Error::InvalidCalibration => write!(f, "Invalid calibration value"),
         }
     }
@@ -83,6 +91,8 @@ pub struct Hx711<'d> {
     gain_mode: GainMode,
     /// Tare value
     tare_value: i32,
+    /// Calibration factor storage offset resolved from partition table
+    calibration_storage_offset: Option<u32>,
     /// Calibration
     calibration_factor: f32,
 }
@@ -105,9 +115,11 @@ impl<'d> Hx711<'d> {
             flash,
             gain_mode: GainMode::A64,
             tare_value: 0,
+            calibration_storage_offset: None,
             calibration_factor: 0.0,
         };
 
+        hx711.calibration_storage_offset = hx711.find_calibration_storage_offset();
         hx711.calibration_factor = hx711
             .get_calibration_factor()
             .unwrap_or(DEFAULT_CALIBRATION_FACTOR);
@@ -115,11 +127,62 @@ impl<'d> Hx711<'d> {
         hx711
     }
 
+    /// Resolve calibration storage from the partition table to avoid raw flash offsets.
+    fn find_calibration_storage_offset(&mut self) -> Option<u32> {
+        let mut partition_table_buffer = [0u8; partitions::PARTITION_TABLE_MAX_LEN];
+        let partition_table =
+            match partitions::read_partition_table(&mut self.flash, &mut partition_table_buffer) {
+                Ok(table) => table,
+                Err(_) => {
+                    error!("Failed to read partition table for calibration storage");
+                    return None;
+                }
+            };
+
+        let Some(partition) = partition_table.iter().find(|entry| {
+            entry.label_as_str() == CALIBRATION_PARTITION_LABEL
+                && matches!(entry.partition_type(), PartitionType::Data(_))
+        }) else {
+            warn!(
+                "Calibration partition '{}' not found; persistence disabled",
+                CALIBRATION_PARTITION_LABEL
+            );
+            return None;
+        };
+
+        if partition.is_read_only() {
+            warn!(
+                "Calibration partition '{}' is read-only; persistence disabled",
+                CALIBRATION_PARTITION_LABEL
+            );
+            return None;
+        }
+
+        if partition.len() < CALIBRATION_FACTOR_STORAGE_LEN {
+            warn!(
+                "Calibration partition '{}' too small ({} bytes); persistence disabled",
+                CALIBRATION_PARTITION_LABEL,
+                partition.len()
+            );
+            return None;
+        }
+
+        let storage_offset = partition.offset() + CALIBRATION_FACTOR_STORAGE_OFFSET;
+        info!(
+            "Calibration storage resolved to partition '{}' at offset 0x{:x}",
+            CALIBRATION_PARTITION_LABEL, storage_offset
+        );
+        Some(storage_offset)
+    }
+
     /// Read calibration factor from flash
     fn read_from_flash(&mut self) -> Result<f32, Hx711Error> {
+        let storage_offset = self
+            .calibration_storage_offset
+            .ok_or(Hx711Error::StorageUnavailable)?;
         let mut bytes = [0u8; 4];
 
-        self.flash.read(NVS_ADDR, &mut bytes).map_err(|_| {
+        self.flash.read(storage_offset, &mut bytes).map_err(|_| {
             error!("Failed to read calibration factor from flash");
             Hx711Error::FlashError
         })?;
@@ -145,9 +208,14 @@ impl<'d> Hx711<'d> {
             return Err(Hx711Error::InvalidCalibration);
         }
 
+        let Some(storage_offset) = self.calibration_storage_offset else {
+            warn!("Calibration storage unavailable; using RAM-only calibration");
+            return Ok(());
+        };
+
         let bytes = calibration_factor.to_le_bytes();
 
-        self.flash.write(NVS_ADDR, &bytes).map_err(|_| {
+        self.flash.write(storage_offset, &bytes).map_err(|_| {
             error!("Failed to write calibration factor to flash");
             Hx711Error::FlashError
         })?;
@@ -170,13 +238,13 @@ impl<'d> Hx711<'d> {
     }
 
     pub fn get_calibration_factor(&mut self) -> Result<f32, Hx711Error> {
-        // Get the calibration factor from the NVS flash storage.
+        // Get calibration factor from resolved partition storage.
         match self.read_from_flash() {
             Ok(factor) => {
                 info!("Calibration factor read from flash: {:?}", factor);
                 Ok(factor)
             }
-            Err(Hx711Error::InvalidCalibration) => {
+            Err(Hx711Error::InvalidCalibration) | Err(Hx711Error::StorageUnavailable) => {
                 info!("Using default calibration factor");
                 Ok(DEFAULT_CALIBRATION_FACTOR)
             }
