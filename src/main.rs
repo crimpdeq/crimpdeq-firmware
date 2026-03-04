@@ -59,14 +59,7 @@ macro_rules! mk_static {
 }
 
 /// Static tracking the state of the device
-static DEVICE_STATE: Mutex<RefCell<DeviceState>> = Mutex::new(RefCell::new(DeviceState {
-    measurement_status: MeasurementTaskStatus::Disabled,
-    start_time: 0,
-    calibration_points: [(0.0, 0.0); MAX_CALIBRATION_POINTS],
-    calibration_point_count: 0,
-    battery_voltage: 4300,
-    ble_disconnection_time: None,
-}));
+static DEVICE_STATE: Mutex<RefCell<DeviceState>> = Mutex::new(RefCell::new(DeviceState::new()));
 
 // ESP-IDF App Descriptor
 esp_bootloader_esp_idf::esp_app_desc!();

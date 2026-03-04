@@ -60,6 +60,13 @@ pub struct DeviceState {
 
 impl Default for DeviceState {
     fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DeviceState {
+    /// Create a default-initialized device state.
+    pub const fn new() -> Self {
         Self {
             measurement_status: MeasurementTaskStatus::Disabled,
             start_time: 0,
@@ -69,9 +76,7 @@ impl Default for DeviceState {
             ble_disconnection_time: None,
         }
     }
-}
 
-impl DeviceState {
     /// Start a measurement
     pub fn start_measurement(&mut self) {
         self.start_time = (time::Instant::now().duration_since_epoch()).as_micros() as u32;
