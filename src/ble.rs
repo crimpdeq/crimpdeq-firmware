@@ -2,9 +2,11 @@
 ///
 /// This module provides the BLE functionality for the Progressor.
 /// It includes the BLE advertising data, the GATT server, and the BLE connection.
-use arrayvec::ArrayVec;
 use defmt::{debug, info};
-use trouble_host::prelude::*;
+use trouble_host::{
+    advertise::{AdStructure, BR_EDR_NOT_SUPPORTED, LE_GENERAL_DISCOVERABLE},
+    prelude::*,
+};
 
 use crate::progressor::{DataPoint, MAX_PAYLOAD_SIZE};
 
@@ -15,26 +17,9 @@ pub const L2CAP_CHANNELS_MAX: usize = 2; // Signal + att
 /// Size of L2CAP packets
 pub const L2CAP_MTU: usize = 255;
 
-/// Progressor BLE Scan Response
-const SCAN_RESPONSE_DATA: &[u8] = &[
-    17_u8, // Length of AD structure (type + 16-byte UUID)
-    0x07,  // BLE_GAP_AD_TYPE_128BIT_SERVICE_UUID_COMPLETE
-    0x57,
-    0xad,
-    0xfe,
-    0x4f,
-    0xd3,
-    0x13,
-    0xcc,
-    0x9d,
-    0xc9,
-    0x40,
-    0xa6,
-    0x1e,
-    0x01,
-    0x17,
-    0x4e,
-    0x7e, // UUID in little-endian order
+/// Progressor service UUID in little-endian byte order for advertising payloads.
+const PROGRESSOR_SERVICE_UUID_LE: [u8; 16] = [
+    0x57, 0xad, 0xfe, 0x4f, 0xd3, 0x13, 0xcc, 0x9d, 0xc9, 0x40, 0xa6, 0x1e, 0x01, 0x17, 0x4e, 0x7e,
 ];
 
 // GATT Server definition
@@ -65,15 +50,20 @@ pub async fn advertise<'values, 'server, C: Controller>(
     peripheral: &mut Peripheral<'values, C, DefaultPacketPool>,
     server: &'server Server<'values>,
 ) -> Result<GattConnection<'values, 'server, DefaultPacketPool>, BleHostError<C::Error>> {
-    let advertising_data = advertising_data(name.as_bytes()).expect("Valid advertising data");
+    let mut advertising_data = [0u8; 31];
+    let advertising_data_len = build_advertising_data(name.as_bytes(), &mut advertising_data)
+        .expect("valid advertising data");
+    let mut scan_response_data = [0u8; 31];
+    let scan_response_data_len =
+        build_scan_response_data(&mut scan_response_data).expect("valid scan response data");
 
     debug!("Advertising BLE");
     let advertiser = peripheral
         .advertise(
             &Default::default(),
             Advertisement::ConnectableScannableUndirected {
-                adv_data: advertising_data.as_slice(),
-                scan_data: SCAN_RESPONSE_DATA,
+                adv_data: &advertising_data[..advertising_data_len],
+                scan_data: &scan_response_data[..scan_response_data_len],
             },
         )
         .await?;
@@ -82,30 +72,21 @@ pub async fn advertise<'values, 'server, C: Controller>(
     Ok(conn)
 }
 
-fn advertising_data(name: &[u8]) -> Result<ArrayVec<u8, 27>, ()> {
-    // BLE AD type and flag constants
-    const AD_TYPE_FLAGS: u8 = 0x01;
-    const AD_TYPE_COMPLETE_LOCAL_NAME: u8 = 0x09;
-    const FLAG_LE_GENERAL_DISC_MODE: u8 = 0x02;
-    const FLAG_BR_EDR_NOT_SUPPORTED: u8 = 0x04;
+fn build_advertising_data(name: &[u8], dest: &mut [u8; 31]) -> Result<usize, ()> {
+    AdStructure::encode_slice(
+        &[
+            AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
+            AdStructure::CompleteLocalName(name),
+        ],
+        dest,
+    )
+    .map_err(|_| ())
+}
 
-    // Validate name length
-    if name.len() > 24 {
-        // Max allowed (27 - 3 bytes for flags)
-        return Err(());
-    }
-
-    let mut adv_data: ArrayVec<u8, 27> = ArrayVec::new();
-
-    // Add flags (length=2, type, flags)
-    adv_data.push(2);
-    adv_data.push(AD_TYPE_FLAGS);
-    adv_data.push(FLAG_LE_GENERAL_DISC_MODE | FLAG_BR_EDR_NOT_SUPPORTED);
-
-    // Add name (length=name.len()+1, type, name bytes)
-    adv_data.push(name.len() as u8 + 1);
-    adv_data.push(AD_TYPE_COMPLETE_LOCAL_NAME);
-    adv_data.try_extend_from_slice(name).map_err(|_| ())?;
-
-    Ok(adv_data)
+fn build_scan_response_data(dest: &mut [u8; 31]) -> Result<usize, ()> {
+    AdStructure::encode_slice(
+        &[AdStructure::ServiceUuids128(&[PROGRESSOR_SERVICE_UUID_LE])],
+        dest,
+    )
+    .map_err(|_| ())
 }
