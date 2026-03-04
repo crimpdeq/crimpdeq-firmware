@@ -5,6 +5,12 @@ license = "MIT OR Apache-2.0"
 name    = "crimpdeq"
 version = "0.3.1"
 
+[[bin]]
+name = "crimpdeq"
+path = "src/main.rs"
+test = false
+bench = false
+
 [dependencies]
 arrayvec = { version = "0.7.6", default-features = false }
 bt-hci = { version = "0.6.0", features = ["defmt"] }

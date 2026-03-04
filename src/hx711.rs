@@ -31,8 +31,6 @@ const HX711_SIGN_BIT: u32 = 0x800000;
 
 /// Label of the dedicated data partition used to persist calibration data.
 const CALIBRATION_PARTITION_LABEL: &str = env!("CALIBRATION_PARTITION_LABEL");
-/// Offset in the dedicated partition where the calibration factor is stored.
-const CALIBRATION_FACTOR_STORAGE_OFFSET: u32 = 0;
 /// Number of bytes used to persist calibration factor.
 const CALIBRATION_FACTOR_STORAGE_LEN: u32 = size_of::<f32>() as u32;
 /// The default number of samples for taring
@@ -167,7 +165,7 @@ impl<'d> Hx711<'d> {
             return None;
         }
 
-        let storage_offset = partition.offset() + CALIBRATION_FACTOR_STORAGE_OFFSET;
+        let storage_offset = partition.offset();
         info!(
             "Calibration storage resolved to partition '{}' at offset 0x{:x}",
             CALIBRATION_PARTITION_LABEL, storage_offset
@@ -175,14 +173,10 @@ impl<'d> Hx711<'d> {
         Some(storage_offset)
     }
 
-    /// Read calibration factor from flash
-    fn read_from_flash(&mut self) -> Result<f32, Hx711Error> {
-        let storage_offset = self
-            .calibration_storage_offset
-            .ok_or(Hx711Error::StorageUnavailable)?;
+    fn read_factor_at(&mut self, offset: u32) -> Result<f32, Hx711Error> {
         let mut bytes = [0u8; 4];
 
-        self.flash.read(storage_offset, &mut bytes).map_err(|_| {
+        self.flash.read(offset, &mut bytes).map_err(|_| {
             error!("Failed to read calibration factor from flash");
             Hx711Error::FlashError
         })?;
@@ -195,6 +189,14 @@ impl<'d> Hx711<'d> {
         }
 
         Ok(factor)
+    }
+
+    /// Read calibration factor from dedicated partition storage.
+    fn read_from_flash(&mut self) -> Result<f32, Hx711Error> {
+        let storage_offset = self
+            .calibration_storage_offset
+            .ok_or(Hx711Error::StorageUnavailable)?;
+        self.read_factor_at(storage_offset)
     }
 
     /// Check if the calibration factor is valid

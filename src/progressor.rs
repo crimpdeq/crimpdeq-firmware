@@ -3,15 +3,20 @@
 /// See [Tindeq API documentation] for more information
 ///
 /// [Tindeq API documentation]: https://tindeq.com/progressor_api/
-use defmt::{Format, error, info, trace, warn};
+use arrayvec::ArrayVec;
+use defmt::{Format, error, info, warn};
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
 use esp_hal::time;
 use trouble_host::types::gatt_traits::{AsGatt, FromGatt, FromGattError};
 
 /// Size of the channel used to send data points
 const DATA_POINT_COMMAND_CHANNEL_SIZE: usize = 80;
+/// Max number of immediate responses produced by a single control command
+const CONTROL_RESPONSES_MAX: usize = 2;
 /// Channel used to send data points
 pub type DataPointChannel = Channel<NoopRawMutex, DataPoint, DATA_POINT_COMMAND_CHANNEL_SIZE>;
+/// Buffered immediate responses produced by control command processing
+pub type ControlResponses = ArrayVec<DataPoint, CONTROL_RESPONSES_MAX>;
 
 /// Maximum size of the data payload in bytes for any data point
 pub const MAX_PAYLOAD_SIZE: usize = 10;
@@ -174,13 +179,19 @@ pub enum ControlOpCode {
 }
 
 impl ControlOpCode {
+    fn enqueue_response(responses: &mut ControlResponses, response: ResponseCode) {
+        if responses.try_push(DataPoint::from(response)).is_err() {
+            warn!("Dropping control response: response buffer full");
+        }
+    }
+
     /// Process the control operation
     pub fn process(
         self,
         data: &[u8],
-        channel: &'static DataPointChannel,
         device_state: &mut DeviceState,
         device_id: [u8; DEVICE_ID_SIZE],
+        responses: &mut ControlResponses,
     ) {
         match self {
             ControlOpCode::TareScale => {
@@ -195,12 +206,12 @@ impl ControlOpCode {
             ControlOpCode::GetAppVersion => {
                 let response = ResponseCode::AppVersion(env!("DEVICE_VERSION_NUMBER").as_bytes());
                 info!("AppVersion: {:#x}", response);
-                DataPoint::from(response).send(channel);
+                Self::enqueue_response(responses, response);
             }
             ControlOpCode::GetProgressorId => {
                 let response = ResponseCode::ProgressorId(device_id);
                 info!("ProgressorId: {:?}", response);
-                DataPoint::from(response).send(channel);
+                Self::enqueue_response(responses, response);
             }
             ControlOpCode::GetCalibration => {
                 info!("GetCalibration requested");
@@ -238,7 +249,7 @@ impl ControlOpCode {
                 let voltage = device_state.battery_voltage;
                 let response = ResponseCode::SampleBatteryVoltage(voltage);
                 info!("SampleBattery: {:?}", response);
-                DataPoint::from(response).send(channel);
+                Self::enqueue_response(responses, response);
             }
             // Currently unimplemented operations
             ControlOpCode::Shutdown => {}
@@ -251,28 +262,27 @@ impl ControlOpCode {
     }
 }
 
-impl From<u8> for ControlOpCode {
-    fn from(op_code: u8) -> Self {
+impl TryFrom<u8> for ControlOpCode {
+    type Error = ();
+
+    fn try_from(op_code: u8) -> Result<Self, Self::Error> {
         match op_code {
-            0x64 => ControlOpCode::TareScale,
-            0x65 => ControlOpCode::StartMeasurement,
-            0x66 => ControlOpCode::StopMeasurement,
-            0x69 => ControlOpCode::AddCalibrationPoint,
-            0x6E => ControlOpCode::Shutdown,
-            0x6F => ControlOpCode::SampleBattery,
-            0x70 => ControlOpCode::GetProgressorId,
-            0x6B => ControlOpCode::GetAppVersion,
-            0x72 => ControlOpCode::GetCalibration,
-            0x74 => ControlOpCode::DefaultCalibration,
-            0x6C => ControlOpCode::GetErrorInformation,
-            0x6D => ControlOpCode::ClearErrorInformation,
-            0x67 => ControlOpCode::StartPeakRFDMeasurement,
-            0x68 => ControlOpCode::StartPeakRFDMeasurementSeries,
-            0x6A => ControlOpCode::SaveCalibration,
-            _ => {
-                error!("Invalid OpCode received: {:#x}", op_code);
-                ControlOpCode::StopMeasurement
-            }
+            0x64 => Ok(ControlOpCode::TareScale),
+            0x65 => Ok(ControlOpCode::StartMeasurement),
+            0x66 => Ok(ControlOpCode::StopMeasurement),
+            0x69 => Ok(ControlOpCode::AddCalibrationPoint),
+            0x6E => Ok(ControlOpCode::Shutdown),
+            0x6F => Ok(ControlOpCode::SampleBattery),
+            0x70 => Ok(ControlOpCode::GetProgressorId),
+            0x6B => Ok(ControlOpCode::GetAppVersion),
+            0x72 => Ok(ControlOpCode::GetCalibration),
+            0x74 => Ok(ControlOpCode::DefaultCalibration),
+            0x6C => Ok(ControlOpCode::GetErrorInformation),
+            0x6D => Ok(ControlOpCode::ClearErrorInformation),
+            0x67 => Ok(ControlOpCode::StartPeakRFDMeasurement),
+            0x68 => Ok(ControlOpCode::StartPeakRFDMeasurementSeries),
+            0x6A => Ok(ControlOpCode::SaveCalibration),
+            _ => Err(()),
         }
     }
 }
@@ -363,15 +373,6 @@ impl DataPoint {
             response_code,
             length: copy_len as u8,
             value,
-        }
-    }
-
-    /// Send data point to the channel
-    pub fn send(&self, channel: &'static DataPointChannel) {
-        if channel.try_send(*self).is_err() {
-            error!("Failed to send data point: channel full or receiver dropped");
-        } else {
-            trace!("Sent data point successfully");
         }
     }
 
