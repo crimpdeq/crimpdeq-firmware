@@ -11,8 +11,7 @@ use embassy_futures::{join::join, select::select};
 use embassy_sync::channel::Channel;
 use embassy_time::{Duration, Timer};
 use esp_hal::{
-    Async,
-    Config,
+    Async, Config,
     analog::adc::{Adc, AdcCalCurve, AdcConfig, AdcPin, Attenuation},
     clock::CpuClock,
     delay::Delay,
@@ -33,14 +32,8 @@ use crate::{
     ble::{CONNECTIONS_MAX, L2CAP_CHANNELS_MAX, L2CAP_MTU, Server, advertise},
     hx711::Hx711,
     progressor::{
-        CalibrationPoint,
-        ControlOpCode,
-        DataPoint,
-        DataPointChannel,
-        DeviceState,
-        MAX_CALIBRATION_POINTS,
-        MeasurementTaskStatus,
-        ResponseCode,
+        CalibrationPoint, ControlOpCode, DEVICE_ID_SIZE, DataPoint, DataPointChannel, DeviceState,
+        MAX_CALIBRATION_POINTS, MeasurementTaskStatus, ResponseCode,
     },
 };
 
@@ -113,6 +106,14 @@ async fn main(spawner: Spawner) -> ! {
 
     // Use the last 6 bytes of the DEVICE_NAME for the address
     let device_name = env!("DEVICE_NAME");
+    let device_id = parse_device_id_hex(env!("DEVICE_ID")).unwrap_or_else(|| {
+        warn!(
+            "Invalid DEVICE_ID '{}', expected {} hex chars. Falling back to 00..00",
+            env!("DEVICE_ID"),
+            DEVICE_ID_SIZE * 2
+        );
+        [0; DEVICE_ID_SIZE]
+    });
     let name_bytes = device_name.as_bytes();
     let mut address_seed = [0u8; 6];
     let seed_len = address_seed.len();
@@ -171,7 +172,7 @@ async fn main(spawner: Spawner) -> ! {
                     // run until any task ends (usually because the connection has been closed),
                     // then return to advertising state.
                     select(
-                        gatt_events_task(&server, &conn, channel),
+                        gatt_events_task(&server, &conn, channel, device_id),
                         data_processing_task(&server, &conn, channel),
                     )
                     .await;
@@ -205,6 +206,35 @@ async fn ble_task<C: Controller, P: PacketPool>(mut runner: Runner<'_, C, P>) {
             panic!("BLE error: {:?}", e);
         }
     }
+}
+
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn parse_device_id_hex(device_id: &str) -> Option<[u8; DEVICE_ID_SIZE]> {
+    const HEX_CHARS_PER_BYTE: usize = 2;
+
+    let input = device_id.as_bytes();
+    if input.len() != DEVICE_ID_SIZE * HEX_CHARS_PER_BYTE {
+        return None;
+    }
+
+    let mut parsed = [0u8; DEVICE_ID_SIZE];
+    let mut i = 0;
+    while i < DEVICE_ID_SIZE {
+        let hi = hex_nibble(input[i * HEX_CHARS_PER_BYTE])?;
+        let lo = hex_nibble(input[i * HEX_CHARS_PER_BYTE + 1])?;
+        parsed[i] = (hi << 4) | lo;
+        i += 1;
+    }
+
+    Some(parsed)
 }
 
 #[embassy_executor::task]
@@ -454,6 +484,7 @@ async fn gatt_events_task<P: PacketPool>(
     server: &Server<'_>,
     conn: &GattConnection<'_, '_, P>,
     channel: &'static DataPointChannel,
+    device_id: [u8; DEVICE_ID_SIZE],
 ) -> Result<(), Error> {
     let control_point = server.progressor.control_point;
     loop {
@@ -477,7 +508,7 @@ async fn gatt_events_task<P: PacketPool>(
 
                     critical_section::with(|cs| {
                         let mut device_state = DEVICE_STATE.borrow_ref_mut(cs);
-                        op_code.process(cmd_data, channel, &mut device_state);
+                        op_code.process(cmd_data, channel, &mut device_state, device_id);
                     });
                 }
 

@@ -17,7 +17,7 @@ pub type DataPointChannel = Channel<NoopRawMutex, DataPoint, DATA_POINT_COMMAND_
 pub const MAX_PAYLOAD_SIZE: usize = 10;
 
 /// Number of bytes in the device ID
-const DEVICE_ID_SIZE: usize = 6;
+pub const DEVICE_ID_SIZE: usize = 6;
 /// Maximum number of calibration points to store
 pub const MAX_CALIBRATION_POINTS: usize = 20;
 
@@ -180,6 +180,7 @@ impl ControlOpCode {
         data: &[u8],
         channel: &'static DataPointChannel,
         device_state: &mut DeviceState,
+        device_id: [u8; DEVICE_ID_SIZE],
     ) {
         match self {
             ControlOpCode::TareScale => {
@@ -197,24 +198,7 @@ impl ControlOpCode {
                 DataPoint::from(response).send(channel);
             }
             ControlOpCode::GetProgressorId => {
-                /// Number of hex characters needed per byte (2 hex chars = 1 byte)
-                const HEX_CHARS_PER_BYTE: usize = 2;
-                /// Hex radix for parsing hex strings
-                const HEX_RADIX: u32 = 16;
-
-                let device_id = env!("DEVICE_ID");
-                let mut bytes = [0u8; DEVICE_ID_SIZE];
-                for (i, byte) in bytes.iter_mut().enumerate() {
-                    let char_pos = i * HEX_CHARS_PER_BYTE;
-                    let next_char_pos = char_pos + HEX_CHARS_PER_BYTE;
-                    if next_char_pos <= device_id.len()
-                        && let Ok(parsed_byte) =
-                            u8::from_str_radix(&device_id[char_pos..next_char_pos], HEX_RADIX)
-                    {
-                        *byte = parsed_byte;
-                    }
-                }
-                let response = ResponseCode::ProgressorId(bytes);
+                let response = ResponseCode::ProgressorId(device_id);
                 info!("ProgressorId: {:?}", response);
                 DataPoint::from(response).send(channel);
             }
