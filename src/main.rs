@@ -11,7 +11,8 @@ use embassy_futures::{join::join, select::select};
 use embassy_sync::channel::Channel;
 use embassy_time::{Duration, Timer};
 use esp_hal::{
-    Async, Config,
+    Async,
+    Config,
     analog::adc::{Adc, AdcCalCurve, AdcConfig, AdcPin, Attenuation},
     clock::CpuClock,
     delay::Delay,
@@ -32,8 +33,17 @@ use crate::{
     ble::{CONNECTIONS_MAX, L2CAP_CHANNELS_MAX, L2CAP_MTU, Server, advertise},
     hx711::Hx711,
     progressor::{
-        CalibrationPoint, ControlOpCode, ControlResponses, DEVICE_ID_SIZE, DataPoint,
-        DataPointChannel, DeviceState, MAX_CALIBRATION_POINTS, MeasurementTaskStatus, ResponseCode,
+        CalibrationPoint,
+        ControlOpCode,
+        ControlResponses,
+        DEVICE_ID_SIZE,
+        DataPoint,
+        DataPointChannel,
+        DeviceState,
+        MAX_CALIBRATION_POINTS,
+        MeasurementTaskStatus,
+        ResponseCode,
+        WEIGHT_SAMPLES_PER_PACKET,
     },
 };
 
@@ -310,6 +320,8 @@ async fn measurement_task(
 ) {
     let mut load_cell = Hx711::new(data_pin, clock_pin, delay, flash);
     load_cell.tare().await;
+    let mut measurement_batch = [(0.0_f32, 0_u32); WEIGHT_SAMPLES_PER_PACKET];
+    let mut measurement_batch_len = 0usize;
 
     loop {
         // Get current device state
@@ -317,6 +329,11 @@ async fn measurement_task(
             let state = DEVICE_STATE.borrow_ref(cs);
             (state.measurement_status, state.start_time)
         });
+
+        if status != MeasurementTaskStatus::Enabled && measurement_batch_len > 0 {
+            send_weight_measurements(channel, &measurement_batch[..measurement_batch_len]).await;
+            measurement_batch_len = 0;
+        }
 
         match status {
             MeasurementTaskStatus::Disabled => {
@@ -332,7 +349,14 @@ async fn measurement_task(
                 });
             }
             MeasurementTaskStatus::Enabled => {
-                send_weight_measurement(&mut load_cell, start_time, channel).await;
+                let sample = sample_weight_measurement(&mut load_cell, start_time).await;
+                measurement_batch[measurement_batch_len] = sample;
+                measurement_batch_len += 1;
+
+                if measurement_batch_len == WEIGHT_SAMPLES_PER_PACKET {
+                    send_weight_measurements(channel, &measurement_batch).await;
+                    measurement_batch_len = 0;
+                }
             }
             MeasurementTaskStatus::Calibration(weight) => {
                 if !weight.is_finite() || weight < 0.0 {
@@ -448,24 +472,20 @@ async fn measurement_task(
     }
 }
 
-/// Send a weight measurement data point with current timestamp
-async fn send_weight_measurement(
-    load_cell: &mut Hx711<'_>,
-    start_time: u32,
-    channel: &'static DataPointChannel,
-) {
+/// Collect one weight measurement sample with current timestamp.
+async fn sample_weight_measurement(load_cell: &mut Hx711<'_>, start_time: u32) -> (f32, u32) {
     let weight = load_cell.read_calibrated().await;
     let now = (time::Instant::now().duration_since_epoch()).as_micros() as u32;
     let timestamp = now.wrapping_sub(start_time);
 
-    debug!(
-        "Sending measurement: Weight: {}kg, Timestamp: {:?}",
-        weight,
-        timestamp as f32 / 1000000.0
-    );
+    (weight, timestamp)
+}
 
+/// Send a batch of weight measurement samples as one notification.
+async fn send_weight_measurements(channel: &'static DataPointChannel, measurements: &[(f32, u32)]) {
+    debug!("Sending {} batched measurements", measurements.len());
     channel
-        .send(DataPoint::weight_measurement(weight, timestamp))
+        .send(DataPoint::weight_measurements(measurements))
         .await;
 }
 

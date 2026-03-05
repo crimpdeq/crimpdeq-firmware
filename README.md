@@ -3,11 +3,9 @@
 [![Rust CI](https://github.com/crimpdeq/crimpdeq-firmware/actions/workflows/rust_ci.yml/badge.svg)](https://github.com/crimpdeq/crimpdeq-firmware/actions/workflows/rust_ci.yml)
 [![Documentation](https://img.shields.io/badge/Documentation-Book-orange.svg)](https://book.crimpdeq.com/)
 
-
 Meet [Crimpdeq](https://crimpdeq.com), a portable digital force sensor designed for climbers, coaches, and therapists to measure and train finger strength, pulling power, and endurance.
 
 Crimpdeq is a fully open-source project based on an [ESP32-C3](https://github.com/esp-rs/esp-rust-board) and a WH-C100 crane scale, with firmware fully written in Rust!
-
 
 > [!NOTE]
 > If you're interested in reproducing this project or giving it a try, please, reach out! You can contact me via email (sergio.gasquez@gmail.com), [Twitter](https://x.com/Sergio_Gasquez) or [Bluesky](https://bsky.app/profile/sergiogasquez.bsky.social).
