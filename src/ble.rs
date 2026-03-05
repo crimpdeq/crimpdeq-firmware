@@ -2,7 +2,7 @@
 ///
 /// This module provides the BLE functionality for the Progressor.
 /// It includes the BLE advertising data, the GATT server, and the BLE connection.
-use defmt::{debug, info, warn};
+use defmt::{debug, warn};
 use trouble_host::{
     advertise::{AdStructure, BR_EDR_NOT_SUPPORTED, LE_GENERAL_DISCOVERABLE},
     prelude::*,
@@ -66,7 +66,6 @@ pub async fn advertise<'values, 'server, C: Controller>(
         )
         .await?;
     let conn = advertiser.accept().await?.with_attribute_server(server)?;
-    info!("BLE connection established");
     Ok(conn)
 }
 

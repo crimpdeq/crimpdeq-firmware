@@ -86,11 +86,18 @@ async fn main(spawner: Spawner) -> ! {
 
     // Initialize radio
     static RADIO: StaticCell<esp_radio::Controller<'static>> = StaticCell::new();
-    let radio = RADIO.init(esp_radio::init().unwrap());
+    let radio_controller = match esp_radio::init() {
+        Ok(controller) => controller,
+        Err(_) => panic!("Failed to initialize ESP radio"),
+    };
+    let radio = RADIO.init(radio_controller);
 
     // Initialize BLE
     let bluetooth = peripherals.BT;
-    let connector = BleConnector::new(radio, bluetooth, Default::default()).unwrap();
+    let connector = match BleConnector::new(radio, bluetooth, Default::default()) {
+        Ok(connector) => connector,
+        Err(_) => panic!("Failed to initialize BLE connector"),
+    };
     let controller: ExternalController<_, 1> = ExternalController::new(connector);
 
     // Initialize load cell pins
@@ -143,11 +150,13 @@ async fn main(spawner: Spawner) -> ! {
     } = stack.build();
 
     info!("Starting advertising and GATT service");
-    let server = Server::new_with_config(GapConfig::Peripheral(PeripheralConfig {
+    let server = match Server::new_with_config(GapConfig::Peripheral(PeripheralConfig {
         name: device_name,
         appearance: &appearance::UNKNOWN,
-    }))
-    .unwrap();
+    })) {
+        Ok(server) => server,
+        Err(_) => panic!("Failed to create GATT server"),
+    };
 
     // Data point channel for communication between tasks
     let channel = mk_static!(DataPointChannel, Channel::new());
@@ -158,13 +167,21 @@ async fn main(spawner: Spawner) -> ! {
     });
 
     // Spawn tasks
-    spawner
+    if spawner
         .spawn(measurement_task(channel, clock_pin, data_pin, delay, flash))
-        .unwrap();
-    spawner
+        .is_err()
+    {
+        panic!("Failed to spawn measurement task");
+    }
+    if spawner
         .spawn(battery_voltage_task(battery_adc, battery_pin))
-        .unwrap();
-    spawner.spawn(deep_sleep_task(rtc)).unwrap();
+        .is_err()
+    {
+        panic!("Failed to spawn battery voltage task");
+    }
+    if spawner.spawn(deep_sleep_task(rtc)).is_err() {
+        panic!("Failed to spawn deep sleep task");
+    }
 
     let _ = join(ble_task(runner), async {
         loop {
