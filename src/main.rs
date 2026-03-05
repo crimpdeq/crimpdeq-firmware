@@ -592,10 +592,6 @@ async fn gatt_events_task<P: PacketPool>(
     }
 
     info!("BLE task finished");
-    critical_section::with(|cs| {
-        let mut device_state = DEVICE_STATE.borrow_ref_mut(cs);
-        device_state.stop_measurement();
-    });
 
     Ok(())
 }

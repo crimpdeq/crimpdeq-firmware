@@ -224,8 +224,11 @@ impl ControlOpCode {
                 device_state.get_calibration();
             }
             ControlOpCode::AddCalibrationPoint => {
-                if data.len() < 5 {
-                    error!("AddCalibrationPoint: Invalid data length");
+                if data.len() != 5 {
+                    error!(
+                        "AddCalibrationPoint: Invalid data length {}, expected 5",
+                        data.len()
+                    );
                     return;
                 }
 
