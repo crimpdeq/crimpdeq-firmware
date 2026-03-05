@@ -211,7 +211,7 @@ impl<'d> Hx711<'d> {
 
     /// Check if the calibration factor is valid
     pub fn is_valid_calibration_factor(factor: f32) -> bool {
-        !factor.is_nan() && factor != 0.0
+        factor.is_finite() && factor != 0.0
     }
 
     /// Write calibration factor to flash

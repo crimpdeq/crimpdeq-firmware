@@ -134,7 +134,7 @@ impl DeviceState {
     pub fn get_ble_disconnection_elapsed_ms(&self) -> Option<u32> {
         self.ble_disconnection_time.map(|disconnect_time| {
             let current_time = (time::Instant::now().duration_since_epoch()).as_millis() as u32;
-            current_time.saturating_sub(disconnect_time)
+            current_time.wrapping_sub(disconnect_time)
         })
     }
 }

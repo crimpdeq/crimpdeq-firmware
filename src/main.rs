@@ -7,9 +7,12 @@ use bt_hci::controller::ExternalController;
 use critical_section::Mutex;
 use defmt::{debug, error, info, warn};
 use embassy_executor::Spawner;
-use embassy_futures::{join::join, select::select};
+use embassy_futures::{
+    join::join,
+    select::{Either, select},
+};
 use embassy_sync::channel::Channel;
-use embassy_time::{Duration, Timer};
+use embassy_time::{Duration, Timer, with_timeout};
 use esp_hal::{
     Async,
     Config,
@@ -158,8 +161,11 @@ async fn main(spawner: Spawner) -> ! {
         Err(_) => panic!("Failed to create GATT server"),
     };
 
-    // Data point channel for communication between tasks
-    let channel = mk_static!(DataPointChannel, Channel::new());
+    // Data point channels for communication between tasks
+    // - measurement_channel: high-rate weight stream (best effort)
+    // - control_channel: command/calibration responses (prioritized)
+    let measurement_channel = mk_static!(DataPointChannel, Channel::new());
+    let control_channel = mk_static!(DataPointChannel, Channel::new());
 
     // Start idle timer: if no BLE connection happens within TIMEOUT_MS, deep_sleep_task will sleep.
     critical_section::with(|cs| {
@@ -168,7 +174,14 @@ async fn main(spawner: Spawner) -> ! {
 
     // Spawn tasks
     if spawner
-        .spawn(measurement_task(channel, clock_pin, data_pin, delay, flash))
+        .spawn(measurement_task(
+            measurement_channel,
+            control_channel,
+            clock_pin,
+            data_pin,
+            delay,
+            flash,
+        ))
         .is_err()
     {
         panic!("Failed to spawn measurement task");
@@ -194,8 +207,8 @@ async fn main(spawner: Spawner) -> ! {
                     // run until any task ends (usually because the connection has been closed),
                     // then return to advertising state.
                     select(
-                        gatt_events_task(&server, &conn, channel, device_id),
-                        data_processing_task(&server, &conn, channel),
+                        gatt_events_task(&server, &conn, control_channel, device_id),
+                        data_processing_task(&server, &conn, control_channel, measurement_channel),
                     )
                     .await;
                     critical_section::with(|cs| {
@@ -207,6 +220,8 @@ async fn main(spawner: Spawner) -> ! {
                             state.ble_disconnection_time
                         );
                     });
+                    control_channel.clear();
+                    measurement_channel.clear();
                 }
                 Err(e) => {
                     error!("BLE advertise error: {:?}", e);
@@ -324,7 +339,8 @@ async fn battery_voltage_task(
 
 #[embassy_executor::task]
 async fn measurement_task(
-    channel: &'static DataPointChannel,
+    measurement_channel: &'static DataPointChannel,
+    control_channel: &'static DataPointChannel,
     clock_pin: Output<'static>,
     data_pin: Input<'static>,
     delay: Delay,
@@ -345,7 +361,10 @@ async fn measurement_task(
         });
 
         if status != MeasurementTaskStatus::Enabled && measurement_batch_len > 0 {
-            send_weight_measurements(channel, &measurement_batch[..measurement_batch_len]).await;
+            send_weight_measurements(
+                measurement_channel,
+                &measurement_batch[..measurement_batch_len],
+            );
             measurement_batch_len = 0;
         }
 
@@ -371,7 +390,7 @@ async fn measurement_task(
                         measurement_batch_len += 1;
 
                         if measurement_batch_len == WEIGHT_SAMPLES_PER_PACKET {
-                            send_weight_measurements(channel, &measurement_batch).await;
+                            send_weight_measurements(measurement_channel, &measurement_batch);
                             measurement_batch_len = 0;
                         }
                     }
@@ -442,9 +461,12 @@ async fn measurement_task(
                     if !load_cell.apply_multi_point_calibration(points) {
                         error!("Failed to apply calibration points: {:?}", points);
                     } else {
-                        notify_calibration_factor(channel, load_cell.current_calibration_factor())
-                            .await;
-                        notify_calibration_points(channel, points).await;
+                        notify_calibration_factor(
+                            control_channel,
+                            load_cell.current_calibration_factor(),
+                        )
+                        .await;
+                        notify_calibration_points(control_channel, points).await;
                     }
                 } else {
                     info!("Calibration needs at least two points before applying.");
@@ -458,8 +480,11 @@ async fn measurement_task(
                         defmt::Debug2Format(&e)
                     );
                 } else {
-                    notify_calibration_factor(channel, load_cell.current_calibration_factor())
-                        .await;
+                    notify_calibration_factor(
+                        control_channel,
+                        load_cell.current_calibration_factor(),
+                    )
+                    .await;
                 }
                 critical_section::with(|cs| {
                     let mut state = DEVICE_STATE.borrow_ref_mut(cs);
@@ -471,9 +496,12 @@ async fn measurement_task(
                 // Report the runtime factor currently in use by the measurement path.
                 // This remains correct even when persistence is unavailable.
                 let factor = load_cell.current_calibration_factor();
-                channel
-                    .send(DataPoint::from(ResponseCode::CalibrationFactor(factor)))
-                    .await;
+                send_control_data_point(
+                    control_channel,
+                    DataPoint::from(ResponseCode::CalibrationFactor(factor)),
+                    "calibration factor",
+                )
+                .await;
 
                 let (calibration_points, calibration_point_count) = critical_section::with(|cs| {
                     let mut state = DEVICE_STATE.borrow_ref_mut(cs);
@@ -482,8 +510,11 @@ async fn measurement_task(
                     state.measurement_status = MeasurementTaskStatus::Disabled;
                     (calibration_points, calibration_point_count)
                 });
-                notify_calibration_points(channel, &calibration_points[..calibration_point_count])
-                    .await;
+                notify_calibration_points(
+                    control_channel,
+                    &calibration_points[..calibration_point_count],
+                )
+                .await;
                 if calibration_point_count > 0 {
                     info!(
                         "Calibration points: {:?}",
@@ -514,12 +545,55 @@ async fn sample_weight_measurement(
     Ok((weight, timestamp))
 }
 
+const CONTROL_SEND_TIMEOUT_MS: u64 = 200;
+const CONTROL_SEND_MAX_ATTEMPTS: usize = 3;
+
+fn enqueue_stream_data_point(
+    channel: &'static DataPointChannel,
+    data_point: DataPoint,
+    context: &'static str,
+) {
+    if channel.try_send(data_point).is_err() {
+        warn!("Dropping {} data point: stream channel full", context);
+    }
+}
+
+async fn send_control_data_point(
+    channel: &'static DataPointChannel,
+    data_point: DataPoint,
+    context: &'static str,
+) {
+    for attempt in 1..=CONTROL_SEND_MAX_ATTEMPTS {
+        if with_timeout(
+            Duration::from_millis(CONTROL_SEND_TIMEOUT_MS),
+            channel.send(data_point),
+        )
+        .await
+        .is_ok()
+        {
+            return;
+        }
+
+        warn!(
+            "Timed out sending {} data point (attempt {}/{})",
+            context, attempt, CONTROL_SEND_MAX_ATTEMPTS
+        );
+    }
+
+    error!(
+        "Dropping {} data point after {} timed out attempts",
+        context, CONTROL_SEND_MAX_ATTEMPTS
+    );
+}
+
 /// Send a batch of weight measurement samples as one notification.
-async fn send_weight_measurements(channel: &'static DataPointChannel, measurements: &[(f32, u32)]) {
+fn send_weight_measurements(channel: &'static DataPointChannel, measurements: &[(f32, u32)]) {
     debug!("Sending {} batched measurements", measurements.len());
-    channel
-        .send(DataPoint::weight_measurements(measurements))
-        .await;
+    enqueue_stream_data_point(
+        channel,
+        DataPoint::weight_measurements(measurements),
+        "weight batch",
+    );
 }
 
 async fn notify_calibration_points(
@@ -528,21 +602,23 @@ async fn notify_calibration_points(
 ) {
     for (raw_value, weight) in calibration_points {
         debug!("Notifying calibration point: {:?}", (raw_value, weight));
-        channel
-            .send(DataPoint::from(ResponseCode::CalibrationPoint(
-                *raw_value, *weight,
-            )))
-            .await;
+        send_control_data_point(
+            channel,
+            DataPoint::from(ResponseCode::CalibrationPoint(*raw_value, *weight)),
+            "calibration point",
+        )
+        .await;
     }
 }
 
 async fn notify_calibration_factor(channel: &'static DataPointChannel, calibration_factor: f32) {
     debug!("Notifying calibration factor: {:?}", calibration_factor);
-    channel
-        .send(DataPoint::from(ResponseCode::CalibrationFactor(
-            calibration_factor,
-        )))
-        .await;
+    send_control_data_point(
+        channel,
+        DataPoint::from(ResponseCode::CalibrationFactor(calibration_factor)),
+        "calibration factor",
+    )
+    .await;
 }
 
 /// Stream Events until the connection closes.
@@ -552,7 +628,7 @@ async fn notify_calibration_factor(channel: &'static DataPointChannel, calibrati
 async fn gatt_events_task<P: PacketPool>(
     server: &Server<'_>,
     conn: &GattConnection<'_, '_, P>,
-    channel: &'static DataPointChannel,
+    control_channel: &'static DataPointChannel,
     device_id: [u8; DEVICE_ID_SIZE],
 ) -> Result<(), Error> {
     let control_point = server.progressor.control_point;
@@ -587,7 +663,8 @@ async fn gatt_events_task<P: PacketPool>(
                         op_code.process(cmd_data, &mut device_state, device_id, &mut responses);
                     });
                     for response in responses {
-                        channel.send(response).await;
+                        send_control_data_point(control_channel, response, "control response")
+                            .await;
                     }
                 }
 
@@ -611,12 +688,20 @@ async fn gatt_events_task<P: PacketPool>(
 async fn data_processing_task<P: PacketPool>(
     server: &Server<'_>,
     conn: &GattConnection<'_, '_, P>,
-    channel: &'static DataPointChannel,
+    control_channel: &'static DataPointChannel,
+    measurement_channel: &'static DataPointChannel,
 ) {
     let data_point_handle = server.progressor.data_point;
 
     loop {
-        let data_point = channel.receive().await;
+        let data_point = if let Ok(control_data_point) = control_channel.try_receive() {
+            control_data_point
+        } else {
+            match select(control_channel.receive(), measurement_channel.receive()).await {
+                Either::First(control_data_point) => control_data_point,
+                Either::Second(measurement_data_point) => measurement_data_point,
+            }
+        };
         debug!("Sending Data Point: {:?}", data_point);
 
         // Send notification with the data packet
