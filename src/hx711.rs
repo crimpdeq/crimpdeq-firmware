@@ -377,21 +377,17 @@ impl<'d> Hx711<'d> {
         calibrated_value / 1000.0
     }
 
-    /// Perform two-point calibration with a known target weight
+    /// Perform two-point calibration with a known target weight.
     ///
-    /// This method collects raw values for calibration by taking multiple samples
-    /// and averaging them for stability.
+    /// This method collects **raw** values for calibration by taking multiple
+    /// samples and averaging them for stability.
+    ///
+    /// NOTE: This does not modify or persist the current calibration factor.
+    /// Flash is only written once a final factor is computed and applied.
     ///
     /// Returns the average raw value for the calibration point.
     pub async fn perform_calibration(&mut self) -> f32 {
-        // Reset calibration to raw values first
-        if let Err(e) = self.update_calibration_factor(1.0) {
-            error!(
-                "Failed to reset calibration factor before calibration: {:?}",
-                defmt::Debug2Format(&e)
-            );
-        }
-        // Take multiple readings and average them for stability
+        // Take multiple readings and average them for stability.
         let average_value = self.take_samples(DEFAULT_CALIBRATION_SAMPLES).await;
         debug!("Calibration point collected: {}", average_value);
 
