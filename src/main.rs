@@ -14,10 +14,8 @@ use embassy_futures::{
 use embassy_sync::channel::Channel;
 use embassy_time::{Duration, Timer, with_timeout};
 use esp_hal::{
-    Async,
-    Config,
+    Async, Config,
     analog::adc::{Adc, AdcCalCurve, AdcConfig, AdcPin, Attenuation},
-    clock::CpuClock,
     delay::Delay,
     gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull},
     interrupt::software::SoftwareInterruptControl,
@@ -36,16 +34,8 @@ use crate::{
     ble::{CONNECTIONS_MAX, L2CAP_CHANNELS_MAX, L2CAP_MTU, Server, advertise},
     hx711::Hx711,
     progressor::{
-        CalibrationPoint,
-        ControlOpCode,
-        ControlResponses,
-        DEVICE_ID_SIZE,
-        DataPoint,
-        DataPointChannel,
-        DeviceState,
-        MAX_CALIBRATION_POINTS,
-        MeasurementTaskStatus,
-        ResponseCode,
+        CalibrationPoint, ControlOpCode, ControlResponses, DEVICE_ID_SIZE, DataPoint,
+        DataPointChannel, DeviceState, MAX_CALIBRATION_POINTS, MeasurementTaskStatus, ResponseCode,
         WEIGHT_SAMPLES_PER_PACKET,
     },
 };
@@ -76,7 +66,7 @@ async fn main(spawner: Spawner) -> ! {
     rtt_target::rtt_init_defmt!();
 
     // System initialization
-    let config = Config::default().with_cpu_clock(CpuClock::max());
+    let config = Config::default();
     let peripherals = esp_hal::init(config);
 
     // Allocate 72KB of heap memory
