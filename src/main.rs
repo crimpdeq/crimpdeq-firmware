@@ -114,25 +114,20 @@ async fn main(spawner: Spawner) -> ! {
         adc_config.enable_pin_with_cal::<_, AdcCalCurve<_>>(analog_pin, Attenuation::_11dB);
     let battery_adc = Adc::new(peripherals.ADC1, adc_config).into_async();
 
-    // Use the last 6 bytes of the DEVICE_NAME for the address
     let device_name = env!("DEVICE_NAME");
     let device_id = parse_device_id_hex(env!("DEVICE_ID")).unwrap_or_else(|| {
-        warn!(
-            "Invalid DEVICE_ID '{}', expected {} hex chars. Falling back to 00..00",
+        panic!(
+            "Invalid DEVICE_ID '{}', expected exactly {} hex chars",
             env!("DEVICE_ID"),
             DEVICE_ID_SIZE * 2
-        );
-        [0; DEVICE_ID_SIZE]
+        )
     });
-    let name_bytes = device_name.as_bytes();
-    let mut address_seed = [0u8; 6];
-    let seed_len = address_seed.len();
-    if name_bytes.len() >= seed_len {
-        address_seed.copy_from_slice(&name_bytes[name_bytes.len() - seed_len..]);
-    } else {
-        address_seed[..name_bytes.len()].copy_from_slice(name_bytes);
-    }
-    address_seed[5] |= 0xC0;
+
+    // Derive BLE random static address from DEVICE_ID to avoid collisions
+    // when multiple devices share the same advertised name.
+    let mut address_seed = device_id;
+    // Set random static address bits (two MSBs must be 1)
+    address_seed[5] = (address_seed[5] & 0x3F) | 0xC0;
     let address: Address = Address::random(address_seed);
     let mut resources: HostResources<
         DefaultPacketPool,
