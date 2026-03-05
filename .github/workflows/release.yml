@@ -34,8 +34,8 @@ jobs:
         run: cargo build --release
       - name: Generate binary
         run: |
-          ${HOME}/.cargo/bin/espflash save-image --chip esp32c3 target/riscv32imc-unknown-none-elf/release/crimpdeq crimpdeq.bin
-          ${HOME}/.cargo/bin/espflash save-image --chip esp32c3 target/riscv32imc-unknown-none-elf/release/crimpdeq crimpdeq-merged.bin --merge
+          ${HOME}/.cargo/bin/espflash save-image --chip esp32c3 --partition-table partitions.csv --target-app-partition factory target/riscv32imc-unknown-none-elf/release/crimpdeq crimpdeq.bin
+          ${HOME}/.cargo/bin/espflash save-image --chip esp32c3 --partition-table partitions.csv --target-app-partition factory target/riscv32imc-unknown-none-elf/release/crimpdeq crimpdeq-merged.bin --merge
 
       - name: Compress (Unix)
         run: |
