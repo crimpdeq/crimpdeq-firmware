@@ -451,19 +451,13 @@ async fn measurement_task(
                 });
             }
             MeasurementTaskStatus::GetCalibration => {
-                match load_cell.get_calibration_factor() {
-                    Ok(factor) => {
-                        channel
-                            .send(DataPoint::from(ResponseCode::CalibrationFactor(factor)))
-                            .await;
-                    }
-                    Err(e) => {
-                        error!(
-                            "Failed to read calibration factor: {:?}",
-                            defmt::Debug2Format(&e)
-                        );
-                    }
-                }
+                // Report the runtime factor currently in use by the measurement path.
+                // This remains correct even when persistence is unavailable.
+                let factor = load_cell.current_calibration_factor();
+                channel
+                    .send(DataPoint::from(ResponseCode::CalibrationFactor(factor)))
+                    .await;
+
                 let (calibration_points, calibration_point_count) = critical_section::with(|cs| {
                     let mut state = DEVICE_STATE.borrow_ref_mut(cs);
                     let calibration_points = state.calibration_points;
