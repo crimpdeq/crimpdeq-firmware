@@ -9,6 +9,7 @@
 use core::{fmt, mem::size_of};
 
 use defmt::{debug, error, info, warn};
+use embassy_time::{Duration, Timer, with_timeout};
 use embedded_hal::delay::DelayNs;
 use embedded_storage::{ReadStorage, Storage};
 use esp_bootloader_esp_idf::partitions::{self, PartitionType};
@@ -28,6 +29,12 @@ const HX711_DELAY_TIME_US: u32 = 1;
 const HX711_DATA_BITS: usize = 24;
 /// The sign bit position in the HX711 reading
 const HX711_SIGN_BIT: u32 = 0x800000;
+/// Timeout waiting for HX711 data-ready signal (DOUT low).
+const HX711_READY_TIMEOUT_MS: u64 = 250;
+/// Number of retries when waiting for HX711 data-ready signal.
+const HX711_READY_MAX_RETRIES: usize = 3;
+/// Delay between readiness retries.
+const HX711_READY_RETRY_DELAY_MS: u64 = 5;
 
 /// Label of the dedicated data partition used to persist calibration data.
 const CALIBRATION_PARTITION_LABEL: &str = env!("CALIBRATION_PARTITION_LABEL");
@@ -49,6 +56,8 @@ pub enum Hx711Error {
     StorageUnavailable,
     /// Invalid calibration value
     InvalidCalibration,
+    /// Timed out waiting for HX711 data-ready signal
+    ReadyTimeout,
 }
 
 impl fmt::Display for Hx711Error {
@@ -57,6 +66,7 @@ impl fmt::Display for Hx711Error {
             Hx711Error::FlashError => write!(f, "Flash storage error"),
             Hx711Error::StorageUnavailable => write!(f, "Calibration storage unavailable"),
             Hx711Error::InvalidCalibration => write!(f, "Invalid calibration value"),
+            Hx711Error::ReadyTimeout => write!(f, "Timed out waiting for HX711 data-ready"),
         }
     }
 }
@@ -328,53 +338,76 @@ impl<'d> Hx711<'d> {
     }
 
     /// Waits until the data is ready to be read.
-    async fn wait_for_ready(&mut self) {
-        self.data.wait_for_low().await;
+    async fn wait_for_ready(&mut self) -> Result<(), Hx711Error> {
+        for attempt in 1..=HX711_READY_MAX_RETRIES {
+            if with_timeout(
+                Duration::from_millis(HX711_READY_TIMEOUT_MS),
+                self.data.wait_for_low(),
+            )
+            .await
+            .is_ok()
+            {
+                return Ok(());
+            }
+
+            warn!(
+                "HX711 not ready (attempt {}/{}), retrying",
+                attempt, HX711_READY_MAX_RETRIES
+            );
+            Timer::after(Duration::from_millis(HX711_READY_RETRY_DELAY_MS)).await;
+        }
+
+        error!(
+            "HX711 wait-for-ready timed out after {} attempts ({} ms each)",
+            HX711_READY_MAX_RETRIES, HX711_READY_TIMEOUT_MS
+        );
+        Err(Hx711Error::ReadyTimeout)
     }
 
-    /// Takes multiple samples and returns the average
-    async fn take_samples(&mut self, num_samples: usize) -> f32 {
+    /// Takes multiple samples and returns the average.
+    async fn take_samples(&mut self, num_samples: usize) -> Result<f32, Hx711Error> {
         let mut total: f32 = 0.0;
 
         for _ in 0..num_samples {
-            self.wait_for_ready().await;
+            self.wait_for_ready().await?;
             total += self.read_raw() as f32;
         }
 
-        total / num_samples as f32
+        Ok(total / num_samples as f32)
     }
 
     /// Tares the sensor by measuring the average of several readings.
-    pub async fn tare(&mut self) {
+    pub async fn tare(&mut self) -> Result<(), Hx711Error> {
         debug!("Taring the scale");
         if !Self::is_valid_calibration_factor(self.calibration_factor) {
             info!("Invalid calibration factor, skipping tare");
-            return;
+            return Ok(());
         }
 
-        let average = self.take_samples(DEFAULT_TARING_SAMPLES).await;
+        let average = self.take_samples(DEFAULT_TARING_SAMPLES).await?;
         self.tare_value = average as i32;
         debug!("Tare value set to: {}", self.tare_value);
+        Ok(())
     }
 
-    /// Reads a raw value without calibration
-    pub async fn read_raw_value(&mut self) -> i32 {
-        self.wait_for_ready().await;
-        self.read_raw()
+    /// Reads a raw value without calibration.
+    pub async fn read_raw_value(&mut self) -> Result<i32, Hx711Error> {
+        self.wait_for_ready().await?;
+        Ok(self.read_raw())
     }
 
-    /// Reads a tared raw value (raw value minus tare value)
-    pub async fn read_tared(&mut self) -> i32 {
-        self.wait_for_ready().await;
-        self.read_raw() - self.tare_value
+    /// Reads a tared raw value (raw value minus tare value).
+    pub async fn read_tared(&mut self) -> Result<i32, Hx711Error> {
+        self.wait_for_ready().await?;
+        Ok(self.read_raw() - self.tare_value)
     }
 
     /// Reads a calibrated value, in kg.
-    pub async fn read_calibrated(&mut self) -> f32 {
-        let raw_tared = self.read_tared().await;
+    pub async fn read_calibrated(&mut self) -> Result<f32, Hx711Error> {
+        let raw_tared = self.read_tared().await?;
         let calibrated_value = (raw_tared as f32) * self.calibration_factor;
         // Convert to kg
-        calibrated_value / 1000.0
+        Ok(calibrated_value / 1000.0)
     }
 
     /// Perform two-point calibration with a known target weight.
@@ -386,12 +419,12 @@ impl<'d> Hx711<'d> {
     /// Flash is only written once a final factor is computed and applied.
     ///
     /// Returns the average raw value for the calibration point.
-    pub async fn perform_calibration(&mut self) -> f32 {
+    pub async fn perform_calibration(&mut self) -> Result<f32, Hx711Error> {
         // Take multiple readings and average them for stability.
-        let average_value = self.take_samples(DEFAULT_CALIBRATION_SAMPLES).await;
+        let average_value = self.take_samples(DEFAULT_CALIBRATION_SAMPLES).await?;
         debug!("Calibration point collected: {}", average_value);
 
-        average_value
+        Ok(average_value)
     }
 
     /// Apply multi-point calibration using the collected calibration points.

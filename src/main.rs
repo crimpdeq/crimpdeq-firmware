@@ -319,7 +319,9 @@ async fn measurement_task(
     flash: FlashStorage<'static>,
 ) {
     let mut load_cell = Hx711::new(data_pin, clock_pin, delay, flash);
-    load_cell.tare().await;
+    if let Err(e) = load_cell.tare().await {
+        error!("Initial tare failed: {:?}", defmt::Debug2Format(&e));
+    }
     let mut measurement_batch = [(0.0_f32, 0_u32); WEIGHT_SAMPLES_PER_PACKET];
     let mut measurement_batch_len = 0usize;
 
@@ -341,7 +343,9 @@ async fn measurement_task(
             }
             MeasurementTaskStatus::Tare => {
                 // Perform taring operation
-                load_cell.tare().await;
+                if let Err(e) = load_cell.tare().await {
+                    error!("Tare operation failed: {:?}", defmt::Debug2Format(&e));
+                }
 
                 critical_section::with(|cs| {
                     let mut state = DEVICE_STATE.borrow_ref_mut(cs);
@@ -349,13 +353,23 @@ async fn measurement_task(
                 });
             }
             MeasurementTaskStatus::Enabled => {
-                let sample = sample_weight_measurement(&mut load_cell, start_time).await;
-                measurement_batch[measurement_batch_len] = sample;
-                measurement_batch_len += 1;
+                match sample_weight_measurement(&mut load_cell, start_time).await {
+                    Ok(sample) => {
+                        measurement_batch[measurement_batch_len] = sample;
+                        measurement_batch_len += 1;
 
-                if measurement_batch_len == WEIGHT_SAMPLES_PER_PACKET {
-                    send_weight_measurements(channel, &measurement_batch).await;
-                    measurement_batch_len = 0;
+                        if measurement_batch_len == WEIGHT_SAMPLES_PER_PACKET {
+                            send_weight_measurements(channel, &measurement_batch).await;
+                            measurement_batch_len = 0;
+                        }
+                    }
+                    Err(e) => {
+                        error!(
+                            "Skipping weight sample after HX711 read error: {:?}",
+                            defmt::Debug2Format(&e)
+                        );
+                        Timer::after(Duration::from_millis(5)).await;
+                    }
                 }
             }
             MeasurementTaskStatus::Calibration(weight) => {
@@ -369,7 +383,17 @@ async fn measurement_task(
                 }
 
                 // Use the load cell's own calibration method to collect a calibration point
-                let calibration_point = load_cell.perform_calibration().await;
+                let calibration_point = match load_cell.perform_calibration().await {
+                    Ok(point) => point,
+                    Err(e) => {
+                        error!("Calibration sampling failed: {:?}", defmt::Debug2Format(&e));
+                        critical_section::with(|cs| {
+                            DEVICE_STATE.borrow_ref_mut(cs).measurement_status =
+                                MeasurementTaskStatus::Disabled;
+                        });
+                        continue;
+                    }
+                };
                 if !calibration_point.is_finite() {
                     error!(
                         "Ignoring invalid calibration raw point: {}",
@@ -473,12 +497,15 @@ async fn measurement_task(
 }
 
 /// Collect one weight measurement sample with current timestamp.
-async fn sample_weight_measurement(load_cell: &mut Hx711<'_>, start_time: u32) -> (f32, u32) {
-    let weight = load_cell.read_calibrated().await;
+async fn sample_weight_measurement(
+    load_cell: &mut Hx711<'_>,
+    start_time: u32,
+) -> Result<(f32, u32), hx711::Hx711Error> {
+    let weight = load_cell.read_calibrated().await?;
     let now = (time::Instant::now().duration_since_epoch()).as_micros() as u32;
     let timestamp = now.wrapping_sub(start_time);
 
-    (weight, timestamp)
+    Ok((weight, timestamp))
 }
 
 /// Send a batch of weight measurement samples as one notification.
