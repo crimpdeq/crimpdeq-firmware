@@ -67,6 +67,8 @@ pub struct DeviceState {
     pub battery_voltage: u32,
     /// BLE disconnection time in milliseconds (None when connected)
     pub ble_disconnection_time: Option<u32>,
+    /// Request flag to enter deep sleep as soon as possible
+    pub shutdown_requested: bool,
 }
 
 impl Default for DeviceState {
@@ -85,6 +87,7 @@ impl DeviceState {
             calibration_point_count: 0,
             battery_voltage: 4300,
             ble_disconnection_time: None,
+            shutdown_requested: false,
         }
     }
 
@@ -116,6 +119,12 @@ impl DeviceState {
     /// Reset to default calibration
     pub fn reset_calibration(&mut self) {
         self.measurement_status = MeasurementTaskStatus::DefaultCalibration;
+    }
+
+    /// Request device shutdown.
+    pub fn request_shutdown(&mut self) {
+        self.measurement_status = MeasurementTaskStatus::Disabled;
+        self.shutdown_requested = true;
     }
 
     /// Mark BLE as connected (clear disconnection time)
@@ -260,8 +269,12 @@ impl ControlOpCode {
                 info!("SampleBattery: {:?}", response);
                 Self::enqueue_response(responses, response);
             }
+            ControlOpCode::Shutdown => {
+                info!("Shutdown requested");
+                device_state.request_shutdown();
+                Self::enqueue_response(responses, ResponseCode::LowPowerWarning);
+            }
             // Currently unimplemented operations
-            ControlOpCode::Shutdown => {}
             ControlOpCode::StartPeakRFDMeasurement => {}
             ControlOpCode::StartPeakRFDMeasurementSeries => {}
             ControlOpCode::SaveCalibration => {}

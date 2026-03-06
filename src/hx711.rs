@@ -35,6 +35,8 @@ const HX711_READY_TIMEOUT_MS: u64 = 250;
 const HX711_READY_MAX_RETRIES: usize = 3;
 /// Delay between readiness retries.
 const HX711_READY_RETRY_DELAY_MS: u64 = 5;
+/// Minimum high pulse width on PD_SCK to enter power-down mode.
+const HX711_POWER_DOWN_PULSE_US: u32 = 80;
 
 /// Label of the dedicated data partition used to persist calibration data.
 const CALIBRATION_PARTITION_LABEL: &str = env!("CALIBRATION_PARTITION_LABEL");
@@ -312,6 +314,28 @@ impl<'d> Hx711<'d> {
     /// Gets the current gain mode.
     pub fn gain_mode(&self) -> GainMode {
         self.gain_mode
+    }
+
+    /// Put HX711 into low-power mode.
+    ///
+    /// The HX711 enters power-down when PD_SCK is held high for more than 60 µs.
+    pub fn power_down(&mut self) {
+        debug!("Powering down HX711");
+        critical_section::with(|_| {
+            self.clock.set_low();
+            self.delay.delay_us(HX711_DELAY_TIME_US);
+            self.clock.set_high();
+            self.delay.delay_us(HX711_POWER_DOWN_PULSE_US);
+        });
+    }
+
+    /// Wake HX711 from low-power mode.
+    ///
+    /// Subsequent reads will wait for DOUT-ready as usual.
+    pub fn power_up(&mut self) {
+        debug!("Powering up HX711");
+        self.clock.set_low();
+        self.delay.delay_us(HX711_DELAY_TIME_US);
     }
 
     /// Reads 24 bits from the HX711 within a critical section.

@@ -14,7 +14,8 @@ use embassy_futures::{
 use embassy_sync::channel::Channel;
 use embassy_time::{Duration, Timer, with_timeout};
 use esp_hal::{
-    Async, Config,
+    Async,
+    Config,
     analog::adc::{Adc, AdcCalCurve, AdcConfig, AdcPin, Attenuation},
     delay::Delay,
     gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull},
@@ -34,8 +35,16 @@ use crate::{
     ble::{CONNECTIONS_MAX, L2CAP_CHANNELS_MAX, L2CAP_MTU, Server, advertise},
     hx711::Hx711,
     progressor::{
-        CalibrationPoint, ControlOpCode, ControlResponses, DEVICE_ID_SIZE, DataPoint,
-        DataPointChannel, DeviceState, MAX_CALIBRATION_POINTS, MeasurementTaskStatus, ResponseCode,
+        CalibrationPoint,
+        ControlOpCode,
+        ControlResponses,
+        DEVICE_ID_SIZE,
+        DataPoint,
+        DataPointChannel,
+        DeviceState,
+        MAX_CALIBRATION_POINTS,
+        MeasurementTaskStatus,
+        ResponseCode,
         WEIGHT_SAMPLES_PER_PACKET,
     },
 };
@@ -56,6 +65,9 @@ macro_rules! mk_static {
 
 /// Static tracking the state of the device
 static DEVICE_STATE: Mutex<RefCell<DeviceState>> = Mutex::new(RefCell::new(DeviceState::new()));
+
+/// Polling interval while measurement is disabled.
+const DISABLED_MEASUREMENT_POLL_MS: u64 = 250;
 
 // ESP-IDF App Descriptor
 esp_bootloader_esp_idf::esp_app_desc!();
@@ -269,27 +281,35 @@ fn parse_device_id_hex(device_id: &str) -> Option<[u8; DEVICE_ID_SIZE]> {
 #[embassy_executor::task]
 async fn deep_sleep_task(mut rtc: Rtc<'static>) {
     const TIMEOUT_MS: u32 = 5 * 60 * 1000; // 5 minutes
+    const SHUTDOWN_POLL_MS: u64 = 500;
 
     loop {
-        let elapsed_ms = critical_section::with(|cs| {
-            DEVICE_STATE
-                .borrow_ref(cs)
-                .get_ble_disconnection_elapsed_ms()
+        let (shutdown_requested, elapsed_ms) = critical_section::with(|cs| {
+            let state = DEVICE_STATE.borrow_ref(cs);
+            (
+                state.shutdown_requested,
+                state.get_ble_disconnection_elapsed_ms(),
+            )
         });
 
-        if let Some(elapsed) = elapsed_ms {
-            debug!("BLE disconnected for {:?} ms", elapsed);
-
-            if elapsed >= TIMEOUT_MS {
-                info!(
-                    "Entering deep sleep after {} minutes of BLE disconnection",
-                    TIMEOUT_MS / 60000
-                );
-                Timer::after(Duration::from_millis(10)).await;
-                rtc.sleep_deep(&[]);
-            }
+        if shutdown_requested {
+            info!("Entering deep sleep after shutdown command");
+            Timer::after(Duration::from_millis(10)).await;
+            rtc.sleep_deep(&[]);
         }
-        Timer::after(Duration::from_secs(10)).await;
+
+        if let Some(elapsed) = elapsed_ms
+            && elapsed >= TIMEOUT_MS
+        {
+            info!(
+                "Entering deep sleep after {} minutes of BLE disconnection",
+                TIMEOUT_MS / 60000
+            );
+            Timer::after(Duration::from_millis(10)).await;
+            rtc.sleep_deep(&[]);
+        }
+
+        Timer::after(Duration::from_millis(SHUTDOWN_POLL_MS)).await;
     }
 }
 
@@ -342,6 +362,7 @@ async fn measurement_task(
     }
     let mut measurement_batch = [(0.0_f32, 0_u32); WEIGHT_SAMPLES_PER_PACKET];
     let mut measurement_batch_len = 0usize;
+    let mut hx711_powered_down = false;
 
     loop {
         // Get current device state
@@ -356,6 +377,21 @@ async fn measurement_task(
                 &measurement_batch[..measurement_batch_len],
             );
             measurement_batch_len = 0;
+        }
+
+        let needs_hx711 = matches!(
+            status,
+            MeasurementTaskStatus::Enabled
+                | MeasurementTaskStatus::Tare
+                | MeasurementTaskStatus::Calibration(_)
+        );
+
+        if needs_hx711 && hx711_powered_down {
+            load_cell.power_up();
+            hx711_powered_down = false;
+        } else if !needs_hx711 && !hx711_powered_down {
+            load_cell.power_down();
+            hx711_powered_down = true;
         }
 
         match status {
@@ -516,9 +552,9 @@ async fn measurement_task(
             }
         }
 
-        // Add a short delay to prevent tight loops
+        // Avoid tight polling while idle.
         if status == MeasurementTaskStatus::Disabled {
-            Timer::after(Duration::from_millis(10)).await;
+            Timer::after(Duration::from_millis(DISABLED_MEASUREMENT_POLL_MS)).await;
         }
     }
 }
