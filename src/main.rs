@@ -308,6 +308,7 @@ async fn measurement_task(
             }
             MeasurementTaskStatus::Enabled => {
                 send_weight_measurement(&mut load_cell, start_time, channel).await;
+                Timer::after(Duration::from_micros(12_500)).await;
             }
             MeasurementTaskStatus::Calibration(weight) => {
                 if !weight.is_finite() || weight < 0.0 {
@@ -425,9 +426,12 @@ async fn send_weight_measurement(
     start_time: u32,
     channel: &'static DataPointChannel,
 ) {
-    let weight = load_cell.read_calibrated().await;
+    // let weight = load_cell.read_calibrated().await;
+    let _ = load_cell;
     let now = (time::Instant::now().duration_since_epoch()).as_micros() as u32;
     let timestamp = now.wrapping_sub(start_time);
+    let elapsed_seconds = timestamp / 1_000_000;
+    let weight = 1.0 + elapsed_seconds as f32;
 
     debug!(
         "Sending measurement: Weight: {}kg, Timestamp: {:?}",
