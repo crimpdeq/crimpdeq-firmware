@@ -165,6 +165,7 @@ async fn main(spawner: Spawner) -> ! {
             match advertise(device_name, &mut peripheral, &server).await {
                 Ok(conn) => {
                     info!("BLE connection established");
+                    channel.clear();
                     critical_section::with(|cs| {
                         DEVICE_STATE.borrow_ref_mut(cs).on_ble_connected();
                     });
@@ -175,6 +176,7 @@ async fn main(spawner: Spawner) -> ! {
                         data_processing_task(&server, &conn, channel),
                     )
                     .await;
+                    channel.clear();
                     critical_section::with(|cs| {
                         let mut state = DEVICE_STATE.borrow_ref_mut(cs);
                         state.stop_measurement();
