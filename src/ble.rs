@@ -4,10 +4,7 @@
 /// It includes the BLE advertising data, the GATT server, and the BLE connection.
 use arrayvec::ArrayVec;
 use defmt::{debug, info};
-use trouble_host::{
-    advertise::{AD_FLAG_LE_LIMITED_DISCOVERABLE, SIMUL_LE_BR_HOST},
-    prelude::*,
-};
+use trouble_host::prelude::*;
 
 use crate::progressor::{DataPoint, MAX_PAYLOAD_SIZE};
 
@@ -18,26 +15,32 @@ pub const L2CAP_CHANNELS_MAX: usize = 2; // Signal + att
 /// Size of L2CAP packets
 pub const L2CAP_MTU: usize = 255;
 
-/// Progressor BLE Scan Response
+/// BLE AD type for a complete list of 128-bit service UUIDs.
+const AD_TYPE_COMPLETE_128BIT_SERVICE_UUIDS: u8 = 0x07;
+/// Progressor service UUID encoded in BLE little-endian order.
+const PROGRESSOR_SERVICE_UUID_LE: [u8; 16] = [
+    0x57, 0xad, 0xfe, 0x4f, 0xd3, 0x13, 0xcc, 0x9d, 0xc9, 0x40, 0xa6, 0x1e, 0x01, 0x17, 0x4e, 0x7e,
+];
+/// Progressor BLE Scan Response.
 const SCAN_RESPONSE_DATA: &[u8] = &[
-    AD_FLAG_LE_LIMITED_DISCOVERABLE | SIMUL_LE_BR_HOST,
-    7_u8, // BLE_GAP_AD_TYPE_128BIT_SERVICE_UUID_COMPLETE
-    0x57,
-    0xad,
-    0xfe,
-    0x4f,
-    0xd3,
-    0x13,
-    0xcc,
-    0x9d,
-    0xc9,
-    0x40,
-    0xa6,
-    0x1e,
-    0x01,
-    0x17,
-    0x4e,
-    0x7e, //UUID
+    17, // 1 byte type + 16 byte UUID
+    AD_TYPE_COMPLETE_128BIT_SERVICE_UUIDS,
+    PROGRESSOR_SERVICE_UUID_LE[0],
+    PROGRESSOR_SERVICE_UUID_LE[1],
+    PROGRESSOR_SERVICE_UUID_LE[2],
+    PROGRESSOR_SERVICE_UUID_LE[3],
+    PROGRESSOR_SERVICE_UUID_LE[4],
+    PROGRESSOR_SERVICE_UUID_LE[5],
+    PROGRESSOR_SERVICE_UUID_LE[6],
+    PROGRESSOR_SERVICE_UUID_LE[7],
+    PROGRESSOR_SERVICE_UUID_LE[8],
+    PROGRESSOR_SERVICE_UUID_LE[9],
+    PROGRESSOR_SERVICE_UUID_LE[10],
+    PROGRESSOR_SERVICE_UUID_LE[11],
+    PROGRESSOR_SERVICE_UUID_LE[12],
+    PROGRESSOR_SERVICE_UUID_LE[13],
+    PROGRESSOR_SERVICE_UUID_LE[14],
+    PROGRESSOR_SERVICE_UUID_LE[15],
 ];
 
 // GATT Server definition
