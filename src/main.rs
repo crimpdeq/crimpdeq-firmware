@@ -172,6 +172,7 @@ async fn main(spawner: Spawner) -> ! {
             match advertise(device_name, &mut peripheral, &server).await {
                 Ok(conn) => {
                     info!("BLE connection established");
+                    channel.clear();
                     critical_section::with(|cs| {
                         DEVICE_STATE.borrow_ref_mut(cs).on_ble_connected();
                     });
@@ -182,6 +183,7 @@ async fn main(spawner: Spawner) -> ! {
                         data_processing_task(&server, &conn, channel),
                     )
                     .await;
+                    channel.clear();
                     critical_section::with(|cs| {
                         let mut state = DEVICE_STATE.borrow_ref_mut(cs);
                         state.stop_measurement();
@@ -284,7 +286,9 @@ async fn measurement_task(
     flash: FlashStorage<'static>,
 ) {
     let mut load_cell = Hx711::new(data_pin, clock_pin, delay, flash);
-    load_cell.tare().await;
+    if let Err(e) = load_cell.tare().await {
+        error!("Initial tare failed: {:?}", defmt::Debug2Format(&e));
+    }
 
     loop {
         // Get current device state
@@ -299,7 +303,9 @@ async fn measurement_task(
             }
             MeasurementTaskStatus::Tare => {
                 // Perform taring operation
-                load_cell.tare().await;
+                if let Err(e) = load_cell.tare().await {
+                    error!("Tare failed: {:?}", defmt::Debug2Format(&e));
+                }
 
                 critical_section::with(|cs| {
                     let mut state = DEVICE_STATE.borrow_ref_mut(cs);
@@ -320,7 +326,17 @@ async fn measurement_task(
                 }
 
                 // Use the load cell's own calibration method to collect a calibration point
-                let calibration_point = load_cell.perform_calibration().await;
+                let calibration_point = match load_cell.perform_calibration().await {
+                    Ok(calibration_point) => calibration_point,
+                    Err(e) => {
+                        error!("Calibration sampling failed: {:?}", defmt::Debug2Format(&e));
+                        critical_section::with(|cs| {
+                            DEVICE_STATE.borrow_ref_mut(cs).measurement_status =
+                                MeasurementTaskStatus::Disabled;
+                        });
+                        continue;
+                    }
+                };
                 if !calibration_point.is_finite() {
                     error!(
                         "Ignoring invalid calibration raw point: {}",
@@ -357,8 +373,9 @@ async fn measurement_task(
                     if !load_cell.apply_multi_point_calibration(points) {
                         error!("Failed to apply calibration points: {:?}", points);
                     } else {
-                        notify_calibration_factor(channel, load_cell.current_calibration_factor());
-                        notify_calibration_points(channel, points);
+                        notify_calibration_factor(channel, load_cell.current_calibration_factor())
+                            .await;
+                        notify_calibration_points(channel, points).await;
                     }
                 } else {
                     info!("Calibration needs at least two points before applying.");
@@ -372,7 +389,8 @@ async fn measurement_task(
                         defmt::Debug2Format(&e)
                     );
                 } else {
-                    notify_calibration_factor(channel, load_cell.current_calibration_factor());
+                    notify_calibration_factor(channel, load_cell.current_calibration_factor())
+                        .await;
                 }
                 critical_section::with(|cs| {
                     let mut state = DEVICE_STATE.borrow_ref_mut(cs);
@@ -383,7 +401,9 @@ async fn measurement_task(
             MeasurementTaskStatus::GetCalibration => {
                 match load_cell.get_calibration_factor() {
                     Ok(factor) => {
-                        DataPoint::from(ResponseCode::CalibrationFactor(factor)).send(channel);
+                        DataPoint::from(ResponseCode::CalibrationFactor(factor))
+                            .send(channel)
+                            .await;
                     }
                     Err(e) => {
                         error!(
@@ -392,23 +412,23 @@ async fn measurement_task(
                         );
                     }
                 }
-                critical_section::with(|cs| {
+
+                let (calibration_points, calibration_point_count) = critical_section::with(|cs| {
                     let mut state = DEVICE_STATE.borrow_ref_mut(cs);
-                    let calibration_point_count = state.calibration_point_count;
-                    notify_calibration_points(
-                        channel,
-                        &state.calibration_points[..calibration_point_count],
-                    );
-                    if state.calibration_point_count > 0 {
-                        info!(
-                            "Calibration points: {:?}",
-                            &state.calibration_points[..state.calibration_point_count]
-                        );
-                    } else {
-                        info!("Calibration points empty (possibly lost after device reset)");
-                    }
                     state.measurement_status = MeasurementTaskStatus::Disabled;
+                    (state.calibration_points, state.calibration_point_count)
                 });
+
+                notify_calibration_points(channel, &calibration_points[..calibration_point_count])
+                    .await;
+                if calibration_point_count > 0 {
+                    info!(
+                        "Calibration points: {:?}",
+                        &calibration_points[..calibration_point_count]
+                    );
+                } else {
+                    info!("Calibration points empty (possibly lost after device reset)");
+                }
             }
         }
 
@@ -425,7 +445,16 @@ async fn send_weight_measurement(
     start_time: u32,
     channel: &'static DataPointChannel,
 ) {
-    let weight = load_cell.read_calibrated().await;
+    let weight = match load_cell.read_calibrated().await {
+        Ok(weight) => weight,
+        Err(e) => {
+            error!(
+                "Failed to read weight measurement: {:?}",
+                defmt::Debug2Format(&e)
+            );
+            return;
+        }
+    };
     let now = (time::Instant::now().duration_since_epoch()).as_micros() as u32;
     let timestamp = now.wrapping_sub(start_time);
 
@@ -435,22 +464,28 @@ async fn send_weight_measurement(
         timestamp as f32 / 1000000.0
     );
 
-    DataPoint::weight_measurement(weight, timestamp).send(channel);
+    DataPoint::weight_measurement(weight, timestamp)
+        .send(channel)
+        .await;
 }
 
-fn notify_calibration_points(
+async fn notify_calibration_points(
     channel: &'static DataPointChannel,
     calibration_points: &[CalibrationPoint],
 ) {
     for (raw_value, weight) in calibration_points {
         debug!("Notifying calibration point: {:?}", (raw_value, weight));
-        DataPoint::from(ResponseCode::CalibrationPoint(*raw_value, *weight)).send(channel);
+        DataPoint::from(ResponseCode::CalibrationPoint(*raw_value, *weight))
+            .send(channel)
+            .await;
     }
 }
 
-fn notify_calibration_factor(channel: &'static DataPointChannel, calibration_factor: f32) {
+async fn notify_calibration_factor(channel: &'static DataPointChannel, calibration_factor: f32) {
     debug!("Notifying calibration factor: {:?}", calibration_factor);
-    DataPoint::from(ResponseCode::CalibrationFactor(calibration_factor)).send(channel);
+    DataPoint::from(ResponseCode::CalibrationFactor(calibration_factor))
+        .send(channel)
+        .await;
 }
 
 /// Stream Events until the connection closes.
@@ -470,29 +505,42 @@ async fn gatt_events_task<P: PacketPool>(
                 break;
             }
             GattConnectionEvent::Gatt { event } => {
-                // Handle write events to the control point
-                if let GattEvent::Write(write_event) = &event
+                let immediate_response = if let GattEvent::Write(write_event) = &event
                     && write_event.handle() == control_point.handle
                 {
                     let cmd_data = write_event.data();
-                    let Some(&op_code_byte) = cmd_data.first() else {
-                        warn!("Control Point write with empty payload");
-                        continue;
-                    };
-                    let op_code = ControlOpCode::from(op_code_byte);
-                    info!("Control Point Received: {:?}", op_code);
-
-                    critical_section::with(|cs| {
-                        let mut device_state = DEVICE_STATE.borrow_ref_mut(cs);
-                        op_code.process(cmd_data, channel, &mut device_state);
-                    });
-                }
+                    match cmd_data.first().copied() {
+                        Some(op_code_byte) => match ControlOpCode::try_from(op_code_byte) {
+                            Ok(op_code) => {
+                                info!("Control Point Received: {:?}", op_code);
+                                critical_section::with(|cs| {
+                                    let mut device_state = DEVICE_STATE.borrow_ref_mut(cs);
+                                    op_code.process(cmd_data, &mut device_state)
+                                })
+                            }
+                            Err(()) => {
+                                warn!("Ignoring unsupported OpCode: {:#x}", op_code_byte);
+                                None
+                            }
+                        },
+                        None => {
+                            warn!("Control Point write with empty payload");
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
 
                 // Ensure reply is sent
                 if let Ok(reply) = event.accept() {
                     reply.send().await;
                 } else {
                     warn!("Error sending response");
+                }
+
+                if let Some(response) = immediate_response {
+                    response.send(channel).await;
                 }
             }
             _ => {}

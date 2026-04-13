@@ -3,7 +3,7 @@
 /// See [Tindeq API documentation] for more information
 ///
 /// [Tindeq API documentation]: https://tindeq.com/progressor_api/
-use defmt::{Format, error, info, trace, warn};
+use defmt::{Format, error, info, warn};
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
 use esp_hal::time;
 use trouble_host::types::gatt_traits::{AsGatt, FromGatt, FromGattError};
@@ -169,27 +169,27 @@ pub enum ControlOpCode {
 }
 
 impl ControlOpCode {
-    /// Process the control operation
-    pub fn process(
-        self,
-        data: &[u8],
-        channel: &'static DataPointChannel,
-        device_state: &mut DeviceState,
-    ) {
+    /// Process the control operation.
+    ///
+    /// Returns an immediate response packet when the command requires one.
+    pub fn process(self, data: &[u8], device_state: &mut DeviceState) -> Option<DataPoint> {
         match self {
             ControlOpCode::TareScale => {
                 device_state.tare();
+                None
             }
             ControlOpCode::StartMeasurement => {
                 device_state.start_measurement();
+                None
             }
             ControlOpCode::StopMeasurement => {
                 device_state.stop_measurement();
+                None
             }
             ControlOpCode::GetAppVersion => {
                 let response = ResponseCode::AppVersion(env!("DEVICE_VERSION_NUMBER").as_bytes());
                 info!("AppVersion: {:#x}", response);
-                DataPoint::from(response).send(channel);
+                Some(DataPoint::from(response))
             }
             ControlOpCode::GetProgressorId => {
                 /// Number of hex characters needed per byte (2 hex chars = 1 byte)
@@ -211,29 +211,30 @@ impl ControlOpCode {
                 }
                 let response = ResponseCode::ProgressorId(bytes);
                 info!("ProgressorId: {:?}", response);
-                DataPoint::from(response).send(channel);
+                Some(DataPoint::from(response))
             }
             ControlOpCode::GetCalibration => {
                 info!("GetCalibration requested");
                 device_state.get_calibration();
+                None
             }
             ControlOpCode::AddCalibrationPoint => {
                 if data.len() < 5 {
                     error!("AddCalibrationPoint: Invalid data length");
-                    return;
+                    return None;
                 }
 
                 let weight = match data[1..5].try_into() {
                     Ok(bytes) => f32::from_le_bytes(bytes),
                     Err(e) => {
                         error!("Failed to parse calibration point data: {:?}", e);
-                        return;
+                        return None;
                     }
                 };
 
                 if !weight.is_finite() || weight < 0.0 {
                     error!("AddCalibrationPoint: Invalid weight {}", weight);
-                    return;
+                    return None;
                 }
 
                 device_state.calibrate(weight);
@@ -241,48 +242,52 @@ impl ControlOpCode {
                     "Received AddCalibrationPoint command with measurement: {}",
                     weight
                 );
+                None
             }
             ControlOpCode::DefaultCalibration => {
                 device_state.reset_calibration();
+                None
             }
             ControlOpCode::SampleBattery => {
                 let voltage = device_state.battery_voltage;
                 let response = ResponseCode::SampleBatteryVoltage(voltage);
                 info!("SampleBattery: {:?}", response);
-                DataPoint::from(response).send(channel);
+                Some(DataPoint::from(response))
             }
             // Currently unimplemented operations
-            ControlOpCode::Shutdown => {}
-            ControlOpCode::StartPeakRFDMeasurement => {}
-            ControlOpCode::StartPeakRFDMeasurementSeries => {}
-            ControlOpCode::SaveCalibration => {}
-            ControlOpCode::ClearErrorInformation => {}
-            ControlOpCode::GetErrorInformation => {}
+            ControlOpCode::Shutdown
+            | ControlOpCode::StartPeakRFDMeasurement
+            | ControlOpCode::StartPeakRFDMeasurementSeries
+            | ControlOpCode::SaveCalibration
+            | ControlOpCode::ClearErrorInformation
+            | ControlOpCode::GetErrorInformation => None,
         }
     }
 }
 
-impl From<u8> for ControlOpCode {
-    fn from(op_code: u8) -> Self {
+impl TryFrom<u8> for ControlOpCode {
+    type Error = ();
+
+    fn try_from(op_code: u8) -> Result<Self, Self::Error> {
         match op_code {
-            0x64 => ControlOpCode::TareScale,
-            0x65 => ControlOpCode::StartMeasurement,
-            0x66 => ControlOpCode::StopMeasurement,
-            0x69 => ControlOpCode::AddCalibrationPoint,
-            0x6E => ControlOpCode::Shutdown,
-            0x6F => ControlOpCode::SampleBattery,
-            0x70 => ControlOpCode::GetProgressorId,
-            0x6B => ControlOpCode::GetAppVersion,
-            0x72 => ControlOpCode::GetCalibration,
-            0x74 => ControlOpCode::DefaultCalibration,
-            0x6C => ControlOpCode::GetErrorInformation,
-            0x6D => ControlOpCode::ClearErrorInformation,
-            0x67 => ControlOpCode::StartPeakRFDMeasurement,
-            0x68 => ControlOpCode::StartPeakRFDMeasurementSeries,
-            0x6A => ControlOpCode::SaveCalibration,
+            0x64 => Ok(ControlOpCode::TareScale),
+            0x65 => Ok(ControlOpCode::StartMeasurement),
+            0x66 => Ok(ControlOpCode::StopMeasurement),
+            0x69 => Ok(ControlOpCode::AddCalibrationPoint),
+            0x6E => Ok(ControlOpCode::Shutdown),
+            0x6F => Ok(ControlOpCode::SampleBattery),
+            0x70 => Ok(ControlOpCode::GetProgressorId),
+            0x6B => Ok(ControlOpCode::GetAppVersion),
+            0x72 => Ok(ControlOpCode::GetCalibration),
+            0x74 => Ok(ControlOpCode::DefaultCalibration),
+            0x6C => Ok(ControlOpCode::GetErrorInformation),
+            0x6D => Ok(ControlOpCode::ClearErrorInformation),
+            0x67 => Ok(ControlOpCode::StartPeakRFDMeasurement),
+            0x68 => Ok(ControlOpCode::StartPeakRFDMeasurementSeries),
+            0x6A => Ok(ControlOpCode::SaveCalibration),
             _ => {
                 error!("Invalid OpCode received: {:#x}", op_code);
-                ControlOpCode::StopMeasurement
+                Err(())
             }
         }
     }
@@ -377,13 +382,9 @@ impl DataPoint {
         }
     }
 
-    /// Send data point to the channel
-    pub fn send(&self, channel: &'static DataPointChannel) {
-        if channel.try_send(*self).is_err() {
-            error!("Failed to send data point: channel full or receiver dropped");
-        } else {
-            trace!("Sent data point successfully");
-        }
+    /// Send data point to the channel.
+    pub async fn send(self, channel: &'static DataPointChannel) {
+        channel.send(self).await;
     }
 
     /// Create a weight measurement data point
