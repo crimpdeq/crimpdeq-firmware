@@ -11,7 +11,8 @@ use embassy_futures::{join::join, select::select};
 use embassy_sync::channel::Channel;
 use embassy_time::{Duration, Timer};
 use esp_hal::{
-    Async, Config,
+    Async,
+    Config,
     analog::adc::{Adc, AdcCalCurve, AdcConfig, AdcPin, Attenuation},
     clock::CpuClock,
     delay::Delay,
@@ -32,8 +33,14 @@ use crate::{
     ble::{CONNECTIONS_MAX, L2CAP_CHANNELS_MAX, L2CAP_MTU, Server, advertise},
     hx711::Hx711,
     progressor::{
-        CalibrationPoint, ControlOpCode, DataPoint, DataPointChannel, DeviceState,
-        MAX_CALIBRATION_POINTS, MeasurementTaskStatus, ResponseCode,
+        CalibrationPoint,
+        ControlOpCode,
+        DataPoint,
+        DataPointChannel,
+        DeviceState,
+        MAX_CALIBRATION_POINTS,
+        MeasurementTaskStatus,
+        ResponseCode,
     },
 };
 
