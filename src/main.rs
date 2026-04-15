@@ -26,7 +26,7 @@ use esp_hal::{
 use esp_radio::ble::controller::BleConnector;
 use esp_storage::FlashStorage;
 use panic_rtt_target as _;
-use static_cell::StaticCell;
+// use static_cell::StaticCell;
 use trouble_host::prelude::*;
 
 use crate::{
@@ -88,13 +88,9 @@ async fn main(spawner: Spawner) -> ! {
     let sw_interrupt = SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
     esp_rtos::start(timg0.timer0, sw_interrupt.software_interrupt0);
 
-    // Initialize radio
-    static RADIO: StaticCell<esp_radio::Controller<'static>> = StaticCell::new();
-    let radio = RADIO.init(esp_radio::init().unwrap());
-
     // Initialize BLE
     let bluetooth = peripherals.BT;
-    let connector = BleConnector::new(radio, bluetooth, Default::default()).unwrap();
+    let connector = BleConnector::new(bluetooth, Default::default()).unwrap();
     let controller: ExternalController<_, 1> = ExternalController::new(connector);
 
     // Initialize load cell pins
@@ -159,13 +155,9 @@ async fn main(spawner: Spawner) -> ! {
     });
 
     // Spawn tasks
-    spawner
-        .spawn(measurement_task(channel, clock_pin, data_pin, delay, flash))
-        .unwrap();
-    spawner
-        .spawn(battery_voltage_task(battery_adc, battery_pin))
-        .unwrap();
-    spawner.spawn(deep_sleep_task(rtc)).unwrap();
+    spawner.spawn(measurement_task(channel, clock_pin, data_pin, delay, flash).unwrap());
+    spawner.spawn(battery_voltage_task(battery_adc, battery_pin).unwrap());
+    spawner.spawn(deep_sleep_task(rtc).unwrap());
 
     let _ = join(ble_task(runner), async {
         loop {
