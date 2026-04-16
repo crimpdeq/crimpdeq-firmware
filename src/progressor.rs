@@ -13,8 +13,16 @@ const DATA_POINT_COMMAND_CHANNEL_SIZE: usize = 80;
 /// Channel used to send data points
 pub type DataPointChannel = Channel<NoopRawMutex, DataPoint, DATA_POINT_COMMAND_CHANNEL_SIZE>;
 
-/// Maximum size of the data payload in bytes for any data point
-pub const MAX_PAYLOAD_SIZE: usize = 10;
+/// Number of samples packed into each BLE measurement packet.
+pub const SAMPLES_PER_PACKET: usize = 5;
+/// Size in bytes of one packed weight measurement (f32 weight + u32 timestamp).
+const WEIGHT_MEASUREMENT_SIZE: usize = 8;
+/// Maximum size of the payload written to the Control Point characteristic.
+pub const CONTROL_POINT_MAX_PAYLOAD_SIZE: usize = 10;
+/// Batch of weight measurements sent in a single BLE packet.
+pub type WeightMeasurementBatch = arrayvec::ArrayVec<(f32, u32), SAMPLES_PER_PACKET>;
+/// Maximum size of the payload sent in a Data Point notification.
+pub const DATA_POINT_MAX_PAYLOAD_SIZE: usize = SAMPLES_PER_PACKET * WEIGHT_MEASUREMENT_SIZE;
 
 /// Number of bytes in the device ID
 const DEVICE_ID_SIZE: usize = 6;
@@ -318,7 +326,7 @@ impl Format for ControlOpCode {
 }
 
 /// Data point characteristic is where we receive data from the Progressor
-#[derive(Copy, Debug, Clone)]
+#[derive(Debug, Clone)]
 #[repr(C, packed)]
 pub struct DataPoint {
     /// Response code
@@ -326,15 +334,15 @@ pub struct DataPoint {
     /// Length of the data
     pub(crate) length: u8,
     /// Data
-    pub(crate) value: [u8; MAX_PAYLOAD_SIZE],
+    pub(crate) value: [u8; DATA_POINT_MAX_PAYLOAD_SIZE],
 }
 
 impl AsGatt for DataPoint {
     const MIN_SIZE: usize = 2;
-    const MAX_SIZE: usize = MAX_PAYLOAD_SIZE + 2; // +2 for response_code and length
+    const MAX_SIZE: usize = DATA_POINT_MAX_PAYLOAD_SIZE + 2; // +2 for response_code and length
 
     fn as_gatt(&self) -> &[u8] {
-        let len = (self.length as usize).min(MAX_PAYLOAD_SIZE);
+        let len = (self.length as usize).min(DATA_POINT_MAX_PAYLOAD_SIZE);
         unsafe { core::slice::from_raw_parts(self as *const DataPoint as *const u8, 2 + len) }
     }
 }
@@ -347,7 +355,7 @@ impl FromGatt for DataPoint {
 
         let response_code = data[0];
         let length = data[1] as usize;
-        if length > MAX_PAYLOAD_SIZE || data.len() != 2 + length {
+        if length > DATA_POINT_MAX_PAYLOAD_SIZE || data.len() != 2 + length {
             return Err(FromGattError::InvalidLength);
         }
 
@@ -360,7 +368,7 @@ impl Default for DataPoint {
         Self {
             response_code: 0,
             length: 0,
-            value: [0; MAX_PAYLOAD_SIZE],
+            value: [0; DATA_POINT_MAX_PAYLOAD_SIZE],
         }
     }
 }
@@ -368,8 +376,8 @@ impl Default for DataPoint {
 impl DataPoint {
     /// Create a new data point with specified response code, length and data
     pub fn new(response_code: u8, length: u8, data: &[u8]) -> Self {
-        let mut value = [0; MAX_PAYLOAD_SIZE];
-        let max_len = length.min(MAX_PAYLOAD_SIZE as u8) as usize;
+        let mut value = [0; DATA_POINT_MAX_PAYLOAD_SIZE];
+        let max_len = length.min(DATA_POINT_MAX_PAYLOAD_SIZE as u8) as usize;
         let copy_len = max_len.min(data.len());
         if copy_len > 0 {
             value[..copy_len].copy_from_slice(&data[..copy_len]);
@@ -388,14 +396,14 @@ impl DataPoint {
     }
 
     /// Create a weight measurement data point
-    pub fn weight_measurement(weight: f32, timestamp: u32) -> Self {
-        Self::from(ResponseCode::WeightMeasurement(weight, timestamp))
+    pub fn weight_measurement(measurements: WeightMeasurementBatch) -> Self {
+        Self::from(ResponseCode::WeightMeasurement(measurements))
     }
 }
 
 impl Format for DataPoint {
     fn format(&self, fmt: defmt::Formatter) {
-        let len = (self.length as usize).min(MAX_PAYLOAD_SIZE);
+        let len = (self.length as usize).min(DATA_POINT_MAX_PAYLOAD_SIZE);
         defmt::write!(
             fmt,
             "Code: {}, Length: {}, Data: {:x}",
@@ -417,7 +425,7 @@ impl From<ResponseCode> for DataPoint {
 }
 
 /// Data point response code
-#[derive(Copy, Clone, Debug)]
+#[derive(Clone, Debug)]
 #[repr(u8)]
 /// Response codes that the device can send to the Tindeq app
 // Source: Tindeq API documentation and https://github.com/blims/Tindeq-Progressor-API/blob/78a0bd244303589d0c773ee15ede53e0299712ee/progressor_client.py#L36-L40
@@ -425,7 +433,7 @@ pub enum ResponseCode {
     /// Response to battery voltage sampling command
     SampleBatteryVoltage(u32),
     /// Each measurement is sent together with a timestamp where the timestamp is the number of microseconds since the measurement was started
-    WeightMeasurement(f32, u32),
+    WeightMeasurement(WeightMeasurementBatch),
     /// Calibration factor response
     CalibrationFactor(f32),
     /// Calibration point response (raw value, weight)
@@ -450,13 +458,8 @@ impl Format for ResponseCode {
             ResponseCode::SampleBatteryVoltage(voltage) => {
                 defmt::write!(fmt, "SampleBatteryVoltage: {}", voltage)
             }
-            ResponseCode::WeightMeasurement(weight, timestamp) => {
-                defmt::write!(
-                    fmt,
-                    "WeightMeasurement: Weight: {}, Timestamp: {}",
-                    weight,
-                    timestamp
-                )
+            ResponseCode::WeightMeasurement(measurements) => {
+                defmt::write!(fmt, "WeightMeasurement: {} points", measurements.len())
             }
             ResponseCode::CalibrationFactor(factor) => {
                 defmt::write!(fmt, "CalibrationFactor: {}", factor)
@@ -493,11 +496,15 @@ impl ResponseCode {
     fn length(&self) -> u8 {
         match self {
             ResponseCode::SampleBatteryVoltage(..) => 4,
-            ResponseCode::WeightMeasurement(..) => 8,
+            ResponseCode::WeightMeasurement(measurements) => {
+                (measurements.len() * WEIGHT_MEASUREMENT_SIZE) as u8
+            }
             ResponseCode::CalibrationFactor(..) => 4,
             ResponseCode::CalibrationPoint(..) => 8,
             ResponseCode::LowPowerWarning => 0,
-            ResponseCode::AppVersion(version) => version.len().min(MAX_PAYLOAD_SIZE) as u8,
+            ResponseCode::AppVersion(version) => {
+                version.len().min(DATA_POINT_MAX_PAYLOAD_SIZE) as u8
+            }
             ResponseCode::ProgressorId(..) => DEVICE_ID_SIZE as u8,
             ResponseCode::RfdPeak => 0,
             ResponseCode::RfdPeakSeries => 0,
@@ -505,15 +512,19 @@ impl ResponseCode {
     }
 
     /// Get the value bytes for this response
-    fn value(&self) -> [u8; MAX_PAYLOAD_SIZE] {
-        let mut value = [0; MAX_PAYLOAD_SIZE];
+    fn value(&self) -> [u8; DATA_POINT_MAX_PAYLOAD_SIZE] {
+        let mut value = [0; DATA_POINT_MAX_PAYLOAD_SIZE];
         match self {
             ResponseCode::SampleBatteryVoltage(voltage) => {
                 value[0..4].copy_from_slice(&voltage.to_le_bytes());
             }
-            ResponseCode::WeightMeasurement(weight, timestamp) => {
-                value[0..4].copy_from_slice(&weight.to_le_bytes());
-                value[4..8].copy_from_slice(&timestamp.to_le_bytes());
+            ResponseCode::WeightMeasurement(measurements) => {
+                for (i, (weight, timestamp)) in measurements.iter().enumerate() {
+                    let offset = i * WEIGHT_MEASUREMENT_SIZE;
+                    value[offset..offset + 4].copy_from_slice(&weight.to_le_bytes());
+                    value[offset + 4..offset + WEIGHT_MEASUREMENT_SIZE]
+                        .copy_from_slice(&timestamp.to_le_bytes());
+                }
             }
             ResponseCode::CalibrationFactor(factor) => {
                 value[0..4].copy_from_slice(&factor.to_le_bytes());
@@ -530,7 +541,7 @@ impl ResponseCode {
                 value[..DEVICE_ID_SIZE].copy_from_slice(&reversed);
             }
             ResponseCode::AppVersion(version) => {
-                let len = version.len().min(MAX_PAYLOAD_SIZE);
+                let len = version.len().min(DATA_POINT_MAX_PAYLOAD_SIZE);
                 value[0..len].copy_from_slice(&version[0..len]);
             }
             ResponseCode::RfdPeak => {

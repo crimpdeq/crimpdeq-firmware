@@ -6,7 +6,7 @@ use arrayvec::ArrayVec;
 use defmt::{debug, info};
 use trouble_host::prelude::*;
 
-use crate::progressor::{DataPoint, MAX_PAYLOAD_SIZE};
+use crate::progressor::{CONTROL_POINT_MAX_PAYLOAD_SIZE, DataPoint};
 
 /// Max number of connections
 pub const CONNECTIONS_MAX: usize = 1;
@@ -62,7 +62,7 @@ pub struct ProgressorService {
         write,
         write_without_response
     )]
-    pub control_point: [u8; MAX_PAYLOAD_SIZE], // Buffer for command data
+    pub control_point: [u8; CONTROL_POINT_MAX_PAYLOAD_SIZE],
 }
 
 /// Create an advertiser to use to connect to a BLE Central, and wait for it to connect.

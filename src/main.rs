@@ -20,7 +20,6 @@ use esp_hal::{
     interrupt::software::SoftwareInterruptControl,
     peripherals,
     rtc_cntl::Rtc,
-    time,
     timer::timg::TimerGroup,
 };
 use esp_radio::ble::controller::BleConnector;
@@ -41,6 +40,7 @@ use crate::{
         MAX_CALIBRATION_POINTS,
         MeasurementTaskStatus,
         ResponseCode,
+        WeightMeasurementBatch,
     },
 };
 
@@ -90,8 +90,8 @@ async fn main(spawner: Spawner) -> ! {
 
     // Initialize BLE
     let bluetooth = peripherals.BT;
-    let ble_config = esp_radio::ble::Config::default()
-        .with_default_tx_power(esp_radio::ble::TxPower::P20);
+    let ble_config =
+        esp_radio::ble::Config::default().with_default_tx_power(esp_radio::ble::TxPower::P20);
     let connector = BleConnector::new(bluetooth, ble_config).unwrap();
     let controller: ExternalController<_, 1> = ExternalController::new(connector);
 
@@ -176,8 +176,12 @@ async fn main(spawner: Spawner) -> ! {
                         supervision_timeout: Duration::from_millis(4000),
                     };
                     if let Err(e) = conn.raw().update_connection_params(&stack, &params).await {
-                        warn!("Failed to request connection params: {:?}", defmt::Debug2Format(&e));
+                        warn!(
+                            "Failed to request connection params: {:?}",
+                            defmt::Debug2Format(&e)
+                        );
                     }
+
                     channel.clear();
                     critical_section::with(|cs| {
                         DEVICE_STATE.borrow_ref_mut(cs).on_ble_connected();
@@ -295,6 +299,7 @@ async fn measurement_task(
     if let Err(e) = load_cell.tare().await {
         error!("Initial tare failed: {:?}", defmt::Debug2Format(&e));
     }
+    let mut measurement_buffer = WeightMeasurementBatch::new();
 
     loop {
         // Get current device state
@@ -305,7 +310,12 @@ async fn measurement_task(
 
         match status {
             MeasurementTaskStatus::Disabled => {
-                // Do nothing when disabled
+                if !measurement_buffer.is_empty() {
+                    crate::progressor::DataPoint::weight_measurement(measurement_buffer.clone())
+                        .send(channel)
+                        .await;
+                    measurement_buffer.clear();
+                }
             }
             MeasurementTaskStatus::Tare => {
                 // Perform taring operation
@@ -319,7 +329,25 @@ async fn measurement_task(
                 });
             }
             MeasurementTaskStatus::Enabled => {
-                send_weight_measurement(&mut load_cell, start_time, channel).await;
+                let weight = match load_cell.read_calibrated().await {
+                    Ok(weight) => weight,
+                    Err(e) => {
+                        error!(
+                            "Failed to read weight measurement: {:?}",
+                            defmt::Debug2Format(&e)
+                        );
+                        continue;
+                    }
+                };
+                let now = (esp_hal::time::Instant::now().duration_since_epoch()).as_micros() as u32;
+                let timestamp = now.wrapping_sub(start_time);
+                measurement_buffer.push((weight, timestamp));
+                if measurement_buffer.is_full() {
+                    crate::progressor::DataPoint::weight_measurement(measurement_buffer.clone())
+                        .send(channel)
+                        .await;
+                    measurement_buffer.clear();
+                }
             }
             MeasurementTaskStatus::Calibration(weight) => {
                 if !weight.is_finite() || weight < 0.0 {
@@ -445,36 +473,6 @@ async fn measurement_task(
     }
 }
 
-/// Send a weight measurement data point with current timestamp
-async fn send_weight_measurement(
-    load_cell: &mut Hx711<'_>,
-    start_time: u32,
-    channel: &'static DataPointChannel,
-) {
-    let weight = match load_cell.read_calibrated().await {
-        Ok(weight) => weight,
-        Err(e) => {
-            error!(
-                "Failed to read weight measurement: {:?}",
-                defmt::Debug2Format(&e)
-            );
-            return;
-        }
-    };
-    let now = (time::Instant::now().duration_since_epoch()).as_micros() as u32;
-    let timestamp = now.wrapping_sub(start_time);
-
-    debug!(
-        "Sending measurement: Weight: {}kg, Timestamp: {:?}",
-        weight,
-        timestamp as f32 / 1000000.0
-    );
-
-    DataPoint::weight_measurement(weight, timestamp)
-        .send(channel)
-        .await;
-}
-
 async fn notify_calibration_points(
     channel: &'static DataPointChannel,
     calibration_points: &[CalibrationPoint],
@@ -568,7 +566,7 @@ async fn data_processing_task<P: PacketPool>(
     conn: &GattConnection<'_, '_, P>,
     channel: &'static DataPointChannel,
 ) {
-    let data_point_handle = server.progressor.data_point;
+    let data_point_handle = &server.progressor.data_point;
 
     loop {
         let data_point = channel.receive().await;
