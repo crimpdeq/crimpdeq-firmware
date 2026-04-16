@@ -90,7 +90,9 @@ async fn main(spawner: Spawner) -> ! {
 
     // Initialize BLE
     let bluetooth = peripherals.BT;
-    let connector = BleConnector::new(bluetooth, Default::default()).unwrap();
+    let ble_config = esp_radio::ble::Config::default()
+        .with_default_tx_power(esp_radio::ble::TxPower::P20);
+    let connector = BleConnector::new(bluetooth, ble_config).unwrap();
     let controller: ExternalController<_, 1> = ExternalController::new(connector);
 
     // Initialize load cell pins
@@ -164,6 +166,18 @@ async fn main(spawner: Spawner) -> ! {
             match advertise(device_name, &mut peripheral, &server).await {
                 Ok(conn) => {
                     info!("BLE connection established");
+
+                    let params = trouble_host::prelude::RequestedConnParams {
+                        min_connection_interval: Duration::from_millis(15),
+                        max_connection_interval: Duration::from_millis(45),
+                        max_latency: 0,
+                        min_event_length: Duration::from_millis(0),
+                        max_event_length: Duration::from_millis(0),
+                        supervision_timeout: Duration::from_millis(4000),
+                    };
+                    if let Err(e) = conn.raw().update_connection_params(&stack, &params).await {
+                        warn!("Failed to request connection params: {:?}", defmt::Debug2Format(&e));
+                    }
                     channel.clear();
                     critical_section::with(|cs| {
                         DEVICE_STATE.borrow_ref_mut(cs).on_ble_connected();
