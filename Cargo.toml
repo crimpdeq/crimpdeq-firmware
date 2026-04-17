@@ -16,25 +16,28 @@ embassy-sync = { version = "0.7.2", features = ["defmt"] }
 embassy-time = { version = "0.5.1", features = ["defmt"] }
 embedded-hal = "1.0.0"
 embedded-storage = "0.3.1"
-esp-alloc = { version = "0.9.0", features = ["defmt"] }
-esp-bootloader-esp-idf = { version = "0.4.0", features = ["esp32c3"] }
-esp-hal = { version = "1.0.0", features = ["defmt", "esp32c3", "unstable"] }
-esp-radio = { version = "0.17.0", features = [
+esp-alloc = { version = "0.10.0", features = ["defmt"] }
+esp-bootloader-esp-idf = { version = "0.5.0", features = ["esp32c3"] }
+esp-hal = { version = "1.1.0-rc.0", features = [
+    "defmt",
+    "esp32c3",
+    "unstable",
+] }
+esp-radio = { version = "0.18.0", features = [
     "ble",
     "defmt",
     "esp-alloc",
     "esp32c3",
     "unstable",
 ] }
-esp-rtos = { version = "0.2.0", features = [
+esp-rtos = { version = "0.3.0", features = [
     "defmt",
     "embassy",
     "esp-alloc",
     "esp-radio",
     "esp32c3",
-
 ] }
-esp-storage = { version = "0.8.1", features = ["defmt", "esp32c3"] }
+esp-storage = { version = "0.9.0", features = ["defmt", "esp32c3"] }
 panic-rtt-target = { version = "0.2.0", features = ["defmt"] }
 rtt-target = { version = "0.6.2", features = ["defmt"] }
 static_cell = "2.1.1"
@@ -53,11 +56,3 @@ incremental      = false
 lto              = 'fat'
 opt-level        = 's'
 overflow-checks  = false
-
-[patch.crates-io]
-esp-alloc              = { git = "https://github.com/esp-rs/esp-hal.git", rev = "c670420", package = "esp-alloc" }
-esp-bootloader-esp-idf = { git = "https://github.com/esp-rs/esp-hal.git", rev = "c670420", package = "esp-bootloader-esp-idf" }
-esp-hal                = { git = "https://github.com/esp-rs/esp-hal.git", rev = "c670420", package = "esp-hal" }
-esp-radio              = { git = "https://github.com/esp-rs/esp-hal.git", rev = "c670420", package = "esp-radio" }
-esp-rtos               = { git = "https://github.com/esp-rs/esp-hal.git", rev = "c670420", package = "esp-rtos" }
-esp-storage            = { git = "https://github.com/esp-rs/esp-hal.git", rev = "c670420", package = "esp-storage" }
