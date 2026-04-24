@@ -245,6 +245,20 @@ impl<'d> Hx711<'d> {
         Ok(())
     }
 
+    /// Put the HX711 into its low-power power-down mode.
+    pub fn power_down(&mut self) {
+        debug!("Powering down HX711");
+        self.clock.set_high();
+        self.delay.delay_us(80);
+    }
+
+    /// Wake the HX711 back up after power-down.
+    pub fn power_up(&mut self) {
+        debug!("Powering up HX711");
+        self.clock.set_low();
+        self.delay.delay_us(80);
+    }
+
     /// Reads a single bit from the data pin.
     #[inline]
     fn read_data_bit(&mut self) -> bool {

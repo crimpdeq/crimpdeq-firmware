@@ -49,6 +49,26 @@ pub enum MeasurementTaskStatus {
     GetCalibration,
 }
 
+/// Reason why the device is transitioning to sleep.
+#[derive(Copy, Clone, Debug, PartialEq, Format)]
+pub enum SleepReason {
+    /// No user or BLE activity has been observed for too long.
+    IdleTimeout,
+    /// The mobile app explicitly requested device shutdown.
+    ShutdownCommand,
+}
+
+/// Sleep transition state.
+#[derive(Copy, Clone, Debug, PartialEq, Format)]
+pub enum SleepState {
+    /// Device is fully awake.
+    Awake,
+    /// Deep sleep has been requested and peripherals are shutting down.
+    Requested(SleepReason),
+    /// Peripherals are powered down and deep sleep can be entered.
+    Ready(SleepReason),
+}
+
 /// Device state management
 #[derive(Debug, Clone, PartialEq)]
 pub struct DeviceState {
@@ -62,8 +82,12 @@ pub struct DeviceState {
     pub calibration_point_count: usize,
     /// Battery voltage in millivolts
     pub battery_voltage: u32,
-    /// BLE disconnection time in milliseconds (None when connected)
-    pub ble_disconnection_time: Option<u32>,
+    /// Timestamp of the last user-visible activity.
+    pub last_activity_time_ms: u32,
+    /// Whether BLE is currently connected.
+    pub ble_connected: bool,
+    /// Current sleep transition state.
+    pub sleep_state: SleepState,
 }
 
 impl Default for DeviceState {
@@ -74,60 +98,105 @@ impl Default for DeviceState {
             calibration_points: [(0.0, 0.0); MAX_CALIBRATION_POINTS],
             calibration_point_count: 0,
             battery_voltage: 4300,
-            ble_disconnection_time: None,
+            last_activity_time_ms: 0,
+            ble_connected: false,
+            sleep_state: SleepState::Awake,
         }
     }
 }
 
 impl DeviceState {
+    fn now_ms() -> u32 {
+        (time::Instant::now().duration_since_epoch()).as_millis() as u32
+    }
+
+    fn cancel_idle_sleep_request(&mut self) {
+        match self.sleep_state {
+            SleepState::Requested(SleepReason::IdleTimeout)
+            | SleepState::Ready(SleepReason::IdleTimeout) => {
+                self.sleep_state = SleepState::Awake;
+            }
+            SleepState::Awake | SleepState::Requested(_) | SleepState::Ready(_) => {}
+        }
+    }
+
+    /// Record user-visible activity so idle sleep can be postponed.
+    pub fn record_activity(&mut self) {
+        self.cancel_idle_sleep_request();
+        self.last_activity_time_ms = Self::now_ms();
+    }
+
     /// Start a measurement
     pub fn start_measurement(&mut self) {
+        self.record_activity();
         self.start_time = (time::Instant::now().duration_since_epoch()).as_micros() as u32;
         self.measurement_status = MeasurementTaskStatus::Enabled;
     }
 
     /// Stop the current measurement
     pub fn stop_measurement(&mut self) {
+        self.record_activity();
         self.measurement_status = MeasurementTaskStatus::Disabled;
     }
 
     /// Start taring process
     pub fn tare(&mut self) {
+        self.record_activity();
         self.measurement_status = MeasurementTaskStatus::Tare;
     }
 
     /// Set calibration mode with the given weight
     pub fn calibrate(&mut self, weight: f32) {
+        self.record_activity();
         self.measurement_status = MeasurementTaskStatus::Calibration(weight);
     }
 
     pub fn get_calibration(&mut self) {
+        self.record_activity();
         self.measurement_status = MeasurementTaskStatus::GetCalibration;
     }
 
     /// Reset to default calibration
     pub fn reset_calibration(&mut self) {
+        self.record_activity();
         self.measurement_status = MeasurementTaskStatus::DefaultCalibration;
     }
 
-    /// Mark BLE as connected (clear disconnection time)
+    /// Mark BLE as connected.
     pub fn on_ble_connected(&mut self) {
-        self.ble_disconnection_time = None;
+        self.ble_connected = true;
+        self.record_activity();
     }
 
-    /// Mark BLE as disconnected (record current time)
+    /// Mark BLE as disconnected.
     pub fn on_ble_disconnected(&mut self) {
-        self.ble_disconnection_time =
-            Some((time::Instant::now().duration_since_epoch()).as_millis() as u32);
+        self.ble_connected = false;
+        self.record_activity();
     }
 
-    /// Get elapsed time since BLE disconnection in milliseconds
-    /// Returns None if BLE is currently connected
-    pub fn get_ble_disconnection_elapsed_ms(&self) -> Option<u32> {
-        self.ble_disconnection_time.map(|disconnect_time| {
-            let current_time = (time::Instant::now().duration_since_epoch()).as_millis() as u32;
-            current_time.saturating_sub(disconnect_time)
-        })
+    /// Returns true when BLE is currently connected.
+    pub fn is_ble_connected(&self) -> bool {
+        self.ble_connected
+    }
+
+    /// Get elapsed inactivity time in milliseconds.
+    pub fn get_inactivity_elapsed_ms(&self) -> u32 {
+        Self::now_ms().saturating_sub(self.last_activity_time_ms)
+    }
+
+    /// Request deep sleep. The measurement task will power down peripherals first.
+    pub fn request_sleep(&mut self, reason: SleepReason) {
+        if self.sleep_state == SleepState::Awake {
+            self.measurement_status = MeasurementTaskStatus::Disabled;
+            self.sleep_state = SleepState::Requested(reason);
+        }
+    }
+
+    /// Mark that peripherals are powered down and deep sleep can start.
+    pub fn mark_sleep_ready(&mut self) {
+        if let SleepState::Requested(reason) = self.sleep_state {
+            self.sleep_state = SleepState::Ready(reason);
+        }
     }
 }
 
@@ -177,6 +246,11 @@ pub enum ControlOpCode {
 }
 
 impl ControlOpCode {
+    /// Returns whether this command should reset the idle timer.
+    pub fn counts_as_activity(self) -> bool {
+        !matches!(self, ControlOpCode::SampleBattery)
+    }
+
     /// Process the control operation.
     ///
     /// Returns an immediate response packet when the command requires one.
@@ -262,9 +336,13 @@ impl ControlOpCode {
                 info!("SampleBattery: {:?}", response);
                 Some(DataPoint::from(response))
             }
+            ControlOpCode::Shutdown => {
+                info!("Shutdown command received");
+                device_state.request_sleep(SleepReason::ShutdownCommand);
+                None
+            }
             // Currently unimplemented operations
-            ControlOpCode::Shutdown
-            | ControlOpCode::StartPeakRFDMeasurement
+            ControlOpCode::StartPeakRFDMeasurement
             | ControlOpCode::StartPeakRFDMeasurementSeries
             | ControlOpCode::SaveCalibration
             | ControlOpCode::ClearErrorInformation
