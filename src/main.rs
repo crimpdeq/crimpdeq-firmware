@@ -248,9 +248,7 @@ async fn deep_sleep_task(mut rtc: Rtc<'static>) {
                 if measurement_status == MeasurementTaskStatus::Disabled {
                     debug!(
                         "Device idle for {:?} ms (connected: {}, timeout: {:?} ms)",
-                        inactivity_ms,
-                        ble_connected,
-                        IDLE_TIMEOUT_MS
+                        inactivity_ms, ble_connected, IDLE_TIMEOUT_MS
                     );
 
                     if inactivity_ms >= IDLE_TIMEOUT_MS {
@@ -263,7 +261,10 @@ async fn deep_sleep_task(mut rtc: Rtc<'static>) {
                 }
             }
             SleepState::Requested(reason) => {
-                debug!("Waiting for peripherals to power down before sleep: {:?}", reason);
+                debug!(
+                    "Waiting for peripherals to power down before sleep: {:?}",
+                    reason
+                );
             }
             SleepState::Ready(reason) => {
                 info!("Entering deep sleep: {:?}", reason);
@@ -329,7 +330,11 @@ async fn measurement_task(
         // Get current device state
         let (sleep_state, status, start_time) = critical_section::with(|cs| {
             let state = DEVICE_STATE.borrow_ref(cs);
-            (state.sleep_state, state.measurement_status, state.start_time)
+            (
+                state.sleep_state,
+                state.measurement_status,
+                state.start_time,
+            )
         });
 
         if hx711_powered_down && sleep_state == SleepState::Awake {

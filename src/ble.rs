@@ -1,7 +1,8 @@
-/// BLE module
-///
-/// This module provides the BLE functionality for the Progressor.
-/// It includes the BLE advertising data, the GATT server, and the BLE connection.
+//! BLE module
+//!
+//! This module provides the BLE functionality for the Progressor.
+//! It includes the BLE advertising data, the GATT server, and the BLE connection.
+#![allow(clippy::needless_borrows_for_generic_args)]
 use arrayvec::ArrayVec;
 use defmt::{debug, info};
 use trouble_host::prelude::*;
