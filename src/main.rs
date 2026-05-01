@@ -366,10 +366,11 @@ async fn measurement_task(
         match status {
             MeasurementTaskStatus::Disabled => {
                 if !measurement_buffer.is_empty() {
-                    crate::progressor::DataPoint::weight_measurement(measurement_buffer.clone())
-                        .send(channel)
-                        .await;
-                    measurement_buffer.clear();
+                    crate::progressor::DataPoint::weight_measurement(core::mem::take(
+                        &mut measurement_buffer,
+                    ))
+                    .send(channel)
+                    .await;
                 }
             }
             MeasurementTaskStatus::Tare => {
@@ -398,10 +399,11 @@ async fn measurement_task(
                 let timestamp = now.wrapping_sub(start_time);
                 measurement_buffer.push((weight, timestamp));
                 if measurement_buffer.is_full() {
-                    crate::progressor::DataPoint::weight_measurement(measurement_buffer.clone())
-                        .send(channel)
-                        .await;
-                    measurement_buffer.clear();
+                    crate::progressor::DataPoint::weight_measurement(core::mem::take(
+                        &mut measurement_buffer,
+                    ))
+                    .send(channel)
+                    .await;
                 }
             }
             MeasurementTaskStatus::Calibration(weight) => {
