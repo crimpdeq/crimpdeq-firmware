@@ -20,13 +20,11 @@ use esp_hal::{
     interrupt::software::SoftwareInterruptControl,
     peripherals,
     rtc_cntl::Rtc,
-    time,
     timer::timg::TimerGroup,
 };
 use esp_radio::ble::controller::BleConnector;
 use esp_storage::FlashStorage;
 use panic_rtt_target as _;
-use static_cell::StaticCell;
 use trouble_host::prelude::*;
 
 use crate::{
@@ -41,6 +39,9 @@ use crate::{
         MAX_CALIBRATION_POINTS,
         MeasurementTaskStatus,
         ResponseCode,
+        SleepReason,
+        SleepState,
+        WeightMeasurementBatch,
     },
 };
 
@@ -65,7 +66,9 @@ static DEVICE_STATE: Mutex<RefCell<DeviceState>> = Mutex::new(RefCell::new(Devic
     calibration_points: [(0.0, 0.0); MAX_CALIBRATION_POINTS],
     calibration_point_count: 0,
     battery_voltage: 4300,
-    ble_disconnection_time: None,
+    last_activity_time_ms: 0,
+    ble_connected: false,
+    sleep_state: SleepState::Awake,
 }));
 
 // ESP-IDF App Descriptor
@@ -88,13 +91,11 @@ async fn main(spawner: Spawner) -> ! {
     let sw_interrupt = SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
     esp_rtos::start(timg0.timer0, sw_interrupt.software_interrupt0);
 
-    // Initialize radio
-    static RADIO: StaticCell<esp_radio::Controller<'static>> = StaticCell::new();
-    let radio = RADIO.init(esp_radio::init().unwrap());
-
     // Initialize BLE
     let bluetooth = peripherals.BT;
-    let connector = BleConnector::new(radio, bluetooth, Default::default()).unwrap();
+    let ble_config =
+        esp_radio::ble::Config::default().with_default_tx_power(esp_radio::ble::TxPower::P20);
+    let connector = BleConnector::new(bluetooth, ble_config).unwrap();
     let controller: ExternalController<_, 1> = ExternalController::new(connector);
 
     // Initialize load cell pins
@@ -153,25 +154,37 @@ async fn main(spawner: Spawner) -> ! {
     // Data point channel for communication between tasks
     let channel = mk_static!(DataPointChannel, Channel::new());
 
-    // Start idle timer: if no BLE connection happens within TIMEOUT_MS, deep_sleep_task will sleep.
+    // Start inactivity tracking from boot so the device can auto-sleep if left unused.
     critical_section::with(|cs| {
         DEVICE_STATE.borrow_ref_mut(cs).on_ble_disconnected();
     });
 
     // Spawn tasks
-    spawner
-        .spawn(measurement_task(channel, clock_pin, data_pin, delay, flash))
-        .unwrap();
-    spawner
-        .spawn(battery_voltage_task(battery_adc, battery_pin))
-        .unwrap();
-    spawner.spawn(deep_sleep_task(rtc)).unwrap();
+    spawner.spawn(measurement_task(channel, clock_pin, data_pin, delay, flash).unwrap());
+    spawner.spawn(battery_voltage_task(battery_adc, battery_pin).unwrap());
+    spawner.spawn(deep_sleep_task(rtc).unwrap());
 
     let _ = join(ble_task(runner), async {
         loop {
             match advertise(device_name, &mut peripheral, &server).await {
                 Ok(conn) => {
                     info!("BLE connection established");
+
+                    let params = trouble_host::prelude::RequestedConnParams {
+                        min_connection_interval: Duration::from_millis(15),
+                        max_connection_interval: Duration::from_millis(45),
+                        max_latency: 0,
+                        min_event_length: Duration::from_millis(0),
+                        max_event_length: Duration::from_millis(0),
+                        supervision_timeout: Duration::from_millis(4000),
+                    };
+                    if let Err(e) = conn.raw().update_connection_params(&stack, &params).await {
+                        warn!(
+                            "Failed to request connection params: {:?}",
+                            defmt::Debug2Format(&e)
+                        );
+                    }
+
                     channel.clear();
                     critical_section::with(|cs| {
                         DEVICE_STATE.borrow_ref_mut(cs).on_ble_connected();
@@ -188,10 +201,7 @@ async fn main(spawner: Spawner) -> ! {
                         let mut state = DEVICE_STATE.borrow_ref_mut(cs);
                         state.stop_measurement();
                         state.on_ble_disconnected();
-                        debug!(
-                            "BLE connection closed, disconnection time: {:?}",
-                            state.ble_disconnection_time
-                        );
+                        debug!("BLE connection closed, inactivity timer restarted");
                     });
                 }
                 Err(e) => {
@@ -218,28 +228,51 @@ async fn ble_task<C: Controller, P: PacketPool>(mut runner: Runner<'_, C, P>) {
 
 #[embassy_executor::task]
 async fn deep_sleep_task(mut rtc: Rtc<'static>) {
-    const TIMEOUT_MS: u32 = 5 * 60 * 1000; // 5 minutes
+    const IDLE_TIMEOUT_MS: u32 = 4 * 60 * 1000; // 4 minutes
 
     loop {
-        let elapsed_ms = critical_section::with(|cs| {
-            DEVICE_STATE
-                .borrow_ref(cs)
-                .get_ble_disconnection_elapsed_ms()
-        });
+        let (sleep_state, measurement_status, inactivity_ms, ble_connected) =
+            critical_section::with(|cs| {
+                let state = DEVICE_STATE.borrow_ref(cs);
+                (
+                    state.sleep_state,
+                    state.measurement_status,
+                    state.get_inactivity_elapsed_ms(),
+                    state.is_ble_connected(),
+                )
+            });
 
-        if let Some(elapsed) = elapsed_ms {
-            debug!("BLE disconnected for {:?} ms", elapsed);
+        match sleep_state {
+            SleepState::Awake => {
+                if measurement_status == MeasurementTaskStatus::Disabled {
+                    debug!(
+                        "Device idle for {:?} ms (connected: {}, timeout: {:?} ms)",
+                        inactivity_ms, ble_connected, IDLE_TIMEOUT_MS
+                    );
 
-            if elapsed >= TIMEOUT_MS {
-                info!(
-                    "Entering deep sleep after {} minutes of BLE disconnection",
-                    TIMEOUT_MS / 60000
+                    if inactivity_ms >= IDLE_TIMEOUT_MS {
+                        critical_section::with(|cs| {
+                            DEVICE_STATE
+                                .borrow_ref_mut(cs)
+                                .request_sleep(SleepReason::IdleTimeout);
+                        });
+                    }
+                }
+            }
+            SleepState::Requested(reason) => {
+                debug!(
+                    "Waiting for peripherals to power down before sleep: {:?}",
+                    reason
                 );
-                Timer::after(Duration::from_millis(10)).await;
+            }
+            SleepState::Ready(reason) => {
+                info!("Entering deep sleep: {:?}", reason);
+                Timer::after(Duration::from_millis(20)).await;
                 rtc.sleep_deep(&[]);
             }
         }
-        Timer::after(Duration::from_secs(10)).await;
+
+        Timer::after(Duration::from_secs(1)).await;
     }
 }
 
@@ -289,17 +322,56 @@ async fn measurement_task(
     if let Err(e) = load_cell.tare().await {
         error!("Initial tare failed: {:?}", defmt::Debug2Format(&e));
     }
+    let mut measurement_buffer = WeightMeasurementBatch::new();
+    let mut hx711_powered_down = false;
 
     loop {
         // Get current device state
-        let (status, start_time) = critical_section::with(|cs| {
+        let (sleep_state, status, start_time) = critical_section::with(|cs| {
             let state = DEVICE_STATE.borrow_ref(cs);
-            (state.measurement_status, state.start_time)
+            (
+                state.sleep_state,
+                state.measurement_status,
+                state.start_time,
+            )
         });
+
+        if hx711_powered_down && sleep_state == SleepState::Awake {
+            info!("Waking HX711 after sleep request was cancelled");
+            load_cell.power_up();
+            hx711_powered_down = false;
+        }
+
+        match sleep_state {
+            SleepState::Requested(reason) => {
+                if !hx711_powered_down {
+                    info!("Powering down HX711 before deep sleep: {:?}", reason);
+                    measurement_buffer.clear();
+                    load_cell.power_down();
+                    hx711_powered_down = true;
+                    critical_section::with(|cs| {
+                        DEVICE_STATE.borrow_ref_mut(cs).mark_sleep_ready();
+                    });
+                }
+                Timer::after(Duration::from_millis(20)).await;
+                continue;
+            }
+            SleepState::Ready(_) => {
+                Timer::after(Duration::from_millis(50)).await;
+                continue;
+            }
+            SleepState::Awake => {}
+        }
 
         match status {
             MeasurementTaskStatus::Disabled => {
-                // Do nothing when disabled
+                if !measurement_buffer.is_empty() {
+                    crate::progressor::DataPoint::weight_measurement(core::mem::take(
+                        &mut measurement_buffer,
+                    ))
+                    .send(channel)
+                    .await;
+                }
             }
             MeasurementTaskStatus::Tare => {
                 // Perform taring operation
@@ -313,7 +385,26 @@ async fn measurement_task(
                 });
             }
             MeasurementTaskStatus::Enabled => {
-                send_weight_measurement(&mut load_cell, start_time, channel).await;
+                let weight = match load_cell.read_calibrated().await {
+                    Ok(weight) => weight,
+                    Err(e) => {
+                        error!(
+                            "Failed to read weight measurement: {:?}",
+                            defmt::Debug2Format(&e)
+                        );
+                        continue;
+                    }
+                };
+                let now = (esp_hal::time::Instant::now().duration_since_epoch()).as_micros() as u32;
+                let timestamp = now.wrapping_sub(start_time);
+                measurement_buffer.push((weight, timestamp));
+                if measurement_buffer.is_full() {
+                    crate::progressor::DataPoint::weight_measurement(core::mem::take(
+                        &mut measurement_buffer,
+                    ))
+                    .send(channel)
+                    .await;
+                }
             }
             MeasurementTaskStatus::Calibration(weight) => {
                 if !weight.is_finite() || weight < 0.0 {
@@ -439,36 +530,6 @@ async fn measurement_task(
     }
 }
 
-/// Send a weight measurement data point with current timestamp
-async fn send_weight_measurement(
-    load_cell: &mut Hx711<'_>,
-    start_time: u32,
-    channel: &'static DataPointChannel,
-) {
-    let weight = match load_cell.read_calibrated().await {
-        Ok(weight) => weight,
-        Err(e) => {
-            error!(
-                "Failed to read weight measurement: {:?}",
-                defmt::Debug2Format(&e)
-            );
-            return;
-        }
-    };
-    let now = (time::Instant::now().duration_since_epoch()).as_micros() as u32;
-    let timestamp = now.wrapping_sub(start_time);
-
-    debug!(
-        "Sending measurement: Weight: {}kg, Timestamp: {:?}",
-        weight,
-        timestamp as f32 / 1000000.0
-    );
-
-    DataPoint::weight_measurement(weight, timestamp)
-        .send(channel)
-        .await;
-}
-
 async fn notify_calibration_points(
     channel: &'static DataPointChannel,
     calibration_points: &[CalibrationPoint],
@@ -515,15 +576,24 @@ async fn gatt_events_task<P: PacketPool>(
                                 info!("Control Point Received: {:?}", op_code);
                                 critical_section::with(|cs| {
                                     let mut device_state = DEVICE_STATE.borrow_ref_mut(cs);
+                                    if op_code.counts_as_activity() {
+                                        device_state.record_activity();
+                                    }
                                     op_code.process(cmd_data, &mut device_state)
                                 })
                             }
                             Err(()) => {
+                                critical_section::with(|cs| {
+                                    DEVICE_STATE.borrow_ref_mut(cs).record_activity();
+                                });
                                 warn!("Ignoring unsupported OpCode: {:#x}", op_code_byte);
                                 None
                             }
                         },
                         None => {
+                            critical_section::with(|cs| {
+                                DEVICE_STATE.borrow_ref_mut(cs).record_activity();
+                            });
                             warn!("Control Point write with empty payload");
                             None
                         }
@@ -562,7 +632,7 @@ async fn data_processing_task<P: PacketPool>(
     conn: &GattConnection<'_, '_, P>,
     channel: &'static DataPointChannel,
 ) {
-    let data_point_handle = server.progressor.data_point;
+    let data_point_handle = &server.progressor.data_point;
 
     loop {
         let data_point = channel.receive().await;

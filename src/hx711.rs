@@ -42,7 +42,7 @@ const DEFAULT_TARING_SAMPLES: usize = 16;
 /// The default number of samples for calibration
 const DEFAULT_CALIBRATION_SAMPLES: usize = 100;
 /// The default calibration value.
-const DEFAULT_CALIBRATION_FACTOR: f32 = 0.0639;
+const DEFAULT_CALIBRATION_FACTOR: f32 = 0.08;
 
 /// Custom error type for HX711 operations
 #[derive(Debug)]
@@ -243,6 +243,20 @@ impl<'d> Hx711<'d> {
         self.write_to_flash(DEFAULT_CALIBRATION_FACTOR)?;
         self.calibration_factor = DEFAULT_CALIBRATION_FACTOR;
         Ok(())
+    }
+
+    /// Put the HX711 into its low-power power-down mode.
+    pub fn power_down(&mut self) {
+        debug!("Powering down HX711");
+        self.clock.set_high();
+        self.delay.delay_us(80);
+    }
+
+    /// Wake the HX711 back up after power-down.
+    pub fn power_up(&mut self) {
+        debug!("Powering up HX711");
+        self.clock.set_low();
+        self.delay.delay_us(80);
     }
 
     /// Reads a single bit from the data pin.
