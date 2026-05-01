@@ -25,7 +25,6 @@ use esp_hal::{
 use esp_radio::ble::controller::BleConnector;
 use esp_storage::FlashStorage;
 use panic_rtt_target as _;
-// use static_cell::StaticCell;
 use trouble_host::prelude::*;
 
 use crate::{

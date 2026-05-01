@@ -181,7 +181,7 @@ impl DeviceState {
 
     /// Get elapsed inactivity time in milliseconds.
     pub fn get_inactivity_elapsed_ms(&self) -> u32 {
-        Self::now_ms().saturating_sub(self.last_activity_time_ms)
+        Self::now_ms().wrapping_sub(self.last_activity_time_ms)
     }
 
     /// Request deep sleep. The measurement task will power down peripherals first.
