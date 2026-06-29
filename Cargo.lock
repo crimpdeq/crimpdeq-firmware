@@ -217,6 +217,7 @@ dependencies = [
  "esp-radio",
  "esp-rtos",
  "esp-storage",
+ "max170xx",
  "panic-rtt-target",
  "rtt-target",
  "smart-leds",
@@ -1489,6 +1490,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d1525a2a28c7f4fa0fc98bb91ae755d1e2d1505079e05539e35bc876b5d65ae9"
 dependencies = [
  "regex-automata",
+]
+
+[[package]]
+name = "max170xx"
+version = "1.0.0"
+source = "git+https://github.com/SergioGasquez/max170xx-rs#874f842e999ca2ebb66635cdb4ec9742296b1103"
+dependencies = [
+ "embedded-hal 1.0.0",
+ "embedded-hal-async",
 ]
 
 [[package]]

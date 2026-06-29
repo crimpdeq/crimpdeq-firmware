@@ -12,12 +12,11 @@ use embassy_sync::channel::Channel;
 use embassy_time::{Duration, Timer};
 use esp_hal::{
     Async, Config,
-    analog::adc::{Adc, AdcCalCurve, AdcConfig, AdcPin, Attenuation},
     clock::CpuClock,
     delay::Delay,
     gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull},
+    i2c::master::{Config as I2cConfig, I2c},
     interrupt::software::SoftwareInterruptControl,
-    peripherals,
     rmt::Rmt,
     rtc_cntl::Rtc,
     time::Rate,
@@ -26,6 +25,7 @@ use esp_hal::{
 use esp_hal_smartled::{SmartLedsAdapterAsync, buffer_size_async};
 use esp_radio::ble::controller::BleConnector;
 use esp_storage::FlashStorage;
+use max170xx::asynch::Max17048;
 use panic_rtt_target as _;
 use smart_leds::{RGB8, SmartLedsWriteAsync as _, brightness};
 use trouble_host::prelude::*;
@@ -48,8 +48,7 @@ const STATUS_LED_COUNT: usize = 1;
 const STATUS_LED_RMT_BUFFER_SIZE: usize = buffer_size_async(STATUS_LED_COUNT);
 const STATUS_LED_BRIGHTNESS: u8 = 24;
 const STATUS_LED_LOW_BATTERY_MV: u32 = 3500;
-// Best-effort charging indication: the board has no dedicated charge-detect GPIO.
-const STATUS_LED_CHARGING_DELTA_MV: u32 = 15;
+const STATUS_LED_CHARGING_RATE_THRESHOLD: f32 = 0.1;
 const STATUS_LED_OFF: RGB8 = RGB8 { r: 0, g: 0, b: 0 };
 const STATUS_LED_DISCONNECTED: RGB8 = RGB8 { r: 0, g: 0, b: 255 };
 const STATUS_LED_CONNECTED: RGB8 = RGB8 { r: 0, g: 255, b: 0 };
@@ -133,12 +132,17 @@ async fn main(spawner: Spawner) -> ! {
     // Initialize RTC
     let rtc = Rtc::new(peripherals.LPWR);
 
-    // Initialize battery voltage reading
-    let mut adc_config = AdcConfig::new();
-    let analog_pin = peripherals.GPIO1;
-    let battery_pin =
-        adc_config.enable_pin_with_cal::<_, AdcCalCurve<_>>(analog_pin, Attenuation::_11dB);
-    let battery_adc = Adc::new(peripherals.ADC1, adc_config).into_async();
+    // Initialize MAX17048 fuel gauge over I2C.
+    // Hardware revision 2 uses GPIO0=SDA, GPIO1=SCL.
+    let battery_i2c = I2c::new(
+        peripherals.I2C0,
+        I2cConfig::default().with_frequency(Rate::from_khz(100)),
+    )
+    .expect("Failed to initialize battery I2C")
+    .with_sda(peripherals.GPIO0)
+    .with_scl(peripherals.GPIO1)
+    .into_async();
+    let battery_gauge = Max17048::new(battery_i2c);
 
     // Initialize WS2812B status LED on GPIO2 using RMT.
     let rmt = Rmt::new(peripherals.RMT, Rate::from_mhz(80))
@@ -192,7 +196,7 @@ async fn main(spawner: Spawner) -> ! {
 
     // Spawn tasks
     spawner.spawn(measurement_task(channel, clock_pin, data_pin, delay, flash).unwrap());
-    spawner.spawn(battery_voltage_task(battery_adc, battery_pin).unwrap());
+    spawner.spawn(battery_gauge_task(battery_gauge).unwrap());
     spawner.spawn(status_led_task(status_led).unwrap());
     spawner.spawn(deep_sleep_task(rtc).unwrap());
 
@@ -373,38 +377,38 @@ async fn deep_sleep_task(mut rtc: Rtc<'static>) {
 }
 
 #[embassy_executor::task]
-async fn battery_voltage_task(
-    mut adc: Adc<'static, peripherals::ADC1<'static>, Async>,
-    mut pin: AdcPin<
-        peripherals::GPIO1<'static>,
-        peripherals::ADC1<'static>,
-        AdcCalCurve<peripherals::ADC1<'static>>,
-    >,
-) {
+async fn battery_gauge_task(mut gauge: Max17048<I2c<'static, Async>>) {
     loop {
-        // Read the battery voltage 20 times and average the results
-        let mut adc_voltage_mv: u32 = 0;
-        for _ in 0..20 {
-            adc_voltage_mv += adc.read_oneshot(&mut pin).await as u32;
-            Timer::after(Duration::from_millis(10)).await;
+        let voltage = gauge.voltage().await;
+        let soc = gauge.soc().await;
+        let charge_rate = gauge.charge_rate().await;
+
+        match (voltage, soc, charge_rate) {
+            (Ok(voltage), Ok(soc), Ok(charge_rate)) => {
+                let battery_voltage_mv = (voltage * 1000.0) as u32;
+                let battery_charging = charge_rate > STATUS_LED_CHARGING_RATE_THRESHOLD;
+                info!(
+                    "Battery: {:?} mV, SOC: {:?}%, charge rate: {:?}%/h",
+                    battery_voltage_mv, soc, charge_rate
+                );
+
+                // Update device state
+                critical_section::with(|cs| {
+                    let mut state = DEVICE_STATE.borrow_ref_mut(cs);
+                    state.battery_voltage = battery_voltage_mv;
+                    state.battery_charging = battery_charging;
+                });
+            }
+            (voltage, soc, charge_rate) => {
+                warn!(
+                    "Failed to read MAX17048 battery gauge: voltage={:?}, soc={:?}, charge_rate={:?}",
+                    defmt::Debug2Format(&voltage),
+                    defmt::Debug2Format(&soc),
+                    defmt::Debug2Format(&charge_rate)
+                );
+            }
         }
-        let adc_voltage_mv = (adc_voltage_mv / 20) as u16;
-        debug!("ADC voltage: {:?}", adc_voltage_mv);
 
-        // Calculate battery voltage using voltage divider formula
-        // Voltage divider: R1=33k, R2=10k
-        // Formula: V_battery = V_adc * (R1 + R2) / R2
-        let battery_voltage_mv = (adc_voltage_mv as u32 * 43) / 10;
-        info!("Battery voltage: {:?}", battery_voltage_mv);
-
-        // Update device state
-        critical_section::with(|cs| {
-            let mut state = DEVICE_STATE.borrow_ref_mut(cs);
-            let previous_voltage = state.battery_voltage;
-            state.battery_charging =
-                battery_voltage_mv > previous_voltage.saturating_add(STATUS_LED_CHARGING_DELTA_MV);
-            state.battery_voltage = battery_voltage_mv;
-        });
         Timer::after(Duration::from_secs(45)).await;
     }
 }

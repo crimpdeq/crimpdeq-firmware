@@ -82,7 +82,7 @@ pub struct DeviceState {
     pub calibration_point_count: usize,
     /// Battery voltage in millivolts
     pub battery_voltage: u32,
-    /// Best-effort charging estimate based on battery voltage trend.
+    /// Whether the fuel gauge reports that the battery is charging.
     pub battery_charging: bool,
     /// Timestamp of the last user-visible activity.
     pub last_activity_time_ms: u32,

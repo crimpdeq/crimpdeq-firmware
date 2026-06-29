@@ -35,6 +35,7 @@ esp-rtos = { version = "0.3.0", features = [
     "esp32c3",
 ] }
 esp-storage = { version = "0.9.0", features = ["defmt", "esp32c3"] }
+max170xx = { git = "https://github.com/SergioGasquez/max170xx-rs", features = ["async"] }
 panic-rtt-target = { version = "0.2.0", features = ["defmt"] }
 rtt-target = { version = "0.6.2", features = ["defmt"] }
 smart-leds = "0.4.0"
