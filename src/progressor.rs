@@ -82,6 +82,8 @@ pub struct DeviceState {
     pub calibration_point_count: usize,
     /// Battery voltage in millivolts
     pub battery_voltage: u32,
+    /// Best-effort charging estimate based on battery voltage trend.
+    pub battery_charging: bool,
     /// Timestamp of the last user-visible activity.
     pub last_activity_time_ms: u32,
     /// Whether BLE is currently connected.
@@ -98,6 +100,7 @@ impl Default for DeviceState {
             calibration_points: [(0.0, 0.0); MAX_CALIBRATION_POINTS],
             calibration_point_count: 0,
             battery_voltage: 4300,
+            battery_charging: false,
             last_activity_time_ms: 0,
             ble_connected: false,
             sleep_state: SleepState::Awake,
