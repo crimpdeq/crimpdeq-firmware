@@ -195,6 +195,18 @@ impl DeviceState {
         }
     }
 
+    /// Reset runtime state to the same awake/disconnected state used after boot.
+    pub fn reset_to_initial_state(&mut self) {
+        let battery_voltage = self.battery_voltage;
+        let battery_charging = self.battery_charging;
+        *self = Self {
+            battery_voltage,
+            battery_charging,
+            ..Self::default()
+        };
+        self.on_ble_disconnected();
+    }
+
     /// Mark that peripherals are powered down and deep sleep can start.
     pub fn mark_sleep_ready(&mut self) {
         if let SleepState::Requested(reason) = self.sleep_state {
@@ -340,8 +352,8 @@ impl ControlOpCode {
                 Some(DataPoint::from(response))
             }
             ControlOpCode::Shutdown => {
-                info!("Shutdown command received");
-                device_state.request_sleep(SleepReason::ShutdownCommand);
+                info!("Shutdown command received, resetting to initial state");
+                device_state.reset_to_initial_state();
                 None
             }
             // Currently unimplemented operations
