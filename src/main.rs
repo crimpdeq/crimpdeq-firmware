@@ -61,11 +61,6 @@ const STATUS_LED_CHARGING_RATE_THRESHOLD: f32 = 0.1;
 const STATUS_LED_OFF: RGB8 = RGB8 { r: 0, g: 0, b: 0 };
 const STATUS_LED_DISCONNECTED: RGB8 = RGB8 { r: 0, g: 0, b: 255 };
 const STATUS_LED_CONNECTED: RGB8 = RGB8 { r: 0, g: 255, b: 0 };
-const STATUS_LED_CHARGING: RGB8 = RGB8 {
-    r: 255,
-    g: 120,
-    b: 0,
-};
 const STATUS_LED_LOW_BATTERY: RGB8 = RGB8 { r: 255, g: 0, b: 0 };
 
 #[derive(Clone, Copy, PartialEq)]
@@ -73,7 +68,6 @@ enum StatusLedMode {
     Off,
     Disconnected,
     Connected,
-    Charging,
     LowBattery,
 }
 
@@ -282,8 +276,6 @@ fn status_led_mode() -> StatusLedMode {
             StatusLedMode::Off
         } else if state.battery_voltage <= STATUS_LED_LOW_BATTERY_MV {
             StatusLedMode::LowBattery
-        } else if state.battery_charging {
-            StatusLedMode::Charging
         } else if state.is_ble_connected() {
             StatusLedMode::Connected
         } else {
@@ -323,10 +315,6 @@ async fn status_led_task(mut led: SmartLedsAdapterAsync<'static, STATUS_LED_RMT_
             }
             StatusLedMode::Connected => {
                 set_status_led(&mut led, STATUS_LED_CONNECTED).await;
-                Timer::after(Duration::from_secs(1)).await;
-            }
-            StatusLedMode::Charging => {
-                set_status_led(&mut led, STATUS_LED_CHARGING).await;
                 Timer::after(Duration::from_secs(1)).await;
             }
             StatusLedMode::LowBattery => {
