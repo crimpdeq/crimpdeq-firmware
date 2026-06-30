@@ -826,7 +826,7 @@ dependencies = [
 [[package]]
 name = "esp-hal-smartled"
 version = "0.17.0"
-source = "git+https://github.com/SergioGasquez/esp-hal-community#80ea1d15395db0cf40a22230e99580589d96ed4c"
+source = "git+https://github.com/florianL21/esp-hal-community#728d7f9b6024f7a0b9eeaa732178da42b76c9c8c"
 dependencies = [
  "defmt 1.1.0",
  "document-features",
