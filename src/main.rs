@@ -11,7 +11,8 @@ use embassy_futures::{join::join, select::select};
 use embassy_sync::channel::Channel;
 use embassy_time::{Duration, Timer};
 use esp_hal::{
-    Async, Config,
+    Async,
+    Config,
     clock::CpuClock,
     delay::Delay,
     gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull},
@@ -34,8 +35,16 @@ use crate::{
     ble::{CONNECTIONS_MAX, L2CAP_CHANNELS_MAX, L2CAP_MTU, Server, advertise},
     hx711::Hx711,
     progressor::{
-        CalibrationPoint, ControlOpCode, DataPoint, DataPointChannel, DeviceState,
-        MAX_CALIBRATION_POINTS, MeasurementTaskStatus, ResponseCode, SleepReason, SleepState,
+        CalibrationPoint,
+        ControlOpCode,
+        DataPoint,
+        DataPointChannel,
+        DeviceState,
+        MAX_CALIBRATION_POINTS,
+        MeasurementTaskStatus,
+        ResponseCode,
+        SleepReason,
+        SleepState,
         WeightMeasurementBatch,
     },
 };
@@ -133,15 +142,19 @@ async fn main(spawner: Spawner) -> ! {
     let rtc = Rtc::new(peripherals.LPWR);
 
     // Initialize MAX17048 fuel gauge over I2C.
-    // Hardware revision 2 uses GPIO0=SDA, GPIO1=SCL.
-    let battery_i2c = I2c::new(
-        peripherals.I2C0,
-        I2cConfig::default().with_frequency(Rate::from_khz(100)),
-    )
-    .expect("Failed to initialize battery I2C")
-    .with_sda(peripherals.GPIO0)
-    .with_scl(peripherals.GPIO1)
-    .into_async();
+    // PCB nets are labelled IO6_SDA/IO7_SCL, but the MAX17048 TDFN datasheet maps
+    // pin 7 to SCL and pin 8 to SDA while the KiCad symbol had those two swapped.
+    // Actual gauge connections: GPIO7=SDA, GPIO6=SCL, GPIO10=/ALRT,
+    // CELL/VDD=+BATT, QSTRT=GND. /ALRT is open-drain and has no external pull-up.
+    let _battery_alert_pin = Input::new(
+        peripherals.GPIO10,
+        InputConfig::default().with_pull(Pull::Up),
+    );
+    let battery_i2c = I2c::new(peripherals.I2C0, I2cConfig::default())
+        .expect("Failed to initialize battery I2C")
+        .with_sda(peripherals.GPIO7)
+        .with_scl(peripherals.GPIO6)
+        .into_async();
     let battery_gauge = Max17048::new(battery_i2c);
 
     // Initialize WS2812B status LED on GPIO2 using RMT.
