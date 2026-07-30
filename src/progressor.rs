@@ -54,8 +54,6 @@ pub enum MeasurementTaskStatus {
 pub enum SleepReason {
     /// No user or BLE activity has been observed for too long.
     IdleTimeout,
-    /// The mobile app explicitly requested device shutdown.
-    ShutdownCommand,
 }
 
 /// Sleep transition state.
@@ -67,6 +65,13 @@ pub enum SleepState {
     Requested(SleepReason),
     /// Peripherals are powered down and deep sleep can be entered.
     Ready(SleepReason),
+}
+
+/// Peripheral that must acknowledge shutdown before deep sleep starts.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum SleepReadySource {
+    Measurement,
+    StatusLed,
 }
 
 /// Device state management
@@ -90,6 +95,10 @@ pub struct DeviceState {
     pub ble_connected: bool,
     /// Current sleep transition state.
     pub sleep_state: SleepState,
+    /// Whether the measurement task has powered down its peripherals for sleep.
+    pub sleep_measurement_ready: bool,
+    /// Whether the status LED has been explicitly turned off for sleep.
+    pub sleep_status_led_ready: bool,
 }
 
 impl Default for DeviceState {
@@ -104,6 +113,8 @@ impl Default for DeviceState {
             last_activity_time_ms: 0,
             ble_connected: false,
             sleep_state: SleepState::Awake,
+            sleep_measurement_ready: false,
+            sleep_status_led_ready: false,
         }
     }
 }
@@ -118,8 +129,10 @@ impl DeviceState {
             SleepState::Requested(SleepReason::IdleTimeout)
             | SleepState::Ready(SleepReason::IdleTimeout) => {
                 self.sleep_state = SleepState::Awake;
+                self.sleep_measurement_ready = false;
+                self.sleep_status_led_ready = false;
             }
-            SleepState::Awake | SleepState::Requested(_) | SleepState::Ready(_) => {}
+            SleepState::Awake => {}
         }
     }
 
@@ -187,10 +200,12 @@ impl DeviceState {
         Self::now_ms().wrapping_sub(self.last_activity_time_ms)
     }
 
-    /// Request deep sleep. The measurement task will power down peripherals first.
+    /// Request deep sleep. The measurement and LED tasks will power down peripherals first.
     pub fn request_sleep(&mut self, reason: SleepReason) {
         if self.sleep_state == SleepState::Awake {
             self.measurement_status = MeasurementTaskStatus::Disabled;
+            self.sleep_measurement_ready = false;
+            self.sleep_status_led_ready = false;
             self.sleep_state = SleepState::Requested(reason);
         }
     }
@@ -207,10 +222,17 @@ impl DeviceState {
         self.on_ble_disconnected();
     }
 
-    /// Mark that peripherals are powered down and deep sleep can start.
-    pub fn mark_sleep_ready(&mut self) {
+    /// Mark that one peripheral is powered down and deep sleep can start when all are ready.
+    pub fn mark_sleep_ready(&mut self, source: SleepReadySource) {
         if let SleepState::Requested(reason) = self.sleep_state {
-            self.sleep_state = SleepState::Ready(reason);
+            match source {
+                SleepReadySource::Measurement => self.sleep_measurement_ready = true,
+                SleepReadySource::StatusLed => self.sleep_status_led_ready = true,
+            }
+
+            if self.sleep_measurement_ready && self.sleep_status_led_ready {
+                self.sleep_state = SleepState::Ready(reason);
+            }
         }
     }
 }
@@ -352,7 +374,7 @@ impl ControlOpCode {
                 Some(DataPoint::from(response))
             }
             ControlOpCode::Shutdown => {
-                info!("Shutdown command received, resetting to initial state");
+                info!("Shutdown command received, resetting state");
                 device_state.reset_to_initial_state();
                 None
             }

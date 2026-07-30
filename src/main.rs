@@ -43,6 +43,7 @@ use crate::{
         MAX_CALIBRATION_POINTS,
         MeasurementTaskStatus,
         ResponseCode,
+        SleepReadySource,
         SleepReason,
         SleepState,
         WeightMeasurementBatch,
@@ -92,6 +93,8 @@ static DEVICE_STATE: Mutex<RefCell<DeviceState>> = Mutex::new(RefCell::new(Devic
     last_activity_time_ms: 0,
     ble_connected: false,
     sleep_state: SleepState::Awake,
+    sleep_measurement_ready: false,
+    sleep_status_led_ready: false,
 }));
 
 // ESP-IDF App Descriptor
@@ -299,29 +302,77 @@ async fn set_status_led(
     }
 }
 
+async fn wait_for_sleep_request(timeout: Duration) -> bool {
+    const POLL_INTERVAL_MS: u64 = 50;
+
+    let timeout_ms = timeout.as_millis();
+    let mut elapsed_ms = 0;
+
+    while elapsed_ms < timeout_ms {
+        let sleep_state = critical_section::with(|cs| DEVICE_STATE.borrow_ref(cs).sleep_state);
+        if sleep_state != SleepState::Awake {
+            return true;
+        }
+
+        let step_ms = (timeout_ms - elapsed_ms).min(POLL_INTERVAL_MS);
+        Timer::after(Duration::from_millis(step_ms)).await;
+        elapsed_ms += step_ms;
+    }
+
+    false
+}
+
 #[embassy_executor::task]
 async fn status_led_task(mut led: SmartLedsAdapterAsync<'static, STATUS_LED_RMT_BUFFER_SIZE>) {
     set_status_led(&mut led, STATUS_LED_OFF).await;
+    let mut sleep_led_ready = false;
 
     loop {
+        let sleep_state = critical_section::with(|cs| DEVICE_STATE.borrow_ref(cs).sleep_state);
+        match sleep_state {
+            SleepState::Requested(reason) => {
+                if !sleep_led_ready {
+                    info!("Turning off status LED before deep sleep: {:?}", reason);
+                    set_status_led(&mut led, STATUS_LED_OFF).await;
+                    sleep_led_ready = true;
+                    critical_section::with(|cs| {
+                        DEVICE_STATE
+                            .borrow_ref_mut(cs)
+                            .mark_sleep_ready(SleepReadySource::StatusLed);
+                    });
+                }
+                Timer::after(Duration::from_millis(20)).await;
+                continue;
+            }
+            SleepState::Ready(_) => {
+                Timer::after(Duration::from_millis(20)).await;
+                continue;
+            }
+            SleepState::Awake => {
+                sleep_led_ready = false;
+            }
+        }
+
         match status_led_mode() {
             StatusLedMode::Off => {
                 set_status_led(&mut led, STATUS_LED_OFF).await;
-                Timer::after(Duration::from_secs(1)).await;
+                let _ = wait_for_sleep_request(Duration::from_secs(1)).await;
             }
             StatusLedMode::Disconnected => {
                 set_status_led(&mut led, STATUS_LED_DISCONNECTED).await;
-                Timer::after(Duration::from_secs(1)).await;
+                let _ = wait_for_sleep_request(Duration::from_secs(1)).await;
             }
             StatusLedMode::Connected => {
                 set_status_led(&mut led, STATUS_LED_CONNECTED).await;
-                Timer::after(Duration::from_secs(1)).await;
+                let _ = wait_for_sleep_request(Duration::from_secs(1)).await;
             }
             StatusLedMode::LowBattery => {
                 set_status_led(&mut led, STATUS_LED_LOW_BATTERY).await;
-                Timer::after(Duration::from_millis(250)).await;
+                if wait_for_sleep_request(Duration::from_millis(250)).await {
+                    continue;
+                }
                 set_status_led(&mut led, STATUS_LED_OFF).await;
-                Timer::after(Duration::from_millis(750)).await;
+                let _ = wait_for_sleep_request(Duration::from_millis(750)).await;
             }
         }
     }
@@ -359,12 +410,15 @@ async fn deep_sleep_task(mut rtc: Rtc<'static>) {
                         });
                     }
                 }
+
+                Timer::after(Duration::from_secs(1)).await;
             }
             SleepState::Requested(reason) => {
                 debug!(
                     "Waiting for peripherals to power down before sleep: {:?}",
                     reason
                 );
+                Timer::after(Duration::from_millis(20)).await;
             }
             SleepState::Ready(reason) => {
                 info!("Entering deep sleep: {:?}", reason);
@@ -372,8 +426,6 @@ async fn deep_sleep_task(mut rtc: Rtc<'static>) {
                 rtc.sleep_deep(&[]);
             }
         }
-
-        Timer::after(Duration::from_secs(1)).await;
     }
 }
 
@@ -454,7 +506,9 @@ async fn measurement_task(
                     load_cell.power_down();
                     hx711_powered_down = true;
                     critical_section::with(|cs| {
-                        DEVICE_STATE.borrow_ref_mut(cs).mark_sleep_ready();
+                        DEVICE_STATE
+                            .borrow_ref_mut(cs)
+                            .mark_sleep_ready(SleepReadySource::Measurement);
                     });
                 }
                 Timer::after(Duration::from_millis(20)).await;
@@ -670,6 +724,7 @@ async fn gatt_events_task<P: PacketPool>(
                 break;
             }
             GattConnectionEvent::Gatt { event } => {
+                let mut disconnect_after_response = false;
                 let immediate_response = if let GattEvent::Write(write_event) = &event
                     && write_event.handle() == control_point.handle
                 {
@@ -678,6 +733,8 @@ async fn gatt_events_task<P: PacketPool>(
                         Some(op_code_byte) => match ControlOpCode::try_from(op_code_byte) {
                             Ok(op_code) => {
                                 info!("Control Point Received: {:?}", op_code);
+                                disconnect_after_response =
+                                    matches!(op_code, ControlOpCode::Shutdown);
                                 critical_section::with(|cs| {
                                     let mut device_state = DEVICE_STATE.borrow_ref_mut(cs);
                                     if op_code.counts_as_activity() {
@@ -715,6 +772,11 @@ async fn gatt_events_task<P: PacketPool>(
 
                 if let Some(response) = immediate_response {
                     response.send(channel).await;
+                }
+
+                if disconnect_after_response {
+                    info!("Disconnecting BLE link for shutdown request");
+                    conn.raw().disconnect();
                 }
             }
             _ => {}
