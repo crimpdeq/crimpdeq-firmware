@@ -13,18 +13,22 @@ use embassy_time::{Duration, Timer};
 use esp_hal::{
     Async,
     Config,
-    analog::adc::{Adc, AdcCalCurve, AdcConfig, AdcPin, Attenuation},
     clock::CpuClock,
     delay::Delay,
     gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull},
+    i2c::master::{Config as I2cConfig, I2c},
     interrupt::software::SoftwareInterruptControl,
-    peripherals,
+    rmt::Rmt,
     rtc_cntl::Rtc,
+    time::Rate,
     timer::timg::TimerGroup,
 };
+use esp_hal_smartled::{SmartLedsAdapterAsync, buffer_size_async};
 use esp_radio::ble::controller::BleConnector;
 use esp_storage::FlashStorage;
+use max170xx::asynch::Max17048;
 use panic_rtt_target as _;
+use smart_leds::{RGB8, SmartLedsWriteAsync as _, brightness};
 use trouble_host::prelude::*;
 
 use crate::{
@@ -39,6 +43,7 @@ use crate::{
         MAX_CALIBRATION_POINTS,
         MeasurementTaskStatus,
         ResponseCode,
+        SleepReadySource,
         SleepReason,
         SleepState,
         WeightMeasurementBatch,
@@ -48,6 +53,24 @@ use crate::{
 pub mod ble;
 pub mod hx711;
 pub mod progressor;
+
+const STATUS_LED_COUNT: usize = 1;
+const STATUS_LED_RMT_BUFFER_SIZE: usize = buffer_size_async(STATUS_LED_COUNT);
+const STATUS_LED_BRIGHTNESS: u8 = 24;
+const STATUS_LED_LOW_BATTERY_MV: u32 = 3500;
+const STATUS_LED_CHARGING_RATE_THRESHOLD: f32 = 0.1;
+const STATUS_LED_OFF: RGB8 = RGB8 { r: 0, g: 0, b: 0 };
+const STATUS_LED_DISCONNECTED: RGB8 = RGB8 { r: 0, g: 0, b: 255 };
+const STATUS_LED_CONNECTED: RGB8 = RGB8 { r: 0, g: 255, b: 0 };
+const STATUS_LED_LOW_BATTERY: RGB8 = RGB8 { r: 255, g: 0, b: 0 };
+
+#[derive(Clone, Copy, PartialEq)]
+enum StatusLedMode {
+    Off,
+    Disconnected,
+    Connected,
+    LowBattery,
+}
 
 // Helper macro for static allocation
 macro_rules! mk_static {
@@ -66,9 +89,12 @@ static DEVICE_STATE: Mutex<RefCell<DeviceState>> = Mutex::new(RefCell::new(Devic
     calibration_points: [(0.0, 0.0); MAX_CALIBRATION_POINTS],
     calibration_point_count: 0,
     battery_voltage: 4300,
+    battery_charging: false,
     last_activity_time_ms: 0,
     ble_connected: false,
     sleep_state: SleepState::Awake,
+    sleep_measurement_ready: false,
+    sleep_status_led_ready: false,
 }));
 
 // ESP-IDF App Descriptor
@@ -112,12 +138,31 @@ async fn main(spawner: Spawner) -> ! {
     // Initialize RTC
     let rtc = Rtc::new(peripherals.LPWR);
 
-    // Initialize battery voltage reading
-    let mut adc_config = AdcConfig::new();
-    let analog_pin = peripherals.GPIO1;
-    let battery_pin =
-        adc_config.enable_pin_with_cal::<_, AdcCalCurve<_>>(analog_pin, Attenuation::_11dB);
-    let battery_adc = Adc::new(peripherals.ADC1, adc_config).into_async();
+    // Initialize MAX17048 fuel gauge over I2C.
+    // PCB nets are labelled IO6_SDA/IO7_SCL, but the MAX17048 TDFN datasheet maps
+    // pin 7 to SCL and pin 8 to SDA while the KiCad symbol had those two swapped.
+    // Actual gauge connections: GPIO7=SDA, GPIO6=SCL, GPIO10=/ALRT,
+    // CELL/VDD=+BATT, QSTRT=GND. /ALRT is open-drain and has no external pull-up.
+    let _battery_alert_pin = Input::new(
+        peripherals.GPIO10,
+        InputConfig::default().with_pull(Pull::Up),
+    );
+    let battery_i2c = I2c::new(peripherals.I2C0, I2cConfig::default())
+        .expect("Failed to initialize battery I2C")
+        .with_sda(peripherals.GPIO7)
+        .with_scl(peripherals.GPIO6)
+        .into_async();
+    let battery_gauge = Max17048::new(battery_i2c);
+
+    // Initialize WS2812B status LED on GPIO2 using RMT.
+    let rmt = Rmt::new(peripherals.RMT, Rate::from_mhz(80))
+        .expect("Failed to initialize RMT")
+        .into_async();
+    let status_led_buffer = mk_static!(
+        [esp_hal::rmt::PulseCode; STATUS_LED_RMT_BUFFER_SIZE],
+        [esp_hal::rmt::PulseCode::default(); STATUS_LED_RMT_BUFFER_SIZE]
+    );
+    let status_led = SmartLedsAdapterAsync::new(rmt.channel0, peripherals.GPIO2, status_led_buffer);
 
     // Use the last 6 bytes of the DEVICE_NAME for the address
     let device_name = env!("DEVICE_NAME");
@@ -161,7 +206,8 @@ async fn main(spawner: Spawner) -> ! {
 
     // Spawn tasks
     spawner.spawn(measurement_task(channel, clock_pin, data_pin, delay, flash).unwrap());
-    spawner.spawn(battery_voltage_task(battery_adc, battery_pin).unwrap());
+    spawner.spawn(battery_gauge_task(battery_gauge).unwrap());
+    spawner.spawn(status_led_task(status_led).unwrap());
     spawner.spawn(deep_sleep_task(rtc).unwrap());
 
     let _ = join(ble_task(runner), async {
@@ -226,6 +272,112 @@ async fn ble_task<C: Controller, P: PacketPool>(mut runner: Runner<'_, C, P>) {
     }
 }
 
+fn status_led_mode() -> StatusLedMode {
+    critical_section::with(|cs| {
+        let state = DEVICE_STATE.borrow_ref(cs);
+        if state.sleep_state != SleepState::Awake {
+            StatusLedMode::Off
+        } else if state.battery_voltage <= STATUS_LED_LOW_BATTERY_MV {
+            StatusLedMode::LowBattery
+        } else if state.is_ble_connected() {
+            StatusLedMode::Connected
+        } else {
+            StatusLedMode::Disconnected
+        }
+    })
+}
+
+async fn set_status_led(
+    led: &mut SmartLedsAdapterAsync<'static, STATUS_LED_RMT_BUFFER_SIZE>,
+    color: RGB8,
+) {
+    if let Err(e) = led
+        .write(brightness([color].into_iter(), STATUS_LED_BRIGHTNESS))
+        .await
+    {
+        warn!(
+            "Failed to update WS2812B status LED: {:?}",
+            defmt::Debug2Format(&e)
+        );
+    }
+}
+
+async fn wait_for_sleep_request(timeout: Duration) -> bool {
+    const POLL_INTERVAL_MS: u64 = 50;
+
+    let timeout_ms = timeout.as_millis();
+    let mut elapsed_ms = 0;
+
+    while elapsed_ms < timeout_ms {
+        let sleep_state = critical_section::with(|cs| DEVICE_STATE.borrow_ref(cs).sleep_state);
+        if sleep_state != SleepState::Awake {
+            return true;
+        }
+
+        let step_ms = (timeout_ms - elapsed_ms).min(POLL_INTERVAL_MS);
+        Timer::after(Duration::from_millis(step_ms)).await;
+        elapsed_ms += step_ms;
+    }
+
+    false
+}
+
+#[embassy_executor::task]
+async fn status_led_task(mut led: SmartLedsAdapterAsync<'static, STATUS_LED_RMT_BUFFER_SIZE>) {
+    set_status_led(&mut led, STATUS_LED_OFF).await;
+    let mut sleep_led_ready = false;
+
+    loop {
+        let sleep_state = critical_section::with(|cs| DEVICE_STATE.borrow_ref(cs).sleep_state);
+        match sleep_state {
+            SleepState::Requested(reason) => {
+                if !sleep_led_ready {
+                    info!("Turning off status LED before deep sleep: {:?}", reason);
+                    set_status_led(&mut led, STATUS_LED_OFF).await;
+                    sleep_led_ready = true;
+                    critical_section::with(|cs| {
+                        DEVICE_STATE
+                            .borrow_ref_mut(cs)
+                            .mark_sleep_ready(SleepReadySource::StatusLed);
+                    });
+                }
+                Timer::after(Duration::from_millis(20)).await;
+                continue;
+            }
+            SleepState::Ready(_) => {
+                Timer::after(Duration::from_millis(20)).await;
+                continue;
+            }
+            SleepState::Awake => {
+                sleep_led_ready = false;
+            }
+        }
+
+        match status_led_mode() {
+            StatusLedMode::Off => {
+                set_status_led(&mut led, STATUS_LED_OFF).await;
+                let _ = wait_for_sleep_request(Duration::from_secs(1)).await;
+            }
+            StatusLedMode::Disconnected => {
+                set_status_led(&mut led, STATUS_LED_DISCONNECTED).await;
+                let _ = wait_for_sleep_request(Duration::from_secs(1)).await;
+            }
+            StatusLedMode::Connected => {
+                set_status_led(&mut led, STATUS_LED_CONNECTED).await;
+                let _ = wait_for_sleep_request(Duration::from_secs(1)).await;
+            }
+            StatusLedMode::LowBattery => {
+                set_status_led(&mut led, STATUS_LED_LOW_BATTERY).await;
+                if wait_for_sleep_request(Duration::from_millis(250)).await {
+                    continue;
+                }
+                set_status_led(&mut led, STATUS_LED_OFF).await;
+                let _ = wait_for_sleep_request(Duration::from_millis(750)).await;
+            }
+        }
+    }
+}
+
 #[embassy_executor::task]
 async fn deep_sleep_task(mut rtc: Rtc<'static>) {
     const IDLE_TIMEOUT_MS: u32 = 4 * 60 * 1000; // 4 minutes
@@ -258,12 +410,15 @@ async fn deep_sleep_task(mut rtc: Rtc<'static>) {
                         });
                     }
                 }
+
+                Timer::after(Duration::from_secs(1)).await;
             }
             SleepState::Requested(reason) => {
                 debug!(
                     "Waiting for peripherals to power down before sleep: {:?}",
                     reason
                 );
+                Timer::after(Duration::from_millis(20)).await;
             }
             SleepState::Ready(reason) => {
                 info!("Entering deep sleep: {:?}", reason);
@@ -271,41 +426,42 @@ async fn deep_sleep_task(mut rtc: Rtc<'static>) {
                 rtc.sleep_deep(&[]);
             }
         }
-
-        Timer::after(Duration::from_secs(1)).await;
     }
 }
 
 #[embassy_executor::task]
-async fn battery_voltage_task(
-    mut adc: Adc<'static, peripherals::ADC1<'static>, Async>,
-    mut pin: AdcPin<
-        peripherals::GPIO1<'static>,
-        peripherals::ADC1<'static>,
-        AdcCalCurve<peripherals::ADC1<'static>>,
-    >,
-) {
+async fn battery_gauge_task(mut gauge: Max17048<I2c<'static, Async>>) {
     loop {
-        // Read the battery voltage 20 times and average the results
-        let mut adc_voltage_mv: u32 = 0;
-        for _ in 0..20 {
-            adc_voltage_mv += adc.read_oneshot(&mut pin).await as u32;
-            Timer::after(Duration::from_millis(10)).await;
+        let voltage = gauge.voltage().await;
+        let soc = gauge.soc().await;
+        let charge_rate = gauge.charge_rate().await;
+
+        match (voltage, soc, charge_rate) {
+            (Ok(voltage), Ok(soc), Ok(charge_rate)) => {
+                let battery_voltage_mv = (voltage * 1000.0) as u32;
+                let battery_charging = charge_rate > STATUS_LED_CHARGING_RATE_THRESHOLD;
+                info!(
+                    "Battery: {:?} mV, SOC: {:?}%, charge rate: {:?}%/h",
+                    battery_voltage_mv, soc, charge_rate
+                );
+
+                // Update device state
+                critical_section::with(|cs| {
+                    let mut state = DEVICE_STATE.borrow_ref_mut(cs);
+                    state.battery_voltage = battery_voltage_mv;
+                    state.battery_charging = battery_charging;
+                });
+            }
+            (voltage, soc, charge_rate) => {
+                warn!(
+                    "Failed to read MAX17048 battery gauge: voltage={:?}, soc={:?}, charge_rate={:?}",
+                    defmt::Debug2Format(&voltage),
+                    defmt::Debug2Format(&soc),
+                    defmt::Debug2Format(&charge_rate)
+                );
+            }
         }
-        let adc_voltage_mv = (adc_voltage_mv / 20) as u16;
-        debug!("ADC voltage: {:?}", adc_voltage_mv);
 
-        // Calculate battery voltage using voltage divider formula
-        // Voltage divider: R1=33k, R2=10k
-        // Formula: V_battery = V_adc * (R1 + R2) / R2
-        let battery_voltage_mv = (adc_voltage_mv as u32 * 43) / 10;
-        info!("Battery voltage: {:?}", battery_voltage_mv);
-
-        // Update device state
-        critical_section::with(|cs| {
-            let mut state = DEVICE_STATE.borrow_ref_mut(cs);
-            state.battery_voltage = battery_voltage_mv;
-        });
         Timer::after(Duration::from_secs(45)).await;
     }
 }
@@ -350,7 +506,9 @@ async fn measurement_task(
                     load_cell.power_down();
                     hx711_powered_down = true;
                     critical_section::with(|cs| {
-                        DEVICE_STATE.borrow_ref_mut(cs).mark_sleep_ready();
+                        DEVICE_STATE
+                            .borrow_ref_mut(cs)
+                            .mark_sleep_ready(SleepReadySource::Measurement);
                     });
                 }
                 Timer::after(Duration::from_millis(20)).await;
@@ -566,6 +724,7 @@ async fn gatt_events_task<P: PacketPool>(
                 break;
             }
             GattConnectionEvent::Gatt { event } => {
+                let mut disconnect_after_response = false;
                 let immediate_response = if let GattEvent::Write(write_event) = &event
                     && write_event.handle() == control_point.handle
                 {
@@ -574,6 +733,8 @@ async fn gatt_events_task<P: PacketPool>(
                         Some(op_code_byte) => match ControlOpCode::try_from(op_code_byte) {
                             Ok(op_code) => {
                                 info!("Control Point Received: {:?}", op_code);
+                                disconnect_after_response =
+                                    matches!(op_code, ControlOpCode::Shutdown);
                                 critical_section::with(|cs| {
                                     let mut device_state = DEVICE_STATE.borrow_ref_mut(cs);
                                     if op_code.counts_as_activity() {
@@ -611,6 +772,11 @@ async fn gatt_events_task<P: PacketPool>(
 
                 if let Some(response) = immediate_response {
                     response.send(channel).await;
+                }
+
+                if disconnect_after_response {
+                    info!("Disconnecting BLE link for shutdown request");
+                    conn.raw().disconnect();
                 }
             }
             _ => {}
