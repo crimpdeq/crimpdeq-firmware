@@ -17,16 +17,31 @@ pub type ControlResponseChannel = Channel<NoopRawMutex, DataPoint, CONTROL_RESPO
 /// Ring buffer used to decouple measurement acquisition from BLE transmission.
 pub type MeasurementDataChannel = Channel<NoopRawMutex, DataPoint, MEASUREMENT_CHANNEL_SIZE>;
 
-/// Number of samples packed into each BLE measurement packet.
-pub const SAMPLES_PER_PACKET: usize = 5;
+/// Maximum number of samples packed into one BLE measurement packet.
+pub const MAX_SAMPLES_PER_PACKET: usize = 10;
 /// Size in bytes of one packed weight measurement (f32 weight + u32 timestamp).
 const WEIGHT_MEASUREMENT_SIZE: usize = 8;
+/// ATT notification opcode/handle plus the Progressor response code/length.
+const MEASUREMENT_PACKET_OVERHEAD: usize = 5;
 /// Maximum size of the payload written to the Control Point characteristic.
 pub const CONTROL_POINT_MAX_PAYLOAD_SIZE: usize = 10;
 /// Batch of weight measurements sent in a single BLE packet.
-pub type WeightMeasurementBatch = arrayvec::ArrayVec<(f32, u32), SAMPLES_PER_PACKET>;
+pub type WeightMeasurementBatch = arrayvec::ArrayVec<(f32, u32), MAX_SAMPLES_PER_PACKET>;
 /// Maximum size of the payload sent in a Data Point notification.
-pub const DATA_POINT_MAX_PAYLOAD_SIZE: usize = SAMPLES_PER_PACKET * WEIGHT_MEASUREMENT_SIZE;
+pub const DATA_POINT_MAX_PAYLOAD_SIZE: usize = MAX_SAMPLES_PER_PACKET * WEIGHT_MEASUREMENT_SIZE;
+
+/// Choose the largest batch that fits the negotiated ATT MTU.
+pub const fn measurement_batch_size_for_att_mtu(att_mtu: u16) -> usize {
+    let available = (att_mtu as usize).saturating_sub(MEASUREMENT_PACKET_OVERHEAD);
+    let batch_size = available / WEIGHT_MEASUREMENT_SIZE;
+    if batch_size == 0 {
+        1
+    } else if batch_size > MAX_SAMPLES_PER_PACKET {
+        MAX_SAMPLES_PER_PACKET
+    } else {
+        batch_size
+    }
+}
 
 /// Number of bytes in the device ID
 const DEVICE_ID_SIZE: usize = 6;
@@ -97,6 +112,8 @@ pub struct DeviceState {
     pub last_activity_time_ms: u32,
     /// Whether BLE is currently connected.
     pub ble_connected: bool,
+    /// Number of measurements to pack according to the negotiated ATT MTU.
+    pub measurement_batch_size: usize,
     /// Current sleep transition state.
     pub sleep_state: SleepState,
     /// Whether the measurement task has powered down its peripherals for sleep.
@@ -116,6 +133,7 @@ impl Default for DeviceState {
             battery_charging: false,
             last_activity_time_ms: 0,
             ble_connected: false,
+            measurement_batch_size: measurement_batch_size_for_att_mtu(23),
             sleep_state: SleepState::Awake,
             sleep_measurement_ready: false,
             sleep_status_led_ready: false,

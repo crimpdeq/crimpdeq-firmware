@@ -54,6 +54,7 @@ use crate::{
         SleepReason,
         SleepState,
         WeightMeasurementBatch,
+        measurement_batch_size_for_att_mtu,
     },
 };
 
@@ -99,10 +100,31 @@ static DEVICE_STATE: Mutex<RefCell<DeviceState>> = Mutex::new(RefCell::new(Devic
     battery_charging: false,
     last_activity_time_ms: 0,
     ble_connected: false,
+    measurement_batch_size: measurement_batch_size_for_att_mtu(23),
     sleep_state: SleepState::Awake,
     sleep_measurement_ready: false,
     sleep_status_led_ready: false,
 }));
+
+fn update_measurement_batch_size(att_mtu: u16) {
+    let batch_size = measurement_batch_size_for_att_mtu(att_mtu);
+    let changed = critical_section::with(|cs| {
+        let mut state = DEVICE_STATE.borrow_ref_mut(cs);
+        if state.measurement_batch_size == batch_size {
+            false
+        } else {
+            state.measurement_batch_size = batch_size;
+            true
+        }
+    });
+
+    if changed {
+        info!(
+            "ATT MTU {} selects {} measurements per packet",
+            att_mtu, batch_size
+        );
+    }
+}
 
 // ESP-IDF App Descriptor
 esp_bootloader_esp_idf::esp_app_desc!();
@@ -241,6 +263,10 @@ async fn main(spawner: Spawner) -> ! {
                 Ok(conn) => {
                     info!("BLE connection established");
 
+                    let initial_att_mtu = conn.raw().att_mtu();
+                    update_measurement_batch_size(initial_att_mtu);
+                    info!("Initial ATT MTU: {}", initial_att_mtu);
+
                     let initial_params = conn.raw().params();
                     info!(
                         "Initial BLE parameters: interval={} us, latency={}",
@@ -255,8 +281,7 @@ async fn main(spawner: Spawner) -> ! {
                         );
                     }
 
-                    // Keep the link interval short enough to carry 600 samples/s
-                    // in five-sample measurement notifications.
+                    // Keep the link interval short enough to carry 600 samples/s.
                     let params = trouble_host::prelude::RequestedConnParams {
                         min_connection_interval: Duration::from_micros(7_500),
                         max_connection_interval: Duration::from_millis(15),
@@ -572,14 +597,16 @@ async fn measurement_task(
 
     loop {
         // Get current device state
-        let (sleep_state, status, start_time) = critical_section::with(|cs| {
-            let state = DEVICE_STATE.borrow_ref(cs);
-            (
-                state.sleep_state,
-                state.measurement_status,
-                state.start_time,
-            )
-        });
+        let (sleep_state, status, start_time, measurement_batch_size) =
+            critical_section::with(|cs| {
+                let state = DEVICE_STATE.borrow_ref(cs);
+                (
+                    state.sleep_state,
+                    state.measurement_status,
+                    state.start_time,
+                    state.measurement_batch_size,
+                )
+            });
 
         if ads1220_powered_down && sleep_state == SleepState::Awake {
             info!("Waking ADS1220 after sleep request was cancelled");
@@ -657,7 +684,7 @@ async fn measurement_task(
                 let now = (esp_hal::time::Instant::now().duration_since_epoch()).as_micros() as u32;
                 let timestamp = now.wrapping_sub(start_time);
                 measurement_buffer.push((weight, timestamp));
-                if measurement_buffer.is_full() {
+                if measurement_buffer.len() >= measurement_batch_size {
                     enqueue_measurement_batch(
                         measurement_channel,
                         core::mem::take(&mut measurement_buffer),
@@ -934,6 +961,9 @@ async fn data_processing_task<P: PacketPool>(
     let data_point_handle = &server.progressor.data_point;
 
     loop {
+        // The peer may negotiate a larger MTU after the connection starts.
+        update_measurement_batch_size(conn.raw().att_mtu());
+
         // Always drain an already-queued control response before measurements.
         let data_point = if let Ok(control_response) = control_channel.try_receive() {
             control_response
