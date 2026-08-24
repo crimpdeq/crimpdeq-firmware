@@ -61,6 +61,7 @@ use crate::{
         SleepReason,
         SleepState,
         WeightMeasurementBatch,
+        measurement_batch_size_for_att_mtu,
     },
 };
 
@@ -144,6 +145,20 @@ fn update_device_state<R>(update: impl FnOnce(&mut DeviceState) -> R) -> R {
         STATE_CHANGED.sender().send(());
     }
     result
+}
+
+fn update_measurement_batch_size(att_mtu: u16) {
+    let batch_size = measurement_batch_size_for_att_mtu(att_mtu);
+    let previous = update_device_state(|state| {
+        core::mem::replace(&mut state.measurement_batch_size, batch_size)
+    });
+
+    if previous != batch_size {
+        info!(
+            "ATT MTU {} selects {} measurements per packet",
+            att_mtu, batch_size
+        );
+    }
 }
 
 // ESP-IDF App Descriptor
@@ -280,6 +295,10 @@ async fn main(spawner: Spawner) -> ! {
             match advertise(&mut peripheral, &server).await {
                 Ok(conn) => {
                     info!("BLE connection established");
+
+                    let initial_att_mtu = conn.raw().att_mtu();
+                    update_measurement_batch_size(initial_att_mtu);
+                    info!("Initial ATT MTU: {}", initial_att_mtu);
 
                     let initial_params = conn.raw().params();
                     info!(
@@ -636,14 +655,16 @@ async fn measurement_task(
 
     loop {
         // Get current device state
-        let (sleep_state, status, start_time) = critical_section::with(|cs| {
-            let state = DEVICE_STATE.borrow_ref(cs);
-            (
-                state.sleep_state,
-                state.measurement_status,
-                state.start_time,
-            )
-        });
+        let (sleep_state, status, start_time, measurement_batch_size) =
+            critical_section::with(|cs| {
+                let state = DEVICE_STATE.borrow_ref(cs);
+                (
+                    state.sleep_state,
+                    state.measurement_status,
+                    state.start_time,
+                    state.measurement_batch_size,
+                )
+            });
 
         match sleep_state {
             SleepState::Requested(reason) => {
@@ -757,7 +778,7 @@ async fn measurement_task(
                 let now = (esp_hal::time::Instant::now().duration_since_epoch()).as_micros() as u32;
                 let timestamp = now.wrapping_sub(start_time);
                 measurement_buffer.push((weight, timestamp));
-                if measurement_buffer.is_full() {
+                if measurement_buffer.len() >= measurement_batch_size {
                     enqueue_measurement_batch(
                         measurement_channel,
                         core::mem::take(&mut measurement_buffer),
@@ -899,8 +920,7 @@ async fn notify_calibration_factor(
         .await;
 }
 
-/// Connection parameters while measuring. The interval is short enough to carry 600 samples/s in
-/// five-sample measurement notifications.
+/// Connection parameters while measuring. The interval is short enough to carry 600 samples/s.
 const MEASURING_CONNECTION_PARAMS: RequestedConnParams = RequestedConnParams {
     min_connection_interval: Duration::from_micros(7_500),
     max_connection_interval: Duration::from_millis(15),
@@ -1070,6 +1090,9 @@ async fn data_processing_task<P: PacketPool>(
     let data_point_handle = &server.progressor.data_point;
 
     loop {
+        // The peer may negotiate a larger MTU after the connection starts.
+        update_measurement_batch_size(conn.raw().att_mtu());
+
         // Always drain an already-queued control response before measurements.
         let data_point = if let Ok(control_response) = control_channel.try_receive() {
             control_response
