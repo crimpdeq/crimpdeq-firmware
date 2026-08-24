@@ -2,8 +2,7 @@
 //!
 //! The revision-3 PCB connects the ADS1220 over SPI and uses the bridge
 //! excitation voltage as the ADC reference. The dedicated DRDY pin is not
-//! connected, so reads use the RDATA command at the protocol's nominal 80 Hz
-//! sample cadence.
+//! connected, so reads use the RDATA command at a nominal 600 Hz cadence.
 
 use core::fmt;
 
@@ -24,21 +23,23 @@ const COMMAND_WREG: u8 = 0x40;
 const REGISTER_COUNT: usize = 4;
 const CONFIGURATION_REGISTERS: [u8; REGISTER_COUNT] = [
     0x0E, // AIN0-AIN1, gain 128, PGA enabled
-    0x44, // 90 SPS, normal mode, continuous conversion
+    0xA4, // 600 SPS, normal mode, continuous conversion
     0x40, // External reference on REFP0/REFN0
     0x00, // IDACs disabled; dedicated DRDY mode
 ];
 
 const RESET_DELAY: Duration = Duration::from_micros(100);
-const SAMPLE_INTERVAL: Duration = Duration::from_micros(12_500);
+const SAMPLE_INTERVAL: Duration = Duration::from_hz(600);
 
 /// Magic value used to validate stored calibration data.
 const CALIBRATION_STORAGE_MAGIC: u32 = 0x4344_5146;
 /// Version 2 invalidates calibration factors saved for the old HX711 front end.
 const CALIBRATION_STORAGE_VERSION: u32 = 2;
 const CALIBRATION_STORAGE_SIZE: usize = 16;
-const DEFAULT_TARING_SAMPLES: usize = 16;
-const DEFAULT_CALIBRATION_SAMPLES: usize = 100;
+// Preserve approximately the previous 200 ms tare and 1.25 s calibration
+// windows after increasing the sample rate from 80 Hz to 600 Hz.
+const DEFAULT_TARING_SAMPLES: usize = 120;
+const DEFAULT_CALIBRATION_SAMPLES: usize = 750;
 const DEFAULT_CALIBRATION_FACTOR: f32 = 0.08;
 
 /// Errors produced by the ADS1220 load-cell driver.
@@ -116,7 +117,7 @@ impl<'d> Ads1220<'d> {
 
         self.send_command(COMMAND_START_SYNC).await?;
         self.reset_sample_cadence();
-        info!("ADS1220 initialized at 90 SPS with 80 Hz read cadence");
+        info!("ADS1220 initialized at 600 SPS");
         Ok(())
     }
 
@@ -206,11 +207,11 @@ impl<'d> Ads1220<'d> {
     }
 
     async fn take_samples(&mut self, num_samples: usize) -> Result<f32, Ads1220Error> {
-        let mut total = 0.0;
+        let mut total = 0i64;
         for _ in 0..num_samples {
-            total += self.read_raw().await? as f32;
+            total += i64::from(self.read_raw().await?);
         }
-        Ok(total / num_samples as f32)
+        Ok(total as f32 / num_samples as f32)
     }
 
     /// Put the ADC into its low-power mode after the current conversion.

@@ -244,7 +244,7 @@ impl DeviceState {
 pub enum ControlOpCode {
     /// Command used to zero weight when no load is applied
     TareScale = 0x64,
-    /// Start continuous measurement. Sample rate is 80Hz
+    /// Start continuous measurement at the configured firmware sample rate.
     StartMeasurement = 0x65,
     /// Stop weight measurement. This should be done before sampling the battery voltage
     StopMeasurement = 0x66,

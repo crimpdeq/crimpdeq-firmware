@@ -227,9 +227,11 @@ async fn main(spawner: Spawner) -> ! {
                 Ok(conn) => {
                     info!("BLE connection established");
 
+                    // Keep the link interval short enough to carry 600 samples/s
+                    // in five-sample measurement notifications.
                     let params = trouble_host::prelude::RequestedConnParams {
-                        min_connection_interval: Duration::from_millis(15),
-                        max_connection_interval: Duration::from_millis(45),
+                        min_connection_interval: Duration::from_micros(7_500),
+                        max_connection_interval: Duration::from_millis(15),
                         max_latency: 0,
                         min_event_length: Duration::from_millis(0),
                         max_event_length: Duration::from_millis(0),
