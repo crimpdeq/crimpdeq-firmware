@@ -20,11 +20,14 @@ use esp_hal::{
     Async,
     Config,
     clock::CpuClock,
-    delay::Delay,
     gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull},
     i2c::master::{Config as I2cConfig, I2c},
     rmt::Rmt,
     rtc_cntl::sleep::{LowPower, RtcSleepConfig},
+    spi::{
+        Mode as SpiMode,
+        master::{Config as SpiConfig, Spi},
+    },
     time::Rate,
     timer::timg::TimerGroup,
 };
@@ -36,8 +39,8 @@ use smart_leds::{RGB8, SmartLedsWriteAsync as _, brightness};
 use trouble_host::prelude::*;
 
 use crate::{
+    ads1220::Ads1220,
     ble::{CONNECTIONS_MAX, DEVICE_NAME, L2CAP_CHANNELS_MAX, L2CAP_MTU, Server, advertise},
-    hx711::Hx711,
     progressor::{
         CalibrationPoint,
         ControlOpCode,
@@ -56,8 +59,8 @@ use crate::{
     },
 };
 
+pub mod ads1220;
 pub mod ble;
-pub mod hx711;
 pub mod progressor;
 
 const STATUS_LED_COUNT: usize = 1;
@@ -164,13 +167,21 @@ async fn main(spawner: Spawner) -> ! {
     let connector = BleConnector::new(bluetooth, ble_config).unwrap();
     let controller: ExternalController<_, 1> = ExternalController::new(connector);
 
-    // Initialize load cell pins
-    let clock_pin = Output::new(peripherals.GPIO5, Level::Low, OutputConfig::default());
-    let data_pin = Input::new(
-        peripherals.GPIO4,
-        InputConfig::default().with_pull(Pull::None),
-    );
-    let delay = Delay::new();
+    // Initialize the revision-3 ADS1220 load-cell front end.
+    // GPIO5=SCLK, GPIO4=DIN/MOSI, GPIO3=/CS, GPIO1=DOUT/MISO.
+    let load_cell_spi = Spi::new(
+        peripherals.SPI2,
+        SpiConfig::default()
+            .with_frequency(Rate::from_mhz(2))
+            .with_mode(SpiMode::_1),
+    )
+    .expect("Failed to initialize ADS1220 SPI")
+    .with_sck(peripherals.GPIO5)
+    .with_mosi(peripherals.GPIO4)
+    .with_miso(peripherals.GPIO1)
+    .into_async();
+    let load_cell_chip_select =
+        Output::new(peripherals.GPIO3, Level::High, OutputConfig::default());
 
     // Initialize Flash Storage
     let flash = FlashStorage::new(peripherals.FLASH);
@@ -244,7 +255,7 @@ async fn main(spawner: Spawner) -> ! {
     update_device_state(|state| state.on_ble_disconnected());
 
     // Spawn tasks
-    spawner.spawn(measurement_task(channel, clock_pin, data_pin, delay, flash).unwrap());
+    spawner.spawn(measurement_task(channel, load_cell_spi, load_cell_chip_select, flash).unwrap());
     spawner.spawn(battery_gauge_task(battery_gauge, channel).unwrap());
     spawner.spawn(status_led_task(status_led).unwrap());
     spawner.spawn(deep_sleep_task(low_power).unwrap());
@@ -534,18 +545,33 @@ async fn battery_gauge_task(
     }
 }
 
+async fn initialize_load_cell(load_cell: &mut Ads1220<'_>) {
+    let mut attempt = 1u32;
+    loop {
+        match load_cell.initialize().await {
+            Ok(()) => return,
+            Err(error) => {
+                error!(
+                    "ADS1220 initialization attempt {} failed: {:?}",
+                    attempt,
+                    defmt::Debug2Format(&error)
+                );
+                attempt = attempt.saturating_add(1);
+                Timer::after(Duration::from_millis(250)).await;
+            }
+        }
+    }
+}
+
 #[embassy_executor::task]
 async fn measurement_task(
     channel: &'static DataPointChannel,
-    clock_pin: Output<'static>,
-    data_pin: Input<'static>,
-    delay: Delay,
+    spi: Spi<'static, Async>,
+    chip_select: Output<'static>,
     flash: FlashStorage<'static>,
 ) {
-    let mut load_cell = Hx711::new(data_pin, clock_pin, delay, flash);
-    if let Err(e) = load_cell.settle().await {
-        error!("Initial HX711 settle failed: {:?}", defmt::Debug2Format(&e));
-    }
+    let mut load_cell = Ads1220::new(spi, chip_select, flash);
+    initialize_load_cell(&mut load_cell).await;
     if let Err(e) = load_cell.tare().await {
         error!("Initial tare failed: {:?}", defmt::Debug2Format(&e));
     }
@@ -570,8 +596,13 @@ async fn measurement_task(
         match sleep_state {
             SleepState::Requested(reason) => {
                 if !load_cell.is_powered_down() {
-                    info!("Powering down HX711 before deep sleep: {:?}", reason);
-                    load_cell.power_down();
+                    info!("Powering down ADS1220 before deep sleep: {:?}", reason);
+                    if let Err(e) = load_cell.power_down().await {
+                        error!(
+                            "Failed to power down ADS1220: {:?}",
+                            defmt::Debug2Format(&e)
+                        );
+                    }
                 }
                 measurement_buffer.clear();
                 streaming = false;
@@ -595,10 +626,10 @@ async fn measurement_task(
                     .await;
             }
             if command.uses_load_cell() && load_cell.is_powered_down() {
-                info!("Waking HX711 for {:?}", command);
+                info!("Waking ADS1220 for {:?}", command);
                 if let Err(e) = load_cell.wake().await {
                     error!(
-                        "HX711 wake failed, dropping {:?}: {:?}",
+                        "ADS1220 wake failed, dropping {:?}: {:?}",
                         command,
                         defmt::Debug2Format(&e)
                     );
@@ -620,8 +651,13 @@ async fn measurement_task(
                     .await;
                 }
                 if !load_cell.is_powered_down() {
-                    debug!("Powering down idle HX711");
-                    load_cell.power_down();
+                    debug!("Powering down idle ADS1220");
+                    if let Err(e) = load_cell.power_down().await {
+                        error!(
+                            "Failed to power down ADS1220: {:?}",
+                            defmt::Debug2Format(&e)
+                        );
+                    }
                 }
                 select(
                     state_changes.changed(),
@@ -632,15 +668,15 @@ async fn measurement_task(
             MeasurementTaskStatus::Enabled => {
                 if !streaming {
                     if load_cell.is_powered_down() {
-                        info!("Waking HX711");
+                        info!("Waking ADS1220");
                     }
                     if let Err(e) = load_cell.wake().await {
-                        // The HX711 is powered down again, so the next iteration retries.
-                        error!("HX711 wake failed: {:?}", defmt::Debug2Format(&e));
+                        // The ADS1220 is still powered down, so the next iteration retries.
+                        error!("ADS1220 wake failed: {:?}", defmt::Debug2Format(&e));
                         continue;
                     }
-                    // Start the timestamps once the HX711 delivers settled readings, also when a
-                    // queued tare or calibration woke it before the measurement started.
+                    // Start the timestamps once the ADS1220 converts, also when a queued tare or
+                    // calibration woke it before the measurement started.
                     update_device_state(|state| {
                         if state.measurement_status == MeasurementTaskStatus::Enabled {
                             state.start_time = (esp_hal::time::Instant::now()
@@ -649,7 +685,7 @@ async fn measurement_task(
                         }
                     });
                     streaming = true;
-                    // The state may have changed while the HX711 settled.
+                    // The state may have changed while the ADS1220 woke.
                     continue;
                 }
 
@@ -681,7 +717,7 @@ async fn measurement_task(
 /// Runs a one-shot load cell command.
 async fn run_load_cell_command(
     command: LoadCellCommand,
-    load_cell: &mut Hx711<'static>,
+    load_cell: &mut Ads1220<'static>,
     channel: &'static DataPointChannel,
 ) {
     match command {
