@@ -8,10 +8,14 @@ use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
 use esp_hal::time;
 use trouble_host::types::gatt_traits::{AsGatt, FromGatt, FromGattError};
 
-/// Size of the channel used to send data points
-const DATA_POINT_COMMAND_CHANNEL_SIZE: usize = 80;
-/// Channel used to send data points
-pub type DataPointChannel = Channel<NoopRawMutex, DataPoint, DATA_POINT_COMMAND_CHANNEL_SIZE>;
+/// Number of high-priority control responses that can be queued.
+const CONTROL_RESPONSE_CHANNEL_SIZE: usize = 16;
+/// Number of measurement packets retained by the BLE transport ring buffer.
+const MEASUREMENT_CHANNEL_SIZE: usize = 80;
+/// Channel reserved for calibration, status, and other control responses.
+pub type ControlResponseChannel = Channel<NoopRawMutex, DataPoint, CONTROL_RESPONSE_CHANNEL_SIZE>;
+/// Ring buffer used to decouple measurement acquisition from BLE transmission.
+pub type MeasurementDataChannel = Channel<NoopRawMutex, DataPoint, MEASUREMENT_CHANNEL_SIZE>;
 
 /// Number of samples packed into each BLE measurement packet.
 pub const SAMPLES_PER_PACKET: usize = 5;
@@ -506,7 +510,7 @@ impl DataPoint {
     }
 
     /// Send data point to the channel.
-    pub async fn send(self, channel: &'static DataPointChannel) {
+    pub async fn send(self, channel: &'static ControlResponseChannel) {
         channel.send(self).await;
     }
 

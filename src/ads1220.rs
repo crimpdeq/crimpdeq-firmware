@@ -184,21 +184,15 @@ impl<'d> Ads1220<'d> {
     async fn read_raw(&mut self) -> Result<i32, Ads1220Error> {
         self.wait_for_sample_cadence().await;
 
-        let mut bytes = [0; 3];
+        // The first received byte overlaps the RDATA command and is discarded.
+        // The conversion result follows immediately in the same SPI transfer.
+        let mut transaction = [COMMAND_RDATA, 0, 0, 0];
         self.chip_select.set_low();
-        let result = async {
-            SpiBus::write(&mut self.spi, &[COMMAND_RDATA])
-                .await
-                .map_err(|_| Ads1220Error::Spi)?;
-            SpiBus::read(&mut self.spi, &mut bytes)
-                .await
-                .map_err(|_| Ads1220Error::Spi)
-        }
-        .await;
+        let result = SpiBus::transfer_in_place(&mut self.spi, &mut transaction).await;
         self.chip_select.set_high();
-        result?;
+        result.map_err(|_| Ads1220Error::Spi)?;
 
-        let raw = u32::from_be_bytes([0, bytes[0], bytes[1], bytes[2]]);
+        let raw = u32::from_be_bytes([0, transaction[1], transaction[2], transaction[3]]);
         Ok(if raw & 0x0080_0000 != 0 {
             (raw | 0xFF00_0000) as i32
         } else {
