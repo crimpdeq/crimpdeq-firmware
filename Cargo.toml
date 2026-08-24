@@ -14,7 +14,7 @@ embassy-executor = { version = "0.10.0", features = ["defmt"] }
 embassy-futures = { version = "0.1.2", features = ["defmt"] }
 embassy-sync = { version = "0.7.2", features = ["defmt"] }
 embassy-time = { version = "0.5.1", features = ["defmt"] }
-embedded-hal = "1.0.0"
+embedded-hal-async = "1.0.0"
 embedded-storage = "0.3.1"
 esp-alloc = { version = "0.10.0", features = ["defmt"] }
 esp-bootloader-esp-idf = { version = "0.5.0", features = ["esp32c3"] }
