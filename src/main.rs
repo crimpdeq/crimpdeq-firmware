@@ -176,10 +176,10 @@ async fn main(spawner: Spawner) -> ! {
     let rtc = Rtc::new(peripherals.LPWR);
 
     // Initialize MAX17048 fuel gauge over I2C.
-    // PCB nets are labelled IO6_SDA/IO7_SCL, but the MAX17048 TDFN datasheet maps
-    // pin 7 to SCL and pin 8 to SDA while the KiCad symbol had those two swapped.
-    // Actual gauge connections: GPIO7=SDA, GPIO6=SCL, GPIO10=/ALRT,
-    // CELL/VDD=+BATT, QSTRT=GND. /ALRT is open-drain and has no external pull-up.
+    // GPIO7=SDA (U5.8, IO7_SDA, R21), GPIO6=SCL (U5.7, IO6_SCL, R20),
+    // GPIO10=/ALRT (U5.5, IO10_ALRT, R22). CELL/VDD=+BATT, QSTRT=GND.
+    // Revision-3 R20/R21/R22 provide 10k pull-ups on SCL/SDA/ALRT;
+    // retain the internal ALRT pull-up.
     let _battery_alert_pin = Input::new(
         peripherals.GPIO10,
         InputConfig::default().with_pull(Pull::Up),
