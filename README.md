@@ -35,6 +35,24 @@ Crimpdeq is a fully open-source project based on an [ESP32-C3](https://github.co
 
 The [Crimpdeq Book](https://book.crimpdeq.com/) covers assembly, calibration, charging, and general usage. For repository-specific instructions, see the [Firmware](https://book.crimpdeq.com/firmware.html) chapter for prerequisites, how to build, flash, and run the firmware, how to enable logs, and troubleshooting.
 
+### MAX17048 I²C wiring
+
+MAX17048 I²C uses GPIO7=SDA and GPIO6=SCL, matching the TDFN pad functions
+and the PCB net labels:
+
+| Signal | ESP32 GPIO | U5 pad | PCB net | 10 kΩ pull-up |
+| --- | --- | --- | --- | --- |
+| SDA | 7 | 8 | `IO7_SDA` | R21 |
+| SCL | 6 | 7 | `IO6_SCL` | R20 |
+| ALERT | 10 | 5 | `IO10_ALRT` | R22 |
+
+Keep `.with_sda(peripherals.GPIO7)` and `.with_scl(peripherals.GPIO6)` in
+`src/main.rs`. Coordinate any future pin-map change with the PCB.
+
+To validate on hardware, build with `DEFMT_LOG=info`, flash, and confirm the
+`Battery:` log reports voltage, state of charge, and charge rate without
+`Failed to read MAX17048 battery gauge` warnings. Readings occur every 45 seconds.
+
 ## Contributing
 Contributions are welcome! Feel free to:
 - Submit PRs for bug fixes or new features
