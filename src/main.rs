@@ -17,13 +17,12 @@ use esp_hal::{
     delay::Delay,
     gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull},
     i2c::master::{Config as I2cConfig, I2c},
-    interrupt::software::SoftwareInterruptControl,
     rmt::Rmt,
-    rtc_cntl::Rtc,
+    rtc_cntl::sleep::{LowPower, RtcSleepConfig},
     time::Rate,
     timer::timg::TimerGroup,
 };
-use esp_hal_smartled::{SmartLedsAdapterAsync, buffer_size_async};
+use esp_hal_smartled::{RmtSmartLeds, WS2812B_TIMING, buffer_size, color_order};
 use esp_radio::ble::controller::BleConnector;
 use esp_storage::FlashStorage;
 use max170xx::asynch::Max17048;
@@ -55,7 +54,7 @@ pub mod hx711;
 pub mod progressor;
 
 const STATUS_LED_COUNT: usize = 1;
-const STATUS_LED_RMT_BUFFER_SIZE: usize = buffer_size_async(STATUS_LED_COUNT);
+const STATUS_LED_RMT_BUFFER_SIZE: usize = buffer_size::<RGB8>(STATUS_LED_COUNT);
 const STATUS_LED_BRIGHTNESS: u8 = 24;
 const STATUS_LED_LOW_BATTERY_MV: u32 = 3500;
 const STATUS_LED_CHARGING_RATE_THRESHOLD: f32 = 0.1;
@@ -63,6 +62,7 @@ const STATUS_LED_OFF: RGB8 = RGB8 { r: 0, g: 0, b: 0 };
 const STATUS_LED_DISCONNECTED: RGB8 = RGB8 { r: 0, g: 0, b: 255 };
 const STATUS_LED_CONNECTED: RGB8 = RGB8 { r: 0, g: 255, b: 0 };
 const STATUS_LED_LOW_BATTERY: RGB8 = RGB8 { r: 255, g: 0, b: 0 };
+type StatusLed = RmtSmartLeds<'static, STATUS_LED_RMT_BUFFER_SIZE, Async, RGB8, color_order::Grb>;
 
 #[derive(Clone, Copy, PartialEq)]
 enum StatusLedMode {
@@ -114,8 +114,7 @@ async fn main(spawner: Spawner) -> ! {
 
     // Initialize RTOS
     let timg0 = TimerGroup::new(peripherals.TIMG0);
-    let sw_interrupt = SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
-    esp_rtos::start(timg0.timer0, sw_interrupt.software_interrupt0);
+    esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
 
     // Initialize BLE
     let bluetooth = peripherals.BT;
@@ -135,8 +134,8 @@ async fn main(spawner: Spawner) -> ! {
     // Initialize Flash Storage
     let flash = FlashStorage::new(peripherals.FLASH);
 
-    // Initialize RTC
-    let rtc = Rtc::new(peripherals.LPWR);
+    // Initialize low-power control.
+    let low_power = LowPower::new(peripherals.LPWR);
 
     // Initialize MAX17048 fuel gauge over I2C.
     // PCB nets are labelled IO6_SDA/IO7_SCL, but the MAX17048 TDFN datasheet maps
@@ -155,14 +154,17 @@ async fn main(spawner: Spawner) -> ! {
     let battery_gauge = Max17048::new(battery_i2c);
 
     // Initialize WS2812B status LED on GPIO2 using RMT.
-    let rmt = Rmt::new(peripherals.RMT, Rate::from_mhz(80))
+    let status_led_rmt_rate = Rate::from_mhz(80);
+    let rmt = Rmt::new(peripherals.RMT, status_led_rmt_rate)
         .expect("Failed to initialize RMT")
         .into_async();
-    let status_led_buffer = mk_static!(
-        [esp_hal::rmt::PulseCode; STATUS_LED_RMT_BUFFER_SIZE],
-        [esp_hal::rmt::PulseCode::default(); STATUS_LED_RMT_BUFFER_SIZE]
-    );
-    let status_led = SmartLedsAdapterAsync::new(rmt.channel0, peripherals.GPIO2, status_led_buffer);
+    let status_led = StatusLed::new(
+        WS2812B_TIMING,
+        rmt.channel0,
+        peripherals.GPIO2,
+        status_led_rmt_rate,
+    )
+    .expect("Failed to initialize status LED");
 
     // Use the last 6 bytes of the DEVICE_NAME for the address
     let device_name = env!("DEVICE_NAME");
@@ -182,12 +184,11 @@ async fn main(spawner: Spawner) -> ! {
         L2CAP_CHANNELS_MAX,
         L2CAP_MTU,
     > = HostResources::new();
-    let stack = trouble_host::new(controller, &mut resources).set_random_address(address);
-    let Host {
-        mut peripheral,
-        runner,
-        ..
-    } = stack.build();
+    let stack = trouble_host::new(controller, &mut resources)
+        .set_random_address(address)
+        .build();
+    let mut peripheral = stack.peripheral();
+    let runner = stack.runner();
 
     info!("Starting advertising and GATT service");
     let server = Server::new_with_config(GapConfig::Peripheral(PeripheralConfig {
@@ -208,7 +209,7 @@ async fn main(spawner: Spawner) -> ! {
     spawner.spawn(measurement_task(channel, clock_pin, data_pin, delay, flash).unwrap());
     spawner.spawn(battery_gauge_task(battery_gauge).unwrap());
     spawner.spawn(status_led_task(status_led).unwrap());
-    spawner.spawn(deep_sleep_task(rtc).unwrap());
+    spawner.spawn(deep_sleep_task(low_power).unwrap());
 
     let _ = join(ble_task(runner), async {
         loop {
@@ -287,10 +288,7 @@ fn status_led_mode() -> StatusLedMode {
     })
 }
 
-async fn set_status_led(
-    led: &mut SmartLedsAdapterAsync<'static, STATUS_LED_RMT_BUFFER_SIZE>,
-    color: RGB8,
-) {
+async fn set_status_led(led: &mut StatusLed, color: RGB8) {
     if let Err(e) = led
         .write(brightness([color].into_iter(), STATUS_LED_BRIGHTNESS))
         .await
@@ -323,7 +321,7 @@ async fn wait_for_sleep_request(timeout: Duration) -> bool {
 }
 
 #[embassy_executor::task]
-async fn status_led_task(mut led: SmartLedsAdapterAsync<'static, STATUS_LED_RMT_BUFFER_SIZE>) {
+async fn status_led_task(mut led: StatusLed) {
     set_status_led(&mut led, STATUS_LED_OFF).await;
     let mut sleep_led_ready = false;
 
@@ -379,8 +377,9 @@ async fn status_led_task(mut led: SmartLedsAdapterAsync<'static, STATUS_LED_RMT_
 }
 
 #[embassy_executor::task]
-async fn deep_sleep_task(mut rtc: Rtc<'static>) {
+async fn deep_sleep_task(mut low_power: LowPower<'static>) {
     const IDLE_TIMEOUT_MS: u32 = 4 * 60 * 1000; // 4 minutes
+    const DEEP_SLEEP_FAILSAFE_SECS: u64 = 10 * 365 * 24 * 60 * 60;
 
     loop {
         let (sleep_state, measurement_status, inactivity_ms, ble_connected) =
@@ -423,7 +422,11 @@ async fn deep_sleep_task(mut rtc: Rtc<'static>) {
             SleepState::Ready(reason) => {
                 info!("Entering deep sleep: {:?}", reason);
                 Timer::after(Duration::from_millis(20)).await;
-                rtc.sleep_deep(&[]);
+                low_power.set_wakeup_deadline(
+                    esp_hal::time::Instant::now()
+                        + esp_hal::time::Duration::from_secs(DEEP_SLEEP_FAILSAFE_SECS),
+                );
+                low_power.sleep_deep(RtcSleepConfig::deep());
             }
         }
     }
@@ -728,8 +731,7 @@ async fn gatt_events_task<P: PacketPool>(
                 let immediate_response = if let GattEvent::Write(write_event) = &event
                     && write_event.handle() == control_point.handle
                 {
-                    let cmd_data = write_event.data();
-                    match cmd_data.first().copied() {
+                    write_event.with_data(|_, cmd_data| match cmd_data.first().copied() {
                         Some(op_code_byte) => match ControlOpCode::try_from(op_code_byte) {
                             Ok(op_code) => {
                                 info!("Control Point Received: {:?}", op_code);
@@ -758,7 +760,7 @@ async fn gatt_events_task<P: PacketPool>(
                             warn!("Control Point write with empty payload");
                             None
                         }
-                    }
+                    })
                 } else {
                     None
                 };
@@ -805,7 +807,7 @@ async fn data_processing_task<P: PacketPool>(
         debug!("Sending Data Point: {:?}", data_point);
 
         // Send notification with the data packet
-        if let Err(e) = data_point_handle.notify(conn, &data_point).await {
+        if let Err(e) = data_point_handle.notify(conn, &data_point, false).await {
             info!("Error sending Data Point: {:?}", defmt::Debug2Format(&e));
             break;
         }

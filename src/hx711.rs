@@ -11,7 +11,6 @@ use core::fmt;
 use defmt::{debug, error, info};
 use embassy_time::{Duration, with_timeout};
 use embedded_hal::delay::DelayNs;
-use embedded_storage::{ReadStorage, Storage};
 use esp_hal::{
     delay::Delay,
     gpio::{Input, Output},
