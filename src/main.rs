@@ -422,6 +422,17 @@ async fn deep_sleep_task(mut low_power: LowPower<'static>) {
             SleepState::Ready(reason) => {
                 info!("Entering deep sleep: {:?}", reason);
                 Timer::after(Duration::from_millis(20)).await;
+                // Drive the WS2812B data line low and hold it so the LED does not latch
+                // noise while the digital domain is powered off.
+                // SAFETY: the status LED is already off and its task stops writing once sleep
+                // is ready. No await follows, so it cannot run again before `sleep_deep`, which
+                // does not return; the hold is released on the next boot.
+                let mut status_led_pin = Output::new(
+                    unsafe { esp_hal::peripherals::GPIO2::steal() },
+                    Level::Low,
+                    OutputConfig::default(),
+                );
+                status_led_pin.set_pad_hold(true);
                 low_power.set_wakeup_deadline(
                     esp_hal::time::Instant::now()
                         + esp_hal::time::Duration::from_secs(DEEP_SLEEP_FAILSAFE_SECS),
