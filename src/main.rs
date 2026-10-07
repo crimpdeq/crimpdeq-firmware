@@ -74,7 +74,7 @@ const STATUS_LED_OFF: RGB8 = RGB8 { r: 0, g: 0, b: 0 };
 const STATUS_LED_DISCONNECTED: RGB8 = RGB8 { r: 0, g: 0, b: 255 };
 const STATUS_LED_CONNECTED: RGB8 = RGB8 { r: 0, g: 255, b: 0 };
 const STATUS_LED_LOW_BATTERY: RGB8 = RGB8 { r: 255, g: 0, b: 0 };
-/// Delay before retrying a failed BLE operation.
+/// Delay before retrying failed BLE advertising.
 const BLE_RETRY_DELAY: Duration = Duration::from_secs(1);
 type StatusLed = RmtSmartLeds<'static, STATUS_LED_RMT_BUFFER_SIZE, Async, RGB8, color_order::Grb>;
 
@@ -299,13 +299,17 @@ async fn main(spawner: Spawner) -> ! {
     }
 }
 
+/// Runs the BLE host.
+///
+/// Running the host again starts with an HCI reset, which stops advertising and drops the
+/// connection that the rest of the BLE code still waits on. A failure resets the chip instead, so
+/// the whole BLE stack restarts together.
 async fn ble_task<C: Controller, P: PacketPool>(mut runner: Runner<'_, C, P>) {
-    loop {
-        if let Err(e) = runner.run().await {
-            error!("BLE runner failed: {:?}", defmt::Debug2Format(&e));
-            Timer::after(BLE_RETRY_DELAY).await;
-        }
+    if let Err(e) = runner.run().await {
+        error!("BLE runner failed: {:?}", defmt::Debug2Format(&e));
     }
+    error!("BLE runner stopped, resetting");
+    esp_hal::system::software_reset()
 }
 
 fn status_led_mode() -> StatusLedMode {
@@ -562,6 +566,8 @@ async fn measurement_task(
         error!("Initial tare failed: {:?}", defmt::Debug2Format(&e));
     }
     let mut measurement_buffer = WeightMeasurementBatch::new();
+    // Whether the current measurement has started sampling.
+    let mut streaming = false;
     let mut state_changes = STATE_CHANGED
         .receiver()
         .expect("Missing state change receiver for the measurement task");
@@ -584,6 +590,7 @@ async fn measurement_task(
                     load_cell.power_down();
                 }
                 measurement_buffer.clear();
+                streaming = false;
                 LOAD_CELL_COMMANDS.clear();
                 update_device_state(|state| state.mark_sleep_ready(SleepReadySource::Measurement));
                 state_changes.changed().await;
@@ -597,10 +604,21 @@ async fn measurement_task(
         }
 
         if let Ok(command) = LOAD_CELL_COMMANDS.try_receive() {
+            // Send the pending samples before the command changes the tare or calibration.
+            if !measurement_buffer.is_empty() {
+                DataPoint::weight_measurement(core::mem::take(&mut measurement_buffer))
+                    .send(channel)
+                    .await;
+            }
             if command.uses_load_cell() && load_cell.is_powered_down() {
                 info!("Waking HX711 for {:?}", command);
                 if let Err(e) = load_cell.wake().await {
-                    error!("HX711 wake failed: {:?}", defmt::Debug2Format(&e));
+                    error!(
+                        "HX711 wake failed, dropping {:?}: {:?}",
+                        command,
+                        defmt::Debug2Format(&e)
+                    );
+                    continue;
                 }
             }
             run_load_cell_command(command, &mut load_cell, channel).await;
@@ -609,6 +627,7 @@ async fn measurement_task(
 
         match status {
             MeasurementTaskStatus::Disabled => {
+                streaming = false;
                 if !measurement_buffer.is_empty() {
                     crate::progressor::DataPoint::weight_measurement(core::mem::take(
                         &mut measurement_buffer,
@@ -627,12 +646,17 @@ async fn measurement_task(
                 .await;
             }
             MeasurementTaskStatus::Enabled => {
-                if load_cell.is_powered_down() {
-                    info!("Waking HX711");
-                    if let Err(e) = load_cell.wake().await {
-                        error!("HX711 wake failed: {:?}", defmt::Debug2Format(&e));
+                if !streaming {
+                    if load_cell.is_powered_down() {
+                        info!("Waking HX711");
                     }
-                    // Start the timestamps once the HX711 delivers settled readings.
+                    if let Err(e) = load_cell.wake().await {
+                        // The HX711 is powered down again, so the next iteration retries.
+                        error!("HX711 wake failed: {:?}", defmt::Debug2Format(&e));
+                        continue;
+                    }
+                    // Start the timestamps once the HX711 delivers settled readings, also when a
+                    // queued tare or calibration woke it before the measurement started.
                     update_device_state(|state| {
                         if state.measurement_status == MeasurementTaskStatus::Enabled {
                             state.start_time = (esp_hal::time::Instant::now()
@@ -640,6 +664,7 @@ async fn measurement_task(
                             .as_micros() as u32;
                         }
                     });
+                    streaming = true;
                     // The state may have changed while the HX711 settled.
                     continue;
                 }
