@@ -538,6 +538,8 @@ async fn measurement_task(
         error!("Initial tare failed: {:?}", defmt::Debug2Format(&e));
     }
     let mut measurement_buffer = WeightMeasurementBatch::new();
+    // Whether the current measurement has started sampling.
+    let mut streaming = false;
 
     loop {
         // Get current device state
@@ -557,6 +559,7 @@ async fn measurement_task(
                     load_cell.power_down();
                 }
                 measurement_buffer.clear();
+                streaming = false;
                 LOAD_CELL_COMMANDS.clear();
                 critical_section::with(|cs| {
                     DEVICE_STATE
@@ -574,10 +577,21 @@ async fn measurement_task(
         }
 
         if let Ok(command) = LOAD_CELL_COMMANDS.try_receive() {
+            // Send the pending samples before the command changes the tare or calibration.
+            if !measurement_buffer.is_empty() {
+                DataPoint::weight_measurement(core::mem::take(&mut measurement_buffer))
+                    .send(channel)
+                    .await;
+            }
             if command.uses_load_cell() && load_cell.is_powered_down() {
                 info!("Waking HX711 for {:?}", command);
                 if let Err(e) = load_cell.wake().await {
-                    error!("HX711 wake failed: {:?}", defmt::Debug2Format(&e));
+                    error!(
+                        "HX711 wake failed, dropping {:?}: {:?}",
+                        command,
+                        defmt::Debug2Format(&e)
+                    );
+                    continue;
                 }
             }
             run_load_cell_command(command, &mut load_cell, channel).await;
@@ -586,6 +600,7 @@ async fn measurement_task(
 
         match status {
             MeasurementTaskStatus::Disabled => {
+                streaming = false;
                 if !measurement_buffer.is_empty() {
                     crate::progressor::DataPoint::weight_measurement(core::mem::take(
                         &mut measurement_buffer,
@@ -601,12 +616,17 @@ async fn measurement_task(
                 Timer::after(Duration::from_millis(10)).await;
             }
             MeasurementTaskStatus::Enabled => {
-                if load_cell.is_powered_down() {
-                    info!("Waking HX711");
-                    if let Err(e) = load_cell.wake().await {
-                        error!("HX711 wake failed: {:?}", defmt::Debug2Format(&e));
+                if !streaming {
+                    if load_cell.is_powered_down() {
+                        info!("Waking HX711");
                     }
-                    // Start the timestamps once the HX711 delivers settled readings.
+                    if let Err(e) = load_cell.wake().await {
+                        // The HX711 is powered down again, so the next iteration retries.
+                        error!("HX711 wake failed: {:?}", defmt::Debug2Format(&e));
+                        continue;
+                    }
+                    // Start the timestamps once the HX711 delivers settled readings, also when a
+                    // queued tare or calibration woke it before the measurement started.
                     critical_section::with(|cs| {
                         let mut state = DEVICE_STATE.borrow_ref_mut(cs);
                         if state.measurement_status == MeasurementTaskStatus::Enabled {
@@ -615,6 +635,7 @@ async fn measurement_task(
                             .as_micros() as u32;
                         }
                     });
+                    streaming = true;
                     // The state may have changed while the HX711 settled.
                     continue;
                 }
