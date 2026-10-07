@@ -4,6 +4,7 @@
 //! It includes the BLE advertising data, the GATT server, and the BLE connection.
 #![allow(clippy::needless_borrows_for_generic_args)]
 use defmt::{debug, info};
+use embassy_time::{Duration, with_timeout};
 use trouble_host::prelude::*;
 
 use crate::progressor::{CONTROL_POINT_MAX_PAYLOAD_SIZE, DataPoint};
@@ -14,6 +15,11 @@ pub const CONNECTIONS_MAX: usize = 1;
 pub const L2CAP_CHANNELS_MAX: usize = 2; // Signal + att
 /// Size of L2CAP packets
 pub const L2CAP_MTU: usize = 255;
+
+/// Time spent advertising at the default 160 ms interval after boot or a disconnect.
+const FAST_ADVERTISING_DURATION: Duration = Duration::from_secs(30);
+/// Advertising interval once fast advertising ends.
+const SLOW_ADVERTISING_INTERVAL: Duration = Duration::from_micros(1_022_500);
 
 /// Name advertised by the device.
 pub const DEVICE_NAME: &str = env!("DEVICE_NAME");
@@ -106,17 +112,33 @@ pub async fn advertise<'values, 'server, C: Controller>(
     peripheral: &mut Peripheral<'values, C, DefaultPacketPool>,
     server: &'server Server<'values>,
 ) -> Result<GattConnection<'values, 'server, DefaultPacketPool>, BleHostError<C::Error>> {
+    let advertisement = Advertisement::ConnectableScannableUndirected {
+        adv_data: &ADVERTISING_DATA,
+        scan_data: SCAN_RESPONSE_DATA,
+    };
+
     debug!("Advertising BLE");
     let advertiser = peripheral
-        .advertise(
-            &Default::default(),
-            Advertisement::ConnectableScannableUndirected {
-                adv_data: &ADVERTISING_DATA,
-                scan_data: SCAN_RESPONSE_DATA,
-            },
-        )
+        .advertise(&Default::default(), advertisement)
         .await?;
-    let conn = advertiser.accept().await?.with_attribute_server(server)?;
+    let conn = match with_timeout(FAST_ADVERTISING_DURATION, advertiser.accept()).await {
+        Ok(conn) => conn?,
+        Err(_) => {
+            // Dropping the fast advertiser stops it.
+            debug!("Switching to slow BLE advertising");
+            let params = AdvertisementParameters {
+                interval_min: SLOW_ADVERTISING_INTERVAL,
+                interval_max: SLOW_ADVERTISING_INTERVAL,
+                ..Default::default()
+            };
+            peripheral
+                .advertise(&params, advertisement)
+                .await?
+                .accept()
+                .await?
+        }
+    };
+    let conn = conn.with_attribute_server(server)?;
     info!("BLE connection established");
     Ok(conn)
 }

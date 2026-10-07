@@ -3,12 +3,18 @@
 
 use core::cell::RefCell;
 
-use bt_hci::controller::ExternalController;
+use bt_hci::{
+    cmd::le::{LeConnUpdate, LeReadLocalSupportedFeatures},
+    controller::{ControllerCmdAsync, ControllerCmdSync, ExternalController},
+};
 use critical_section::Mutex;
 use defmt::{debug, error, info, warn};
 use embassy_executor::Spawner;
-use embassy_futures::{join::join, select::select};
-use embassy_sync::channel::Channel;
+use embassy_futures::{
+    join::join,
+    select::{Either, select, select3},
+};
+use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel, watch::Watch};
 use embassy_time::{Duration, Timer};
 use esp_hal::{
     Async,
@@ -124,6 +130,26 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     })
 }
 
+/// Number of tasks that wait for device state changes: measurement, status LED, deep sleep and
+/// connection parameters.
+const STATE_CHANGE_RECEIVERS: usize = 4;
+/// Signals device state changes, so tasks can wait for them instead of polling.
+static STATE_CHANGED: Watch<CriticalSectionRawMutex, (), STATE_CHANGE_RECEIVERS> = Watch::new();
+
+/// Updates the device state and, if it changed, wakes the tasks that wait for state changes.
+fn update_device_state<R>(update: impl FnOnce(&mut DeviceState) -> R) -> R {
+    let (result, changed) = critical_section::with(|cs| {
+        let mut state = DEVICE_STATE.borrow_ref_mut(cs);
+        let previous = state.clone();
+        let result = update(&mut state);
+        (result, *state != previous)
+    });
+    if changed {
+        STATE_CHANGED.sender().send(());
+    }
+    result
+}
+
 // ESP-IDF App Descriptor
 esp_bootloader_esp_idf::esp_app_desc!();
 
@@ -227,9 +253,7 @@ async fn main(spawner: Spawner) -> ! {
     let channel = mk_static!(DataPointChannel, Channel::new());
 
     // Start inactivity tracking from boot so the device can auto-sleep if left unused.
-    critical_section::with(|cs| {
-        DEVICE_STATE.borrow_ref_mut(cs).on_ble_disconnected();
-    });
+    update_device_state(|state| state.on_ble_disconnected());
 
     // Spawn tasks
     spawner.spawn(measurement_task(channel, clock_pin, data_pin, delay, flash).unwrap());
@@ -243,35 +267,18 @@ async fn main(spawner: Spawner) -> ! {
                 Ok(conn) => {
                     info!("BLE connection established");
 
-                    let params = trouble_host::prelude::RequestedConnParams {
-                        min_connection_interval: Duration::from_millis(15),
-                        max_connection_interval: Duration::from_millis(45),
-                        max_latency: 0,
-                        min_event_length: Duration::from_millis(0),
-                        max_event_length: Duration::from_millis(0),
-                        supervision_timeout: Duration::from_millis(4000),
-                    };
-                    if let Err(e) = conn.raw().update_connection_params(&stack, &params).await {
-                        warn!(
-                            "Failed to request connection params: {:?}",
-                            defmt::Debug2Format(&e)
-                        );
-                    }
-
                     channel.clear();
-                    critical_section::with(|cs| {
-                        DEVICE_STATE.borrow_ref_mut(cs).on_ble_connected();
-                    });
+                    update_device_state(|state| state.on_ble_connected());
                     // run until any task ends (usually because the connection has been closed),
                     // then return to advertising state.
-                    select(
+                    select3(
                         gatt_events_task(&server, &conn, channel),
                         data_processing_task(&server, &conn, channel),
+                        connection_params_task(&stack, &conn),
                     )
                     .await;
                     channel.clear();
-                    critical_section::with(|cs| {
-                        let mut state = DEVICE_STATE.borrow_ref_mut(cs);
+                    update_device_state(|state| {
                         state.stop_measurement();
                         state.on_ble_disconnected();
                         debug!("BLE connection closed, inactivity timer restarted");
@@ -332,29 +339,13 @@ async fn set_status_led(led: &mut StatusLed, color: RGB8) {
     }
 }
 
-async fn wait_for_sleep_request(timeout: Duration) -> bool {
-    const POLL_INTERVAL_MS: u64 = 50;
-
-    let timeout_ms = timeout.as_millis();
-    let mut elapsed_ms = 0;
-
-    while elapsed_ms < timeout_ms {
-        let sleep_state = critical_section::with(|cs| DEVICE_STATE.borrow_ref(cs).sleep_state);
-        if sleep_state != SleepState::Awake {
-            return true;
-        }
-
-        let step_ms = (timeout_ms - elapsed_ms).min(POLL_INTERVAL_MS);
-        Timer::after(Duration::from_millis(step_ms)).await;
-        elapsed_ms += step_ms;
-    }
-
-    false
-}
-
 #[embassy_executor::task]
 async fn status_led_task(mut led: StatusLed) {
+    let mut state_changes = STATE_CHANGED
+        .receiver()
+        .expect("Missing state change receiver for the status LED task");
     set_status_led(&mut led, STATUS_LED_OFF).await;
+    let mut current_mode = StatusLedMode::Off;
     let mut sleep_led_ready = false;
 
     loop {
@@ -364,18 +355,17 @@ async fn status_led_task(mut led: StatusLed) {
                 if !sleep_led_ready {
                     info!("Turning off status LED before deep sleep: {:?}", reason);
                     set_status_led(&mut led, STATUS_LED_OFF).await;
+                    current_mode = StatusLedMode::Off;
                     sleep_led_ready = true;
-                    critical_section::with(|cs| {
-                        DEVICE_STATE
-                            .borrow_ref_mut(cs)
-                            .mark_sleep_ready(SleepReadySource::StatusLed);
+                    update_device_state(|state| {
+                        state.mark_sleep_ready(SleepReadySource::StatusLed)
                     });
                 }
-                Timer::after(Duration::from_millis(20)).await;
+                state_changes.changed().await;
                 continue;
             }
             SleepState::Ready(_) => {
-                Timer::after(Duration::from_millis(20)).await;
+                state_changes.changed().await;
                 continue;
             }
             SleepState::Awake => {
@@ -383,28 +373,38 @@ async fn status_led_task(mut led: StatusLed) {
             }
         }
 
-        match status_led_mode() {
-            StatusLedMode::Off => {
+        let mode = status_led_mode();
+        if mode == StatusLedMode::LowBattery {
+            // Blink until the state changes.
+            set_status_led(&mut led, STATUS_LED_LOW_BATTERY).await;
+            if let Either::First(_) = select(
+                Timer::after(Duration::from_millis(250)),
+                state_changes.changed(),
+            )
+            .await
+            {
                 set_status_led(&mut led, STATUS_LED_OFF).await;
-                let _ = wait_for_sleep_request(Duration::from_secs(1)).await;
+                select(
+                    Timer::after(Duration::from_millis(750)),
+                    state_changes.changed(),
+                )
+                .await;
             }
-            StatusLedMode::Disconnected => {
-                set_status_led(&mut led, STATUS_LED_DISCONNECTED).await;
-                let _ = wait_for_sleep_request(Duration::from_secs(1)).await;
-            }
-            StatusLedMode::Connected => {
-                set_status_led(&mut led, STATUS_LED_CONNECTED).await;
-                let _ = wait_for_sleep_request(Duration::from_secs(1)).await;
-            }
-            StatusLedMode::LowBattery => {
-                set_status_led(&mut led, STATUS_LED_LOW_BATTERY).await;
-                if wait_for_sleep_request(Duration::from_millis(250)).await {
-                    continue;
-                }
-                set_status_led(&mut led, STATUS_LED_OFF).await;
-                let _ = wait_for_sleep_request(Duration::from_millis(750)).await;
-            }
+            current_mode = StatusLedMode::LowBattery;
+            continue;
         }
+
+        // Only write the LED when its color changes.
+        if mode != current_mode {
+            let color = match mode {
+                StatusLedMode::Off | StatusLedMode::LowBattery => STATUS_LED_OFF,
+                StatusLedMode::Disconnected => STATUS_LED_DISCONNECTED,
+                StatusLedMode::Connected => STATUS_LED_CONNECTED,
+            };
+            set_status_led(&mut led, color).await;
+            current_mode = mode;
+        }
+        state_changes.changed().await;
     }
 }
 
@@ -412,6 +412,10 @@ async fn status_led_task(mut led: StatusLed) {
 async fn deep_sleep_task(mut low_power: LowPower<'static>) {
     const IDLE_TIMEOUT_MS: u32 = 4 * 60 * 1000; // 4 minutes
     const DEEP_SLEEP_FAILSAFE_SECS: u64 = 10 * 365 * 24 * 60 * 60;
+
+    let mut state_changes = STATE_CHANGED
+        .receiver()
+        .expect("Missing state change receiver for the deep sleep task");
 
     loop {
         let (sleep_state, measurement_status, inactivity_ms, ble_connected) =
@@ -434,22 +438,27 @@ async fn deep_sleep_task(mut low_power: LowPower<'static>) {
                     );
 
                     if inactivity_ms >= IDLE_TIMEOUT_MS {
-                        critical_section::with(|cs| {
-                            DEVICE_STATE
-                                .borrow_ref_mut(cs)
-                                .request_sleep(SleepReason::IdleTimeout);
-                        });
+                        update_device_state(|state| state.request_sleep(SleepReason::IdleTimeout));
+                        continue;
                     }
-                }
 
-                Timer::after(Duration::from_secs(1)).await;
+                    // Wait for the idle timeout or for activity that restarts it.
+                    let remaining_ms = IDLE_TIMEOUT_MS - inactivity_ms;
+                    select(
+                        Timer::after(Duration::from_millis(remaining_ms.into())),
+                        state_changes.changed(),
+                    )
+                    .await;
+                } else {
+                    state_changes.changed().await;
+                }
             }
             SleepState::Requested(reason) => {
                 debug!(
                     "Waiting for peripherals to power down before sleep: {:?}",
                     reason
                 );
-                Timer::after(Duration::from_millis(20)).await;
+                state_changes.changed().await;
             }
             SleepState::Ready(reason) => {
                 info!("Entering deep sleep: {:?}", reason);
@@ -497,8 +506,7 @@ async fn battery_gauge_task(
                 );
 
                 // Update device state
-                let ble_connected = critical_section::with(|cs| {
-                    let mut state = DEVICE_STATE.borrow_ref_mut(cs);
+                let ble_connected = update_device_state(|state| {
                     state.battery_voltage = battery_voltage_mv;
                     state.battery_charging = battery_charging;
                     state.is_ble_connected()
@@ -525,11 +533,7 @@ async fn battery_gauge_task(
                         // Give the notification time to reach the client.
                         Timer::after(Duration::from_millis(500)).await;
                     }
-                    critical_section::with(|cs| {
-                        DEVICE_STATE
-                            .borrow_ref_mut(cs)
-                            .request_sleep(SleepReason::LowBattery);
-                    });
+                    update_device_state(|state| state.request_sleep(SleepReason::LowBattery));
                 }
             }
             (voltage, soc, charge_rate) => {
@@ -564,6 +568,9 @@ async fn measurement_task(
     let mut measurement_buffer = WeightMeasurementBatch::new();
     // Whether the current measurement has started sampling.
     let mut streaming = false;
+    let mut state_changes = STATE_CHANGED
+        .receiver()
+        .expect("Missing state change receiver for the measurement task");
 
     loop {
         // Get current device state
@@ -585,16 +592,12 @@ async fn measurement_task(
                 measurement_buffer.clear();
                 streaming = false;
                 LOAD_CELL_COMMANDS.clear();
-                critical_section::with(|cs| {
-                    DEVICE_STATE
-                        .borrow_ref_mut(cs)
-                        .mark_sleep_ready(SleepReadySource::Measurement);
-                });
-                Timer::after(Duration::from_millis(20)).await;
+                update_device_state(|state| state.mark_sleep_ready(SleepReadySource::Measurement));
+                state_changes.changed().await;
                 continue;
             }
             SleepState::Ready(_) => {
-                Timer::after(Duration::from_millis(50)).await;
+                state_changes.changed().await;
                 continue;
             }
             SleepState::Awake => {}
@@ -636,8 +639,11 @@ async fn measurement_task(
                     debug!("Powering down idle HX711");
                     load_cell.power_down();
                 }
-                // Add a short delay to prevent tight loops
-                Timer::after(Duration::from_millis(10)).await;
+                select(
+                    state_changes.changed(),
+                    LOAD_CELL_COMMANDS.ready_to_receive(),
+                )
+                .await;
             }
             MeasurementTaskStatus::Enabled => {
                 if !streaming {
@@ -651,8 +657,7 @@ async fn measurement_task(
                     }
                     // Start the timestamps once the HX711 delivers settled readings, also when a
                     // queued tare or calibration woke it before the measurement started.
-                    critical_section::with(|cs| {
-                        let mut state = DEVICE_STATE.borrow_ref_mut(cs);
+                    update_device_state(|state| {
                         if state.measurement_status == MeasurementTaskStatus::Enabled {
                             state.start_time = (esp_hal::time::Instant::now()
                                 .duration_since_epoch())
@@ -723,8 +728,7 @@ async fn run_load_cell_command(
                 return;
             }
 
-            let (calibration_points, calibration_point_count) = critical_section::with(|cs| {
-                let mut state = DEVICE_STATE.borrow_ref_mut(cs);
+            let (calibration_points, calibration_point_count) = update_device_state(|state| {
                 let new_point: CalibrationPoint = (calibration_point, weight);
                 if state.calibration_point_count < MAX_CALIBRATION_POINTS {
                     let index = state.calibration_point_count;
@@ -762,9 +766,7 @@ async fn run_load_cell_command(
             } else {
                 notify_calibration_factor(channel, load_cell.current_calibration_factor()).await;
             }
-            critical_section::with(|cs| {
-                DEVICE_STATE.borrow_ref_mut(cs).calibration_point_count = 0;
-            });
+            update_device_state(|state| state.calibration_point_count = 0);
         }
         LoadCellCommand::GetCalibration => {
             match load_cell.get_calibration_factor() {
@@ -819,6 +821,63 @@ async fn notify_calibration_factor(channel: &'static DataPointChannel, calibrati
         .await;
 }
 
+/// Connection parameters while measuring.
+const MEASURING_CONNECTION_PARAMS: RequestedConnParams = RequestedConnParams {
+    min_connection_interval: Duration::from_millis(15),
+    max_connection_interval: Duration::from_millis(45),
+    max_latency: 0,
+    min_event_length: Duration::from_millis(0),
+    max_event_length: Duration::from_millis(0),
+    supervision_timeout: Duration::from_millis(4000),
+};
+
+/// Connection parameters while connected and not measuring. The peripheral latency only delays
+/// commands from the client, by up to 250 ms.
+const IDLE_CONNECTION_PARAMS: RequestedConnParams = RequestedConnParams {
+    min_connection_interval: Duration::from_millis(30),
+    max_connection_interval: Duration::from_millis(50),
+    max_latency: 4,
+    min_event_length: Duration::from_millis(0),
+    max_event_length: Duration::from_millis(0),
+    supervision_timeout: Duration::from_millis(4000),
+};
+
+/// Requests connection parameters that match the measurement state.
+async fn connection_params_task<C, P>(stack: &Stack<'_, C, P>, conn: &GattConnection<'_, '_, P>)
+where
+    C: Controller
+        + ControllerCmdAsync<LeConnUpdate>
+        + ControllerCmdSync<LeReadLocalSupportedFeatures>,
+    P: PacketPool,
+{
+    let Some(mut state_changes) = STATE_CHANGED.receiver() else {
+        error!("Missing state change receiver for the connection parameters task");
+        return core::future::pending().await;
+    };
+    let mut measuring = None;
+
+    loop {
+        let now_measuring = critical_section::with(|cs| {
+            DEVICE_STATE.borrow_ref(cs).measurement_status == MeasurementTaskStatus::Enabled
+        });
+        if measuring != Some(now_measuring) {
+            let params = if now_measuring {
+                &MEASURING_CONNECTION_PARAMS
+            } else {
+                &IDLE_CONNECTION_PARAMS
+            };
+            if let Err(e) = conn.raw().update_connection_params(stack, params).await {
+                warn!(
+                    "Failed to request connection params: {:?}",
+                    defmt::Debug2Format(&e)
+                );
+            }
+            measuring = Some(now_measuring);
+        }
+        state_changes.changed().await;
+    }
+}
+
 /// Stream Events until the connection closes.
 ///
 /// This function will handle the GATT events and process them.
@@ -846,26 +905,21 @@ async fn gatt_events_task<P: PacketPool>(
                                 info!("Control Point Received: {:?}", op_code);
                                 disconnect_after_response =
                                     matches!(op_code, ControlOpCode::Shutdown);
-                                critical_section::with(|cs| {
-                                    let mut device_state = DEVICE_STATE.borrow_ref_mut(cs);
+                                update_device_state(|device_state| {
                                     if op_code.counts_as_activity() {
                                         device_state.record_activity();
                                     }
-                                    op_code.process(cmd_data, &mut device_state)
+                                    op_code.process(cmd_data, device_state)
                                 })
                             }
                             Err(()) => {
-                                critical_section::with(|cs| {
-                                    DEVICE_STATE.borrow_ref_mut(cs).record_activity();
-                                });
+                                update_device_state(|state| state.record_activity());
                                 warn!("Ignoring unsupported OpCode: {:#x}", op_code_byte);
                                 None
                             }
                         },
                         None => {
-                            critical_section::with(|cs| {
-                                DEVICE_STATE.borrow_ref_mut(cs).record_activity();
-                            });
+                            update_device_state(|state| state.record_activity());
                             warn!("Control Point write with empty payload");
                             None
                         }
@@ -895,8 +949,7 @@ async fn gatt_events_task<P: PacketPool>(
     }
 
     info!("BLE task finished");
-    critical_section::with(|cs| {
-        let mut device_state = DEVICE_STATE.borrow_ref_mut(cs);
+    update_device_state(|device_state| {
         device_state.stop_measurement();
     });
 
