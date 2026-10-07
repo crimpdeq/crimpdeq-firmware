@@ -25,7 +25,7 @@ use esp_hal::{
 use esp_hal_smartled::{RmtSmartLeds, WS2812B_TIMING, buffer_size, color_order};
 use esp_radio::ble::controller::BleConnector;
 use esp_storage::FlashStorage;
-use max170xx::asynch::Max17048;
+use max170xx::Max17048;
 use panic_rtt_target as _;
 use smart_leds::{RGB8, SmartLedsWriteAsync as _, brightness};
 use trouble_host::prelude::*;
