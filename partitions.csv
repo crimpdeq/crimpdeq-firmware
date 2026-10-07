@@ -1,0 +1,7 @@
+# Name,   Type, SubType,   Offset,   Size,     Flags
+nvs,      data, nvs,       0x9000,   0x6000,
+phy_init, data, phy,       0xf000,   0x1000,
+factory,  app,  factory,   0x10000,  0x3ef000,
+# Calibration storage. It uses the last 4 KiB sector of the 4 MiB flash, where firmware
+# without this partition already stored the calibration.
+calib,    data, undefined, 0x3ff000, 0x1000,

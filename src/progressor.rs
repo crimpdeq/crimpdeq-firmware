@@ -77,6 +77,10 @@ impl LoadCellCommand {
 pub enum SleepReason {
     /// No user or BLE activity has been observed for too long.
     IdleTimeout,
+    /// The client sent the Shutdown command.
+    Shutdown,
+    /// The battery is too low to keep the 3V3 rail regulated.
+    LowBattery,
 }
 
 /// Sleep transition state.
@@ -122,6 +126,8 @@ pub struct DeviceState {
     pub sleep_measurement_ready: bool,
     /// Whether the status LED has been explicitly turned off for sleep.
     pub sleep_status_led_ready: bool,
+    /// Whether the client asked to turn the device off once it disconnects.
+    pub shutdown_requested: bool,
 }
 
 impl Default for DeviceState {
@@ -138,6 +144,7 @@ impl Default for DeviceState {
             sleep_state: SleepState::Awake,
             sleep_measurement_ready: false,
             sleep_status_led_ready: false,
+            shutdown_requested: false,
         }
     }
 }
@@ -155,7 +162,8 @@ impl DeviceState {
                 self.sleep_measurement_ready = false;
                 self.sleep_status_led_ready = false;
             }
-            SleepState::Awake => {}
+            // Activity does not cancel a shutdown or a low battery sleep.
+            SleepState::Requested(_) | SleepState::Ready(_) | SleepState::Awake => {}
         }
     }
 
@@ -216,6 +224,9 @@ impl DeviceState {
         LOAD_CELL_COMMANDS.clear();
         self.ble_connected = false;
         self.record_activity();
+        if self.shutdown_requested {
+            self.request_sleep(SleepReason::Shutdown);
+        }
     }
 
     /// Returns true when BLE is currently connected.
@@ -295,7 +306,6 @@ pub enum ControlOpCode {
     // TODO: Implement it
     ClearErrorInformation = 0x6D,
     /// Turn the Progressor off (enter sleep mode)
-    // TODO: Implement it
     Shutdown = 0x6E,
     /// Measures the battery voltage in millivolts
     SampleBattery = 0x6F,
@@ -403,8 +413,9 @@ impl ControlOpCode {
                 Some(DataPoint::from(response))
             }
             ControlOpCode::Shutdown => {
-                info!("Shutdown command received, resetting state");
+                info!("Shutdown command received, entering deep sleep after disconnect");
                 device_state.reset_to_initial_state();
+                device_state.shutdown_requested = true;
                 None
             }
             // Currently unimplemented operations
