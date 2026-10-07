@@ -68,7 +68,7 @@ const STATUS_LED_OFF: RGB8 = RGB8 { r: 0, g: 0, b: 0 };
 const STATUS_LED_DISCONNECTED: RGB8 = RGB8 { r: 0, g: 0, b: 255 };
 const STATUS_LED_CONNECTED: RGB8 = RGB8 { r: 0, g: 255, b: 0 };
 const STATUS_LED_LOW_BATTERY: RGB8 = RGB8 { r: 255, g: 0, b: 0 };
-/// Delay before retrying a failed BLE operation.
+/// Delay before retrying failed BLE advertising.
 const BLE_RETRY_DELAY: Duration = Duration::from_secs(1);
 type StatusLed = RmtSmartLeds<'static, STATUS_LED_RMT_BUFFER_SIZE, Async, RGB8, color_order::Grb>;
 
@@ -292,13 +292,17 @@ async fn main(spawner: Spawner) -> ! {
     }
 }
 
+/// Runs the BLE host.
+///
+/// Running the host again starts with an HCI reset, which stops advertising and drops the
+/// connection that the rest of the BLE code still waits on. A failure resets the chip instead, so
+/// the whole BLE stack restarts together.
 async fn ble_task<C: Controller, P: PacketPool>(mut runner: Runner<'_, C, P>) {
-    loop {
-        if let Err(e) = runner.run().await {
-            error!("BLE runner failed: {:?}", defmt::Debug2Format(&e));
-            Timer::after(BLE_RETRY_DELAY).await;
-        }
+    if let Err(e) = runner.run().await {
+        error!("BLE runner failed: {:?}", defmt::Debug2Format(&e));
     }
+    error!("BLE runner stopped, resetting");
+    esp_hal::system::software_reset()
 }
 
 fn status_led_mode() -> StatusLedMode {
