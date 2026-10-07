@@ -535,7 +535,9 @@ async fn measurement_task(
             if load_cell.is_powered_down() {
                 info!("Waking HX711");
                 if let Err(e) = load_cell.wake().await {
+                    // The HX711 is powered down again, so the next iteration retries.
                     error!("HX711 wake failed: {:?}", defmt::Debug2Format(&e));
+                    continue;
                 }
                 // Start the timestamps once the HX711 delivers settled readings.
                 critical_section::with(|cs| {

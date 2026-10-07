@@ -279,10 +279,15 @@ impl<'d> Hx711<'d> {
     }
 
     /// Power the HX711 up if needed and wait until its readings are usable.
+    ///
+    /// If settling fails, the HX711 is powered down again so the next call retries it.
     pub async fn wake(&mut self) -> Result<(), Hx711Error> {
         if self.powered_down {
             self.power_up();
-            self.settle().await?;
+            if let Err(e) = self.settle().await {
+                self.power_down();
+                return Err(e);
+            }
         }
         Ok(())
     }
