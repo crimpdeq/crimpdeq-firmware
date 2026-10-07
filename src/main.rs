@@ -26,12 +26,11 @@ use esp_hal_smartled::{RmtSmartLeds, WS2812B_TIMING, buffer_size, color_order};
 use esp_radio::ble::controller::BleConnector;
 use esp_storage::FlashStorage;
 use max170xx::Max17048;
-use panic_rtt_target as _;
 use smart_leds::{RGB8, SmartLedsWriteAsync as _, brightness};
 use trouble_host::prelude::*;
 
 use crate::{
-    ble::{CONNECTIONS_MAX, L2CAP_CHANNELS_MAX, L2CAP_MTU, Server, advertise},
+    ble::{CONNECTIONS_MAX, DEVICE_NAME, L2CAP_CHANNELS_MAX, L2CAP_MTU, Server, advertise},
     hx711::Hx711,
     progressor::{
         CalibrationPoint,
@@ -69,6 +68,8 @@ const STATUS_LED_OFF: RGB8 = RGB8 { r: 0, g: 0, b: 0 };
 const STATUS_LED_DISCONNECTED: RGB8 = RGB8 { r: 0, g: 0, b: 255 };
 const STATUS_LED_CONNECTED: RGB8 = RGB8 { r: 0, g: 255, b: 0 };
 const STATUS_LED_LOW_BATTERY: RGB8 = RGB8 { r: 255, g: 0, b: 0 };
+/// Delay before retrying failed BLE advertising.
+const BLE_RETRY_DELAY: Duration = Duration::from_secs(1);
 type StatusLed = RmtSmartLeds<'static, STATUS_LED_RMT_BUFFER_SIZE, Async, RGB8, color_order::Grb>;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -104,6 +105,24 @@ static DEVICE_STATE: Mutex<RefCell<DeviceState>> = Mutex::new(RefCell::new(Devic
     sleep_status_led_ready: false,
     shutdown_requested: false,
 }));
+
+/// Logs the panic over RTT. Debug builds then halt so a debugger can inspect the panic; release
+/// builds reset the chip, so a panic does not leave the device hung with the radio and peripherals
+/// powered.
+#[panic_handler]
+fn panic(info: &core::panic::PanicInfo) -> ! {
+    critical_section::with(|_| {
+        error!("{}", defmt::Display2Format(info));
+
+        #[cfg(debug_assertions)]
+        loop {
+            core::hint::spin_loop();
+        }
+
+        #[cfg(not(debug_assertions))]
+        esp_hal::system::software_reset()
+    })
+}
 
 // ESP-IDF App Descriptor
 esp_bootloader_esp_idf::esp_app_desc!();
@@ -175,8 +194,7 @@ async fn main(spawner: Spawner) -> ! {
     .expect("Failed to initialize status LED");
 
     // Use the last 6 bytes of the DEVICE_NAME for the address
-    let device_name = env!("DEVICE_NAME");
-    let name_bytes = device_name.as_bytes();
+    let name_bytes = DEVICE_NAME.as_bytes();
     let mut address_seed = [0u8; 6];
     let seed_len = address_seed.len();
     if name_bytes.len() >= seed_len {
@@ -200,7 +218,7 @@ async fn main(spawner: Spawner) -> ! {
 
     info!("Starting advertising and GATT service");
     let server = Server::new_with_config(GapConfig::Peripheral(PeripheralConfig {
-        name: device_name,
+        name: DEVICE_NAME,
         appearance: &appearance::UNKNOWN,
     }))
     .unwrap();
@@ -221,7 +239,7 @@ async fn main(spawner: Spawner) -> ! {
 
     let _ = join(ble_task(runner), async {
         loop {
-            match advertise(device_name, &mut peripheral, &server).await {
+            match advertise(&mut peripheral, &server).await {
                 Ok(conn) => {
                     info!("BLE connection established");
 
@@ -260,7 +278,8 @@ async fn main(spawner: Spawner) -> ! {
                     });
                 }
                 Err(e) => {
-                    panic!("BLE error: {:?}", e);
+                    error!("BLE advertising failed: {:?}", defmt::Debug2Format(&e));
+                    Timer::after(BLE_RETRY_DELAY).await;
                 }
             }
         }
@@ -273,12 +292,17 @@ async fn main(spawner: Spawner) -> ! {
     }
 }
 
+/// Runs the BLE host.
+///
+/// Running the host again starts with an HCI reset, which stops advertising and drops the
+/// connection that the rest of the BLE code still waits on. A failure resets the chip instead, so
+/// the whole BLE stack restarts together.
 async fn ble_task<C: Controller, P: PacketPool>(mut runner: Runner<'_, C, P>) {
-    loop {
-        if let Err(e) = runner.run().await {
-            panic!("BLE error: {:?}", e);
-        }
+    if let Err(e) = runner.run().await {
+        error!("BLE runner failed: {:?}", defmt::Debug2Format(&e));
     }
+    error!("BLE runner stopped, resetting");
+    esp_hal::system::software_reset()
 }
 
 fn status_led_mode() -> StatusLedMode {
