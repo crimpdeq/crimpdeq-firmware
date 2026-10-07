@@ -3,7 +3,6 @@
 //! This module provides the BLE functionality for the Progressor.
 //! It includes the BLE advertising data, the GATT server, and the BLE connection.
 #![allow(clippy::needless_borrows_for_generic_args)]
-use arrayvec::ArrayVec;
 use defmt::{debug, info};
 use trouble_host::prelude::*;
 
@@ -15,6 +14,42 @@ pub const CONNECTIONS_MAX: usize = 1;
 pub const L2CAP_CHANNELS_MAX: usize = 2; // Signal + att
 /// Size of L2CAP packets
 pub const L2CAP_MTU: usize = 255;
+
+/// Name advertised by the device.
+pub const DEVICE_NAME: &str = env!("DEVICE_NAME");
+
+/// BLE AD type for flags.
+const AD_TYPE_FLAGS: u8 = 0x01;
+/// BLE AD type for the complete local name.
+const AD_TYPE_COMPLETE_LOCAL_NAME: u8 = 0x09;
+/// LE General Discoverable Mode flag.
+const FLAG_LE_GENERAL_DISC_MODE: u8 = 0x02;
+/// BR/EDR Not Supported flag.
+const FLAG_BR_EDR_NOT_SUPPORTED: u8 = 0x04;
+/// Maximum size of legacy advertising data.
+const MAX_ADVERTISING_DATA_LEN: usize = 31;
+/// Size of the advertising data: flags (3 bytes), name header (2 bytes) and name.
+const ADVERTISING_DATA_LEN: usize = 5 + DEVICE_NAME.len();
+const _: () = assert!(
+    ADVERTISING_DATA_LEN <= MAX_ADVERTISING_DATA_LEN,
+    "DEVICE_NAME does not fit in the advertising data"
+);
+/// Progressor BLE advertising data: flags and complete local name.
+const ADVERTISING_DATA: [u8; ADVERTISING_DATA_LEN] = {
+    let name = DEVICE_NAME.as_bytes();
+    let mut data = [0; ADVERTISING_DATA_LEN];
+    data[0] = 2;
+    data[1] = AD_TYPE_FLAGS;
+    data[2] = FLAG_LE_GENERAL_DISC_MODE | FLAG_BR_EDR_NOT_SUPPORTED;
+    data[3] = name.len() as u8 + 1;
+    data[4] = AD_TYPE_COMPLETE_LOCAL_NAME;
+    let mut i = 0;
+    while i < name.len() {
+        data[5 + i] = name[i];
+        i += 1;
+    }
+    data
+};
 
 /// BLE AD type for a complete list of 128-bit service UUIDs.
 const AD_TYPE_COMPLETE_128BIT_SERVICE_UUIDS: u8 = 0x07;
@@ -68,18 +103,15 @@ pub struct ProgressorService {
 
 /// Create an advertiser to use to connect to a BLE Central, and wait for it to connect.
 pub async fn advertise<'values, 'server, C: Controller>(
-    name: &'values str,
     peripheral: &mut Peripheral<'values, C, DefaultPacketPool>,
     server: &'server Server<'values>,
 ) -> Result<GattConnection<'values, 'server, DefaultPacketPool>, BleHostError<C::Error>> {
-    let advertising_data = advertising_data(name.as_bytes()).expect("Valid advertising data");
-
     debug!("Advertising BLE");
     let advertiser = peripheral
         .advertise(
             &Default::default(),
             Advertisement::ConnectableScannableUndirected {
-                adv_data: advertising_data.as_slice(),
+                adv_data: &ADVERTISING_DATA,
                 scan_data: SCAN_RESPONSE_DATA,
             },
         )
@@ -87,32 +119,4 @@ pub async fn advertise<'values, 'server, C: Controller>(
     let conn = advertiser.accept().await?.with_attribute_server(server)?;
     info!("BLE connection established");
     Ok(conn)
-}
-
-fn advertising_data(name: &[u8]) -> Result<ArrayVec<u8, 27>, ()> {
-    // BLE AD type and flag constants
-    const AD_TYPE_FLAGS: u8 = 0x01;
-    const AD_TYPE_COMPLETE_LOCAL_NAME: u8 = 0x09;
-    const FLAG_LE_GENERAL_DISC_MODE: u8 = 0x02;
-    const FLAG_BR_EDR_NOT_SUPPORTED: u8 = 0x04;
-
-    // Validate name length
-    if name.len() > 24 {
-        // Max allowed (27 - 3 bytes for flags)
-        return Err(());
-    }
-
-    let mut adv_data: ArrayVec<u8, 27> = ArrayVec::new();
-
-    // Add flags (length=2, type, flags)
-    adv_data.push(2);
-    adv_data.push(AD_TYPE_FLAGS);
-    adv_data.push(FLAG_LE_GENERAL_DISC_MODE | FLAG_BR_EDR_NOT_SUPPORTED);
-
-    // Add name (length=name.len()+1, type, name bytes)
-    adv_data.push(name.len() as u8 + 1);
-    adv_data.push(AD_TYPE_COMPLETE_LOCAL_NAME);
-    adv_data.try_extend_from_slice(name).map_err(|_| ())?;
-
-    Ok(adv_data)
 }
