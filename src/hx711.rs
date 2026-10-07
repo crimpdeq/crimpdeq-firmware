@@ -396,14 +396,14 @@ impl<'d> Hx711<'d> {
 
     /// Takes multiple samples and returns the average
     async fn take_samples(&mut self, num_samples: usize) -> Result<f32, Hx711Error> {
-        let mut total: f32 = 0.0;
+        let mut total: i64 = 0;
 
         for _ in 0..num_samples {
             self.wait_for_ready().await?;
-            total += self.read_raw() as f32;
+            total += i64::from(self.read_raw());
         }
 
-        Ok(total / num_samples as f32)
+        Ok((total as f64 / num_samples as f64) as f32)
     }
 
     /// Tares the sensor by measuring the average of several readings.
@@ -461,45 +461,55 @@ impl<'d> Hx711<'d> {
             return false;
         }
 
-        let mut valid_count = 0usize;
-        let mut base_point: Option<(f32, f32)> = None;
-        let mut sum_delta_raw_weight = 0.0;
-        let mut sum_delta_raw_sq = 0.0;
-
-        for (raw_value, weight) in calibration_points {
-            if !raw_value.is_finite() || !weight.is_finite() || *weight < 0.0 {
-                error!(
-                    "Skipping invalid calibration point raw={}, weight={}",
-                    raw_value, weight
-                );
-                continue;
-            }
-
-            valid_count += 1;
-            if let Some((base_raw, base_weight)) = base_point {
-                let delta_raw = raw_value - base_raw;
-                // Incoming calibration weights are expressed in kg, while
-                // calibration_factor operates on grams before read_calibrated()
-                // converts back to kg.
-                let delta_weight = (weight - base_weight) * 1000.0;
-                sum_delta_raw_weight += delta_raw * delta_weight;
-                sum_delta_raw_sq += delta_raw * delta_raw;
-            } else {
-                base_point = Some((*raw_value, *weight));
-            }
+        let is_valid = |(raw_value, weight): &&(f32, f32)| {
+            raw_value.is_finite() && weight.is_finite() && *weight >= 0.0
+        };
+        for (raw_value, weight) in calibration_points.iter().filter(|point| !is_valid(point)) {
+            error!(
+                "Skipping invalid calibration point raw={}, weight={}",
+                raw_value, weight
+            );
         }
 
+        // Incoming calibration weights are expressed in kg, while calibration_factor operates on
+        // grams before read_calibrated() converts back to kg.
+        let valid_points = || {
+            calibration_points
+                .iter()
+                .filter(is_valid)
+                .map(|(raw_value, weight)| (f64::from(*raw_value), f64::from(*weight) * 1000.0))
+        };
+
+        let valid_count = valid_points().count();
         if valid_count < 2 {
             error!("Calibration requires at least two valid points");
             return false;
         }
 
-        if sum_delta_raw_sq.abs() < f32::EPSILON {
+        // Least-squares slope around the mean, so no single point anchors the fit.
+        let (sum_raw, sum_weight) = valid_points()
+            .fold((0.0, 0.0), |(sum_raw, sum_weight), (raw, weight)| {
+                (sum_raw + raw, sum_weight + weight)
+            });
+        let mean_raw = sum_raw / valid_count as f64;
+        let mean_weight = sum_weight / valid_count as f64;
+        let (sum_delta_raw_weight, sum_delta_raw_sq) = valid_points().fold(
+            (0.0, 0.0),
+            |(sum_delta_raw_weight, sum_delta_raw_sq), (raw, weight)| {
+                let delta_raw = raw - mean_raw;
+                (
+                    sum_delta_raw_weight + delta_raw * (weight - mean_weight),
+                    sum_delta_raw_sq + delta_raw * delta_raw,
+                )
+            },
+        );
+
+        if sum_delta_raw_sq < f64::EPSILON {
             error!("Invalid calibration - points are too close together");
             return false;
         }
 
-        let scale_factor = sum_delta_raw_weight / sum_delta_raw_sq;
+        let scale_factor = (sum_delta_raw_weight / sum_delta_raw_sq) as f32;
         match self.update_calibration_factor(scale_factor) {
             Ok(_) => {
                 info!(
