@@ -537,7 +537,9 @@ async fn measurement_task(
             if command.uses_load_cell() && load_cell.is_powered_down() {
                 info!("Waking HX711 for {:?}", command);
                 if let Err(e) = load_cell.wake().await {
+                    // The HX711 is powered down again, so the next iteration retries.
                     error!("HX711 wake failed: {:?}", defmt::Debug2Format(&e));
+                    continue;
                 }
             }
             run_load_cell_command(command, &mut load_cell, channel).await;
