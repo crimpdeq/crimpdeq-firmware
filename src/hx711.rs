@@ -29,6 +29,11 @@ const HX711_DATA_BITS: usize = 24;
 const HX711_SIGN_BIT: u32 = 0x800000;
 /// Timeout waiting for the HX711 data pin to signal readiness.
 const HX711_READY_TIMEOUT: Duration = Duration::from_millis(500);
+/// Number of readings discarded after power-up.
+///
+/// The first conversion after power-up uses channel A with gain 128, and the output needs
+/// 4 more conversion periods to settle after the switch to the configured gain.
+const HX711_SETTLE_READINGS: usize = 5;
 
 /// Magic value used to validate stored calibration data.
 const CALIBRATION_STORAGE_MAGIC: u32 = 0x4344_5146;
@@ -94,6 +99,8 @@ pub struct Hx711<'d> {
     tare_value: i32,
     /// Calibration
     calibration_factor: f32,
+    /// Whether the HX711 is in power-down mode
+    powered_down: bool,
 }
 
 impl<'d> Hx711<'d> {
@@ -115,6 +122,7 @@ impl<'d> Hx711<'d> {
             gain_mode: GainMode::A64,
             tare_value: 0,
             calibration_factor: 0.0,
+            powered_down: false,
         };
 
         hx711.calibration_factor = hx711
@@ -253,6 +261,7 @@ impl<'d> Hx711<'d> {
         self.clock.set_high();
         self.clock.set_pad_hold(true);
         self.delay.delay_us(80);
+        self.powered_down = true;
     }
 
     /// Wake the HX711 back up after power-down.
@@ -261,6 +270,39 @@ impl<'d> Hx711<'d> {
         self.clock.set_pad_hold(false);
         self.clock.set_low();
         self.delay.delay_us(80);
+        self.powered_down = false;
+    }
+
+    /// Returns whether the HX711 is in power-down mode.
+    pub fn is_powered_down(&self) -> bool {
+        self.powered_down
+    }
+
+    /// Power the HX711 up if needed and wait until its readings are usable.
+    ///
+    /// If settling fails, the HX711 is powered down again so the next call retries it.
+    pub async fn wake(&mut self) -> Result<(), Hx711Error> {
+        if self.powered_down {
+            self.power_up();
+            if let Err(e) = self.settle().await {
+                self.power_down();
+                return Err(e);
+            }
+        }
+        Ok(())
+    }
+
+    /// Discards the readings taken before the configured gain applies and the output settles.
+    pub async fn settle(&mut self) -> Result<(), Hx711Error> {
+        debug!(
+            "Discarding {} HX711 settling readings",
+            HX711_SETTLE_READINGS
+        );
+        for _ in 0..HX711_SETTLE_READINGS {
+            self.wait_for_ready().await?;
+            self.read_raw();
+        }
+        Ok(())
     }
 
     /// Reads a single bit from the data pin.

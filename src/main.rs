@@ -489,11 +489,13 @@ async fn measurement_task(
     flash: FlashStorage<'static>,
 ) {
     let mut load_cell = Hx711::new(data_pin, clock_pin, delay, flash);
+    if let Err(e) = load_cell.settle().await {
+        error!("Initial HX711 settle failed: {:?}", defmt::Debug2Format(&e));
+    }
     if let Err(e) = load_cell.tare().await {
         error!("Initial tare failed: {:?}", defmt::Debug2Format(&e));
     }
     let mut measurement_buffer = WeightMeasurementBatch::new();
-    let mut hx711_powered_down = false;
 
     loop {
         // Get current device state
@@ -506,25 +508,18 @@ async fn measurement_task(
             )
         });
 
-        if hx711_powered_down && sleep_state == SleepState::Awake {
-            info!("Waking HX711 after sleep request was cancelled");
-            load_cell.power_up();
-            hx711_powered_down = false;
-        }
-
         match sleep_state {
             SleepState::Requested(reason) => {
-                if !hx711_powered_down {
+                if !load_cell.is_powered_down() {
                     info!("Powering down HX711 before deep sleep: {:?}", reason);
-                    measurement_buffer.clear();
                     load_cell.power_down();
-                    hx711_powered_down = true;
-                    critical_section::with(|cs| {
-                        DEVICE_STATE
-                            .borrow_ref_mut(cs)
-                            .mark_sleep_ready(SleepReadySource::Measurement);
-                    });
                 }
+                measurement_buffer.clear();
+                critical_section::with(|cs| {
+                    DEVICE_STATE
+                        .borrow_ref_mut(cs)
+                        .mark_sleep_ready(SleepReadySource::Measurement);
+                });
                 Timer::after(Duration::from_millis(20)).await;
                 continue;
             }
@@ -533,6 +528,31 @@ async fn measurement_task(
                 continue;
             }
             SleepState::Awake => {}
+        }
+
+        // Keep the HX711 powered down unless a command needs readings.
+        if status.uses_load_cell() {
+            if load_cell.is_powered_down() {
+                info!("Waking HX711");
+                if let Err(e) = load_cell.wake().await {
+                    // The HX711 is powered down again, so the next iteration retries.
+                    error!("HX711 wake failed: {:?}", defmt::Debug2Format(&e));
+                    continue;
+                }
+                // Start the timestamps once the HX711 delivers settled readings.
+                critical_section::with(|cs| {
+                    let mut state = DEVICE_STATE.borrow_ref_mut(cs);
+                    if state.measurement_status == MeasurementTaskStatus::Enabled {
+                        state.start_time = (esp_hal::time::Instant::now().duration_since_epoch())
+                            .as_micros() as u32;
+                    }
+                });
+                // The state may have changed while the HX711 settled.
+                continue;
+            }
+        } else if !load_cell.is_powered_down() {
+            debug!("Powering down idle HX711");
+            load_cell.power_down();
         }
 
         match status {
