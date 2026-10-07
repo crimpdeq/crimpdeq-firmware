@@ -4,7 +4,10 @@
 ///
 /// [Tindeq API documentation]: https://tindeq.com/progressor_api/
 use defmt::{Format, error, info, warn};
-use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
+use embassy_sync::{
+    blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex},
+    channel::Channel,
+};
 use esp_hal::time;
 use trouble_host::types::gatt_traits::{AsGatt, FromGatt, FromGattError};
 
@@ -12,6 +15,14 @@ use trouble_host::types::gatt_traits::{AsGatt, FromGatt, FromGattError};
 const DATA_POINT_COMMAND_CHANNEL_SIZE: usize = 80;
 /// Channel used to send data points
 pub type DataPointChannel = Channel<NoopRawMutex, DataPoint, DATA_POINT_COMMAND_CHANNEL_SIZE>;
+/// Number of load cell commands that can wait for the measurement task.
+const LOAD_CELL_COMMAND_QUEUE_SIZE: usize = 4;
+/// Queue of one-shot commands for the measurement task.
+pub static LOAD_CELL_COMMANDS: Channel<
+    CriticalSectionRawMutex,
+    LoadCellCommand,
+    LOAD_CELL_COMMAND_QUEUE_SIZE,
+> = Channel::new();
 
 /// Number of samples packed into each BLE measurement packet.
 pub const SAMPLES_PER_PACKET: usize = 5;
@@ -39,20 +50,25 @@ pub enum MeasurementTaskStatus {
     Enabled,
     /// Measurements are disabled
     Disabled,
-    /// Device is in calibration mode with target weight
-    Calibration(f32),
+}
+
+/// One-shot command handled by the measurement task.
+#[derive(Copy, Clone, Debug, PartialEq, Format)]
+pub enum LoadCellCommand {
     /// Taring the scale (used in ClimbHarder App)
     Tare,
+    /// Adds a calibration point with the known weight in kg
+    Calibrate(f32),
     /// Restores default calibration values
     DefaultCalibration,
     /// Get the calibration values
     GetCalibration,
 }
 
-impl MeasurementTaskStatus {
-    /// Returns whether this status needs readings from the load cell.
+impl LoadCellCommand {
+    /// Returns whether this command needs readings from the load cell.
     pub fn uses_load_cell(self) -> bool {
-        matches!(self, Self::Enabled | Self::Tare | Self::Calibration(_))
+        matches!(self, Self::Tare | Self::Calibrate(_))
     }
 }
 
@@ -162,27 +178,31 @@ impl DeviceState {
         self.measurement_status = MeasurementTaskStatus::Disabled;
     }
 
-    /// Start taring process
-    pub fn tare(&mut self) {
+    /// Queue a command for the measurement task.
+    fn queue_load_cell_command(&mut self, command: LoadCellCommand) {
         self.record_activity();
-        self.measurement_status = MeasurementTaskStatus::Tare;
+        if LOAD_CELL_COMMANDS.try_send(command).is_err() {
+            warn!("Load cell command queue full, dropping {:?}", command);
+        }
     }
 
-    /// Set calibration mode with the given weight
+    /// Start taring process
+    pub fn tare(&mut self) {
+        self.queue_load_cell_command(LoadCellCommand::Tare);
+    }
+
+    /// Add a calibration point with the given weight
     pub fn calibrate(&mut self, weight: f32) {
-        self.record_activity();
-        self.measurement_status = MeasurementTaskStatus::Calibration(weight);
+        self.queue_load_cell_command(LoadCellCommand::Calibrate(weight));
     }
 
     pub fn get_calibration(&mut self) {
-        self.record_activity();
-        self.measurement_status = MeasurementTaskStatus::GetCalibration;
+        self.queue_load_cell_command(LoadCellCommand::GetCalibration);
     }
 
     /// Reset to default calibration
     pub fn reset_calibration(&mut self) {
-        self.record_activity();
-        self.measurement_status = MeasurementTaskStatus::DefaultCalibration;
+        self.queue_load_cell_command(LoadCellCommand::DefaultCalibration);
     }
 
     /// Mark BLE as connected.
@@ -191,8 +211,9 @@ impl DeviceState {
         self.record_activity();
     }
 
-    /// Mark BLE as disconnected.
+    /// Mark BLE as disconnected and drop the commands of the closed connection.
     pub fn on_ble_disconnected(&mut self) {
+        LOAD_CELL_COMMANDS.clear();
         self.ble_connected = false;
         self.record_activity();
     }
@@ -210,6 +231,7 @@ impl DeviceState {
     /// Request deep sleep. The measurement and LED tasks will power down peripherals first.
     pub fn request_sleep(&mut self, reason: SleepReason) {
         if self.sleep_state == SleepState::Awake {
+            LOAD_CELL_COMMANDS.clear();
             self.measurement_status = MeasurementTaskStatus::Disabled;
             self.sleep_measurement_ready = false;
             self.sleep_status_led_ready = false;
