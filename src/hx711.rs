@@ -8,9 +8,10 @@
 /// [loadcell]: https://crates.io/crates/loadcell
 use core::fmt;
 
-use defmt::{debug, error, info};
+use defmt::{debug, error, info, warn};
 use embassy_time::{Duration, with_timeout};
 use embedded_hal::delay::DelayNs;
+use esp_bootloader_esp_idf::partitions::{PARTITION_TABLE_MAX_LEN, read_partition_table};
 use esp_hal::{
     delay::Delay,
     gpio::{Input, Output},
@@ -35,6 +36,8 @@ const HX711_READY_TIMEOUT: Duration = Duration::from_millis(500);
 /// 4 more conversion periods to settle after the switch to the configured gain.
 const HX711_SETTLE_READINGS: usize = 5;
 
+/// Label of the data partition that stores the calibration.
+const CALIBRATION_PARTITION_LABEL: &str = "calib";
 /// Magic value used to validate stored calibration data.
 const CALIBRATION_STORAGE_MAGIC: u32 = 0x4344_5146;
 /// Storage format version for persisted calibration data.
@@ -132,7 +135,28 @@ impl<'d> Hx711<'d> {
         hx711
     }
 
-    fn calibration_storage_offset(&self) -> Result<u32, Hx711Error> {
+    fn calibration_storage_offset(&mut self) -> Result<u32, Hx711Error> {
+        let mut table_buffer = [0u8; PARTITION_TABLE_MAX_LEN];
+        match read_partition_table(&mut self.flash, &mut table_buffer) {
+            Ok(table) => {
+                if let Some(partition) = table
+                    .iter()
+                    .find(|partition| partition.label_as_str() == CALIBRATION_PARTITION_LABEL)
+                {
+                    if (partition.len() as usize) < CALIBRATION_STORAGE_SIZE {
+                        error!("Calibration partition too small");
+                        return Err(Hx711Error::FlashError);
+                    }
+                    return Ok(partition.offset());
+                }
+            }
+            Err(e) => warn!("Failed to read partition table: {:?}", e),
+        }
+
+        // Updates that only flash the app keep the previous partition table, which has no
+        // calibration partition. Fall back to the last flash sector: the calibration was stored
+        // there before the partition existed, and the partition starts at the same offset.
+        warn!("Calibration partition not found, using the last flash sector");
         let capacity = self.flash.capacity();
         let sector_size = FlashStorage::SECTOR_SIZE as usize;
 
@@ -184,7 +208,7 @@ impl<'d> Hx711<'d> {
 
     /// Check if the calibration factor is valid
     pub fn is_valid_calibration_factor(factor: f32) -> bool {
-        !factor.is_nan() && factor != 0.0
+        factor.is_finite() && factor != 0.0
     }
 
     /// Write calibration factor to flash

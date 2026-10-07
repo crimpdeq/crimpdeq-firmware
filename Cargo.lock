@@ -784,6 +784,7 @@ version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba0e487f6843419bb085d871f6e860da1bb8c267ce1c5db1051b83882e943054"
 dependencies = [
+ "defmt 1.1.1",
  "document-features",
  "esp-config",
  "esp-hal-procmacros",
