@@ -49,6 +49,13 @@ pub enum MeasurementTaskStatus {
     GetCalibration,
 }
 
+impl MeasurementTaskStatus {
+    /// Returns whether this status needs readings from the load cell.
+    pub fn uses_load_cell(self) -> bool {
+        matches!(self, Self::Enabled | Self::Tare | Self::Calibration(_))
+    }
+}
+
 /// Reason why the device is transitioning to sleep.
 #[derive(Copy, Clone, Debug, PartialEq, Format)]
 pub enum SleepReason {
