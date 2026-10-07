@@ -245,15 +245,20 @@ impl<'d> Hx711<'d> {
     }
 
     /// Put the HX711 into its low-power power-down mode.
+    ///
+    /// The clock pad is held high so the HX711 stays powered down during deep sleep,
+    /// when the digital domain no longer drives the pin.
     pub fn power_down(&mut self) {
         debug!("Powering down HX711");
         self.clock.set_high();
+        self.clock.set_pad_hold(true);
         self.delay.delay_us(80);
     }
 
     /// Wake the HX711 back up after power-down.
     pub fn power_up(&mut self) {
         debug!("Powering up HX711");
+        self.clock.set_pad_hold(false);
         self.clock.set_low();
         self.delay.delay_us(80);
     }
