@@ -60,6 +60,11 @@ const STATUS_LED_RMT_BUFFER_SIZE: usize = buffer_size::<RGB8>(STATUS_LED_COUNT);
 const STATUS_LED_BRIGHTNESS: u8 = 24;
 const STATUS_LED_LOW_BATTERY_MV: u32 = 3500;
 const STATUS_LED_CHARGING_RATE_THRESHOLD: f32 = 0.1;
+/// Battery voltage at or below which the device warns and enters deep sleep. Below about 3.3 V
+/// the 3V3 regulator drops out.
+const LOW_BATTERY_SHUTDOWN_MV: u32 = 3300;
+/// Consecutive low battery readings needed before shutting down, to ignore load transients.
+const LOW_BATTERY_SHUTDOWN_READINGS: u8 = 2;
 const STATUS_LED_OFF: RGB8 = RGB8 { r: 0, g: 0, b: 0 };
 const STATUS_LED_DISCONNECTED: RGB8 = RGB8 { r: 0, g: 0, b: 255 };
 const STATUS_LED_CONNECTED: RGB8 = RGB8 { r: 0, g: 255, b: 0 };
@@ -97,6 +102,7 @@ static DEVICE_STATE: Mutex<RefCell<DeviceState>> = Mutex::new(RefCell::new(Devic
     sleep_state: SleepState::Awake,
     sleep_measurement_ready: false,
     sleep_status_led_ready: false,
+    shutdown_requested: false,
 }));
 
 // ESP-IDF App Descriptor
@@ -209,7 +215,7 @@ async fn main(spawner: Spawner) -> ! {
 
     // Spawn tasks
     spawner.spawn(measurement_task(channel, clock_pin, data_pin, delay, flash).unwrap());
-    spawner.spawn(battery_gauge_task(battery_gauge).unwrap());
+    spawner.spawn(battery_gauge_task(battery_gauge, channel).unwrap());
     spawner.spawn(status_led_task(status_led).unwrap());
     spawner.spawn(deep_sleep_task(low_power).unwrap());
 
@@ -446,7 +452,12 @@ async fn deep_sleep_task(mut low_power: LowPower<'static>) {
 }
 
 #[embassy_executor::task]
-async fn battery_gauge_task(mut gauge: Max17048<I2c<'static, Async>>) {
+async fn battery_gauge_task(
+    mut gauge: Max17048<I2c<'static, Async>>,
+    channel: &'static DataPointChannel,
+) {
+    let mut low_battery_readings = 0;
+
     loop {
         let voltage = gauge.voltage().await;
         let soc = gauge.soc().await;
@@ -462,11 +473,40 @@ async fn battery_gauge_task(mut gauge: Max17048<I2c<'static, Async>>) {
                 );
 
                 // Update device state
-                critical_section::with(|cs| {
+                let ble_connected = critical_section::with(|cs| {
                     let mut state = DEVICE_STATE.borrow_ref_mut(cs);
                     state.battery_voltage = battery_voltage_mv;
                     state.battery_charging = battery_charging;
+                    state.is_ble_connected()
                 });
+
+                if battery_voltage_mv <= LOW_BATTERY_SHUTDOWN_MV && !battery_charging {
+                    low_battery_readings += 1;
+                } else {
+                    low_battery_readings = 0;
+                }
+
+                if low_battery_readings >= LOW_BATTERY_SHUTDOWN_READINGS {
+                    warn!(
+                        "Battery at {:?} mV, entering deep sleep",
+                        battery_voltage_mv
+                    );
+                    if ble_connected {
+                        if channel
+                            .try_send(DataPoint::from(ResponseCode::LowPowerWarning))
+                            .is_err()
+                        {
+                            warn!("Failed to queue low power warning");
+                        }
+                        // Give the notification time to reach the client.
+                        Timer::after(Duration::from_millis(500)).await;
+                    }
+                    critical_section::with(|cs| {
+                        DEVICE_STATE
+                            .borrow_ref_mut(cs)
+                            .request_sleep(SleepReason::LowBattery);
+                    });
+                }
             }
             (voltage, soc, charge_rate) => {
                 warn!(
