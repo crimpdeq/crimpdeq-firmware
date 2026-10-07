@@ -114,8 +114,6 @@ pub struct DeviceState {
     pub calibration_point_count: usize,
     /// Battery voltage in millivolts
     pub battery_voltage: u32,
-    /// Whether the fuel gauge reports that the battery is charging.
-    pub battery_charging: bool,
     /// Timestamp of the last user-visible activity.
     pub last_activity_time_ms: u32,
     /// Whether BLE is currently connected.
@@ -132,13 +130,19 @@ pub struct DeviceState {
 
 impl Default for DeviceState {
     fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DeviceState {
+    /// Create the state used after boot.
+    pub const fn new() -> Self {
         Self {
             measurement_status: MeasurementTaskStatus::Disabled,
             start_time: 0,
             calibration_points: [(0.0, 0.0); MAX_CALIBRATION_POINTS],
             calibration_point_count: 0,
             battery_voltage: 4300,
-            battery_charging: false,
             last_activity_time_ms: 0,
             ble_connected: false,
             sleep_state: SleepState::Awake,
@@ -147,9 +151,7 @@ impl Default for DeviceState {
             shutdown_requested: false,
         }
     }
-}
 
-impl DeviceState {
     fn now_ms() -> u32 {
         (time::Instant::now().duration_since_epoch()).as_millis() as u32
     }
@@ -253,10 +255,8 @@ impl DeviceState {
     /// Reset runtime state to the same awake/disconnected state used after boot.
     pub fn reset_to_initial_state(&mut self) {
         let battery_voltage = self.battery_voltage;
-        let battery_charging = self.battery_charging;
         *self = Self {
             battery_voltage,
-            battery_charging,
             ..Self::default()
         };
         self.on_ble_disconnected();
@@ -448,10 +448,7 @@ impl TryFrom<u8> for ControlOpCode {
             0x67 => Ok(ControlOpCode::StartPeakRFDMeasurement),
             0x68 => Ok(ControlOpCode::StartPeakRFDMeasurementSeries),
             0x6A => Ok(ControlOpCode::SaveCalibration),
-            _ => {
-                error!("Invalid OpCode received: {:#x}", op_code);
-                Err(())
-            }
+            _ => Err(()),
         }
     }
 }

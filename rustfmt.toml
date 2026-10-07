@@ -1,3 +1,4 @@
+# These options need nightly rustfmt: run `cargo +nightly fmt`.
 # Imports
 group_imports       = "StdExternalCrate"
 imports_granularity = "Crate"

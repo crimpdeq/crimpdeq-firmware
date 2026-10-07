@@ -64,7 +64,8 @@ const STATUS_LED_COUNT: usize = 1;
 const STATUS_LED_RMT_BUFFER_SIZE: usize = buffer_size::<RGB8>(STATUS_LED_COUNT);
 const STATUS_LED_BRIGHTNESS: u8 = 24;
 const STATUS_LED_LOW_BATTERY_MV: u32 = 3500;
-const STATUS_LED_CHARGING_RATE_THRESHOLD: f32 = 0.1;
+/// Charge rate, in %/h, above which the battery counts as charging.
+const CHARGING_RATE_THRESHOLD: f32 = 0.1;
 /// Battery voltage at or below which the device warns and enters deep sleep. Below about 3.3 V
 /// the 3V3 regulator drops out.
 const LOW_BATTERY_SHUTDOWN_MV: u32 = 3300;
@@ -97,20 +98,7 @@ macro_rules! mk_static {
 }
 
 /// Static tracking the state of the device
-static DEVICE_STATE: Mutex<RefCell<DeviceState>> = Mutex::new(RefCell::new(DeviceState {
-    measurement_status: MeasurementTaskStatus::Disabled,
-    start_time: 0,
-    calibration_points: [(0.0, 0.0); MAX_CALIBRATION_POINTS],
-    calibration_point_count: 0,
-    battery_voltage: 4300,
-    battery_charging: false,
-    last_activity_time_ms: 0,
-    ble_connected: false,
-    sleep_state: SleepState::Awake,
-    sleep_measurement_ready: false,
-    sleep_status_led_ready: false,
-    shutdown_requested: false,
-}));
+static DEVICE_STATE: Mutex<RefCell<DeviceState>> = Mutex::new(RefCell::new(DeviceState::new()));
 
 /// Logs the panic over RTT. Debug builds then halt so a debugger can inspect the panic; release
 /// builds reset the chip, so a panic does not leave the device hung with the radio and peripherals
@@ -261,7 +249,7 @@ async fn main(spawner: Spawner) -> ! {
     spawner.spawn(status_led_task(status_led).unwrap());
     spawner.spawn(deep_sleep_task(low_power).unwrap());
 
-    let _ = join(ble_task(runner), async {
+    join(ble_task(runner), async {
         loop {
             match advertise(&mut peripheral, &server).await {
                 Ok(conn) => {
@@ -293,10 +281,7 @@ async fn main(spawner: Spawner) -> ! {
     })
     .await;
 
-    // Idle loop
-    loop {
-        Timer::after(Duration::from_millis(50)).await;
-    }
+    unreachable!("BLE tasks never return")
 }
 
 /// Runs the BLE host.
@@ -499,7 +484,7 @@ async fn battery_gauge_task(
         match (voltage, soc, charge_rate) {
             (Ok(voltage), Ok(soc), Ok(charge_rate)) => {
                 let battery_voltage_mv = (voltage * 1000.0) as u32;
-                let battery_charging = charge_rate > STATUS_LED_CHARGING_RATE_THRESHOLD;
+                let battery_charging = charge_rate > CHARGING_RATE_THRESHOLD;
                 info!(
                     "Battery: {:?} mV, SOC: {:?}%, charge rate: {:?}%/h",
                     battery_voltage_mv, soc, charge_rate
@@ -508,7 +493,6 @@ async fn battery_gauge_task(
                 // Update device state
                 let ble_connected = update_device_state(|state| {
                     state.battery_voltage = battery_voltage_mv;
-                    state.battery_charging = battery_charging;
                     state.is_ble_connected()
                 });
 
