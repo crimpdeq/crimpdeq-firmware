@@ -8,9 +8,10 @@
 /// [loadcell]: https://crates.io/crates/loadcell
 use core::fmt;
 
-use defmt::{debug, error, info};
+use defmt::{debug, error, info, warn};
 use embassy_time::{Duration, with_timeout};
 use embedded_hal::delay::DelayNs;
+use esp_bootloader_esp_idf::partitions::{PARTITION_TABLE_MAX_LEN, read_partition_table};
 use esp_hal::{
     delay::Delay,
     gpio::{Input, Output},
@@ -29,7 +30,14 @@ const HX711_DATA_BITS: usize = 24;
 const HX711_SIGN_BIT: u32 = 0x800000;
 /// Timeout waiting for the HX711 data pin to signal readiness.
 const HX711_READY_TIMEOUT: Duration = Duration::from_millis(500);
+/// Number of readings discarded after power-up.
+///
+/// The first conversion after power-up uses channel A with gain 128, and the output needs
+/// 4 more conversion periods to settle after the switch to the configured gain.
+const HX711_SETTLE_READINGS: usize = 5;
 
+/// Label of the data partition that stores the calibration.
+const CALIBRATION_PARTITION_LABEL: &str = "calib";
 /// Magic value used to validate stored calibration data.
 const CALIBRATION_STORAGE_MAGIC: u32 = 0x4344_5146;
 /// Storage format version for persisted calibration data.
@@ -94,6 +102,8 @@ pub struct Hx711<'d> {
     tare_value: i32,
     /// Calibration
     calibration_factor: f32,
+    /// Whether the HX711 is in power-down mode
+    powered_down: bool,
 }
 
 impl<'d> Hx711<'d> {
@@ -115,6 +125,7 @@ impl<'d> Hx711<'d> {
             gain_mode: GainMode::A64,
             tare_value: 0,
             calibration_factor: 0.0,
+            powered_down: false,
         };
 
         hx711.calibration_factor = hx711
@@ -124,7 +135,28 @@ impl<'d> Hx711<'d> {
         hx711
     }
 
-    fn calibration_storage_offset(&self) -> Result<u32, Hx711Error> {
+    fn calibration_storage_offset(&mut self) -> Result<u32, Hx711Error> {
+        let mut table_buffer = [0u8; PARTITION_TABLE_MAX_LEN];
+        match read_partition_table(&mut self.flash, &mut table_buffer) {
+            Ok(table) => {
+                if let Some(partition) = table
+                    .iter()
+                    .find(|partition| partition.label_as_str() == CALIBRATION_PARTITION_LABEL)
+                {
+                    if (partition.len() as usize) < CALIBRATION_STORAGE_SIZE {
+                        error!("Calibration partition too small");
+                        return Err(Hx711Error::FlashError);
+                    }
+                    return Ok(partition.offset());
+                }
+            }
+            Err(e) => warn!("Failed to read partition table: {:?}", e),
+        }
+
+        // Updates that only flash the app keep the previous partition table, which has no
+        // calibration partition. Fall back to the last flash sector: the calibration was stored
+        // there before the partition existed, and the partition starts at the same offset.
+        warn!("Calibration partition not found, using the last flash sector");
         let capacity = self.flash.capacity();
         let sector_size = FlashStorage::SECTOR_SIZE as usize;
 
@@ -176,7 +208,7 @@ impl<'d> Hx711<'d> {
 
     /// Check if the calibration factor is valid
     pub fn is_valid_calibration_factor(factor: f32) -> bool {
-        !factor.is_nan() && factor != 0.0
+        factor.is_finite() && factor != 0.0
     }
 
     /// Write calibration factor to flash
@@ -245,17 +277,56 @@ impl<'d> Hx711<'d> {
     }
 
     /// Put the HX711 into its low-power power-down mode.
+    ///
+    /// The clock pad is held high so the HX711 stays powered down during deep sleep,
+    /// when the digital domain no longer drives the pin.
     pub fn power_down(&mut self) {
         debug!("Powering down HX711");
         self.clock.set_high();
+        self.clock.set_pad_hold(true);
         self.delay.delay_us(80);
+        self.powered_down = true;
     }
 
     /// Wake the HX711 back up after power-down.
     pub fn power_up(&mut self) {
         debug!("Powering up HX711");
+        self.clock.set_pad_hold(false);
         self.clock.set_low();
         self.delay.delay_us(80);
+        self.powered_down = false;
+    }
+
+    /// Returns whether the HX711 is in power-down mode.
+    pub fn is_powered_down(&self) -> bool {
+        self.powered_down
+    }
+
+    /// Power the HX711 up if needed and wait until its readings are usable.
+    ///
+    /// If settling fails, the HX711 is powered down again so the next call retries it.
+    pub async fn wake(&mut self) -> Result<(), Hx711Error> {
+        if self.powered_down {
+            self.power_up();
+            if let Err(e) = self.settle().await {
+                self.power_down();
+                return Err(e);
+            }
+        }
+        Ok(())
+    }
+
+    /// Discards the readings taken before the configured gain applies and the output settles.
+    pub async fn settle(&mut self) -> Result<(), Hx711Error> {
+        debug!(
+            "Discarding {} HX711 settling readings",
+            HX711_SETTLE_READINGS
+        );
+        for _ in 0..HX711_SETTLE_READINGS {
+            self.wait_for_ready().await?;
+            self.read_raw();
+        }
+        Ok(())
     }
 
     /// Reads a single bit from the data pin.
@@ -330,14 +401,14 @@ impl<'d> Hx711<'d> {
 
     /// Takes multiple samples and returns the average
     async fn take_samples(&mut self, num_samples: usize) -> Result<f32, Hx711Error> {
-        let mut total: f32 = 0.0;
+        let mut total: i64 = 0;
 
         for _ in 0..num_samples {
             self.wait_for_ready().await?;
-            total += self.read_raw() as f32;
+            total += i64::from(self.read_raw());
         }
 
-        Ok(total / num_samples as f32)
+        Ok((total as f64 / num_samples as f64) as f32)
     }
 
     /// Tares the sensor by measuring the average of several readings.
@@ -395,45 +466,55 @@ impl<'d> Hx711<'d> {
             return false;
         }
 
-        let mut valid_count = 0usize;
-        let mut base_point: Option<(f32, f32)> = None;
-        let mut sum_delta_raw_weight = 0.0;
-        let mut sum_delta_raw_sq = 0.0;
-
-        for (raw_value, weight) in calibration_points {
-            if !raw_value.is_finite() || !weight.is_finite() || *weight < 0.0 {
-                error!(
-                    "Skipping invalid calibration point raw={}, weight={}",
-                    raw_value, weight
-                );
-                continue;
-            }
-
-            valid_count += 1;
-            if let Some((base_raw, base_weight)) = base_point {
-                let delta_raw = raw_value - base_raw;
-                // Incoming calibration weights are expressed in kg, while
-                // calibration_factor operates on grams before read_calibrated()
-                // converts back to kg.
-                let delta_weight = (weight - base_weight) * 1000.0;
-                sum_delta_raw_weight += delta_raw * delta_weight;
-                sum_delta_raw_sq += delta_raw * delta_raw;
-            } else {
-                base_point = Some((*raw_value, *weight));
-            }
+        let is_valid = |(raw_value, weight): &&(f32, f32)| {
+            raw_value.is_finite() && weight.is_finite() && *weight >= 0.0
+        };
+        for (raw_value, weight) in calibration_points.iter().filter(|point| !is_valid(point)) {
+            error!(
+                "Skipping invalid calibration point raw={}, weight={}",
+                raw_value, weight
+            );
         }
 
+        // Incoming calibration weights are expressed in kg, while calibration_factor operates on
+        // grams before read_calibrated() converts back to kg.
+        let valid_points = || {
+            calibration_points
+                .iter()
+                .filter(is_valid)
+                .map(|(raw_value, weight)| (f64::from(*raw_value), f64::from(*weight) * 1000.0))
+        };
+
+        let valid_count = valid_points().count();
         if valid_count < 2 {
             error!("Calibration requires at least two valid points");
             return false;
         }
 
-        if sum_delta_raw_sq.abs() < f32::EPSILON {
+        // Least-squares slope around the mean, so no single point anchors the fit.
+        let (sum_raw, sum_weight) = valid_points()
+            .fold((0.0, 0.0), |(sum_raw, sum_weight), (raw, weight)| {
+                (sum_raw + raw, sum_weight + weight)
+            });
+        let mean_raw = sum_raw / valid_count as f64;
+        let mean_weight = sum_weight / valid_count as f64;
+        let (sum_delta_raw_weight, sum_delta_raw_sq) = valid_points().fold(
+            (0.0, 0.0),
+            |(sum_delta_raw_weight, sum_delta_raw_sq), (raw, weight)| {
+                let delta_raw = raw - mean_raw;
+                (
+                    sum_delta_raw_weight + delta_raw * (weight - mean_weight),
+                    sum_delta_raw_sq + delta_raw * delta_raw,
+                )
+            },
+        );
+
+        if sum_delta_raw_sq < f64::EPSILON {
             error!("Invalid calibration - points are too close together");
             return false;
         }
 
-        let scale_factor = sum_delta_raw_weight / sum_delta_raw_sq;
+        let scale_factor = (sum_delta_raw_weight / sum_delta_raw_sq) as f32;
         match self.update_calibration_factor(scale_factor) {
             Ok(_) => {
                 info!(

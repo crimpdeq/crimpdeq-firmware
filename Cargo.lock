@@ -237,7 +237,7 @@ dependencies = [
 
 [[package]]
 name = "crimpdeq"
-version = "0.3.1"
+version = "2.1.0"
 dependencies = [
  "arrayvec",
  "bt-hci 0.10.1",
@@ -256,7 +256,6 @@ dependencies = [
  "esp-rtos",
  "esp-storage",
  "max170xx",
- "panic-rtt-target",
  "rtt-target",
  "smart-leds",
  "static_cell",
@@ -784,6 +783,7 @@ version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba0e487f6843419bb085d871f6e860da1bb8c267ce1c5db1051b83882e943054"
 dependencies = [
+ "defmt 1.1.1",
  "document-features",
  "esp-config",
  "esp-hal-procmacros",
@@ -1711,18 +1711,6 @@ name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
-
-[[package]]
-name = "panic-rtt-target"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9a8116ffce1f89818647b84fba66d16cfdf3c0bee3c9320e606588d3e7415ce7"
-dependencies = [
- "critical-section",
- "defmt 0.3.100",
- "portable-atomic",
- "rtt-target",
-]
 
 [[package]]
 name = "paste"

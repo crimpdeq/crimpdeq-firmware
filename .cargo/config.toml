@@ -4,7 +4,7 @@ bin-merged = "espflash save-image --chip esp32c3 crimpdeq.bin --merge"
 flash = "espflash flash --chip esp32c3"
 
 [target.riscv32imc-unknown-none-elf]
-runner = "probe-rs run --chip esp32c3 --no-location --preverify --restore-unwritten --always-print-stacktrace"
+runner = "probe-rs run --chip esp32c3 --idf-partition-table partitions.csv --no-location --preverify --restore-unwritten --always-print-stacktrace"
 
 [env]
 # Defmt Logging
@@ -30,6 +30,3 @@ rustflags = [
 ]
 
 target = "riscv32imc-unknown-none-elf"
-
-[unstable]
-build-std = ["alloc", "core"]

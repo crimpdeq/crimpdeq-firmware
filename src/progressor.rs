@@ -4,7 +4,10 @@
 ///
 /// [Tindeq API documentation]: https://tindeq.com/progressor_api/
 use defmt::{Format, error, info, warn};
-use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
+use embassy_sync::{
+    blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex},
+    channel::Channel,
+};
 use esp_hal::time;
 use trouble_host::types::gatt_traits::{AsGatt, FromGatt, FromGattError};
 
@@ -12,6 +15,14 @@ use trouble_host::types::gatt_traits::{AsGatt, FromGatt, FromGattError};
 const DATA_POINT_COMMAND_CHANNEL_SIZE: usize = 80;
 /// Channel used to send data points
 pub type DataPointChannel = Channel<NoopRawMutex, DataPoint, DATA_POINT_COMMAND_CHANNEL_SIZE>;
+/// Number of load cell commands that can wait for the measurement task.
+const LOAD_CELL_COMMAND_QUEUE_SIZE: usize = 4;
+/// Queue of one-shot commands for the measurement task.
+pub static LOAD_CELL_COMMANDS: Channel<
+    CriticalSectionRawMutex,
+    LoadCellCommand,
+    LOAD_CELL_COMMAND_QUEUE_SIZE,
+> = Channel::new();
 
 /// Number of samples packed into each BLE measurement packet.
 pub const SAMPLES_PER_PACKET: usize = 5;
@@ -39,14 +50,26 @@ pub enum MeasurementTaskStatus {
     Enabled,
     /// Measurements are disabled
     Disabled,
-    /// Device is in calibration mode with target weight
-    Calibration(f32),
+}
+
+/// One-shot command handled by the measurement task.
+#[derive(Copy, Clone, Debug, PartialEq, Format)]
+pub enum LoadCellCommand {
     /// Taring the scale (used in ClimbHarder App)
     Tare,
+    /// Adds a calibration point with the known weight in kg
+    Calibrate(f32),
     /// Restores default calibration values
     DefaultCalibration,
     /// Get the calibration values
     GetCalibration,
+}
+
+impl LoadCellCommand {
+    /// Returns whether this command needs readings from the load cell.
+    pub fn uses_load_cell(self) -> bool {
+        matches!(self, Self::Tare | Self::Calibrate(_))
+    }
 }
 
 /// Reason why the device is transitioning to sleep.
@@ -54,6 +77,10 @@ pub enum MeasurementTaskStatus {
 pub enum SleepReason {
     /// No user or BLE activity has been observed for too long.
     IdleTimeout,
+    /// The client sent the Shutdown command.
+    Shutdown,
+    /// The battery is too low to keep the 3V3 rail regulated.
+    LowBattery,
 }
 
 /// Sleep transition state.
@@ -87,8 +114,6 @@ pub struct DeviceState {
     pub calibration_point_count: usize,
     /// Battery voltage in millivolts
     pub battery_voltage: u32,
-    /// Whether the fuel gauge reports that the battery is charging.
-    pub battery_charging: bool,
     /// Timestamp of the last user-visible activity.
     pub last_activity_time_ms: u32,
     /// Whether BLE is currently connected.
@@ -99,27 +124,34 @@ pub struct DeviceState {
     pub sleep_measurement_ready: bool,
     /// Whether the status LED has been explicitly turned off for sleep.
     pub sleep_status_led_ready: bool,
+    /// Whether the client asked to turn the device off once it disconnects.
+    pub shutdown_requested: bool,
 }
 
 impl Default for DeviceState {
     fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DeviceState {
+    /// Create the state used after boot.
+    pub const fn new() -> Self {
         Self {
             measurement_status: MeasurementTaskStatus::Disabled,
             start_time: 0,
             calibration_points: [(0.0, 0.0); MAX_CALIBRATION_POINTS],
             calibration_point_count: 0,
             battery_voltage: 4300,
-            battery_charging: false,
             last_activity_time_ms: 0,
             ble_connected: false,
             sleep_state: SleepState::Awake,
             sleep_measurement_ready: false,
             sleep_status_led_ready: false,
+            shutdown_requested: false,
         }
     }
-}
 
-impl DeviceState {
     fn now_ms() -> u32 {
         (time::Instant::now().duration_since_epoch()).as_millis() as u32
     }
@@ -132,7 +164,8 @@ impl DeviceState {
                 self.sleep_measurement_ready = false;
                 self.sleep_status_led_ready = false;
             }
-            SleepState::Awake => {}
+            // Activity does not cancel a shutdown or a low battery sleep.
+            SleepState::Requested(_) | SleepState::Ready(_) | SleepState::Awake => {}
         }
     }
 
@@ -155,27 +188,31 @@ impl DeviceState {
         self.measurement_status = MeasurementTaskStatus::Disabled;
     }
 
-    /// Start taring process
-    pub fn tare(&mut self) {
+    /// Queue a command for the measurement task.
+    fn queue_load_cell_command(&mut self, command: LoadCellCommand) {
         self.record_activity();
-        self.measurement_status = MeasurementTaskStatus::Tare;
+        if LOAD_CELL_COMMANDS.try_send(command).is_err() {
+            warn!("Load cell command queue full, dropping {:?}", command);
+        }
     }
 
-    /// Set calibration mode with the given weight
+    /// Start taring process
+    pub fn tare(&mut self) {
+        self.queue_load_cell_command(LoadCellCommand::Tare);
+    }
+
+    /// Add a calibration point with the given weight
     pub fn calibrate(&mut self, weight: f32) {
-        self.record_activity();
-        self.measurement_status = MeasurementTaskStatus::Calibration(weight);
+        self.queue_load_cell_command(LoadCellCommand::Calibrate(weight));
     }
 
     pub fn get_calibration(&mut self) {
-        self.record_activity();
-        self.measurement_status = MeasurementTaskStatus::GetCalibration;
+        self.queue_load_cell_command(LoadCellCommand::GetCalibration);
     }
 
     /// Reset to default calibration
     pub fn reset_calibration(&mut self) {
-        self.record_activity();
-        self.measurement_status = MeasurementTaskStatus::DefaultCalibration;
+        self.queue_load_cell_command(LoadCellCommand::DefaultCalibration);
     }
 
     /// Mark BLE as connected.
@@ -184,10 +221,14 @@ impl DeviceState {
         self.record_activity();
     }
 
-    /// Mark BLE as disconnected.
+    /// Mark BLE as disconnected and drop the commands of the closed connection.
     pub fn on_ble_disconnected(&mut self) {
+        LOAD_CELL_COMMANDS.clear();
         self.ble_connected = false;
         self.record_activity();
+        if self.shutdown_requested {
+            self.request_sleep(SleepReason::Shutdown);
+        }
     }
 
     /// Returns true when BLE is currently connected.
@@ -203,6 +244,7 @@ impl DeviceState {
     /// Request deep sleep. The measurement and LED tasks will power down peripherals first.
     pub fn request_sleep(&mut self, reason: SleepReason) {
         if self.sleep_state == SleepState::Awake {
+            LOAD_CELL_COMMANDS.clear();
             self.measurement_status = MeasurementTaskStatus::Disabled;
             self.sleep_measurement_ready = false;
             self.sleep_status_led_ready = false;
@@ -213,10 +255,8 @@ impl DeviceState {
     /// Reset runtime state to the same awake/disconnected state used after boot.
     pub fn reset_to_initial_state(&mut self) {
         let battery_voltage = self.battery_voltage;
-        let battery_charging = self.battery_charging;
         *self = Self {
             battery_voltage,
-            battery_charging,
             ..Self::default()
         };
         self.on_ble_disconnected();
@@ -266,7 +306,6 @@ pub enum ControlOpCode {
     // TODO: Implement it
     ClearErrorInformation = 0x6D,
     /// Turn the Progressor off (enter sleep mode)
-    // TODO: Implement it
     Shutdown = 0x6E,
     /// Measures the battery voltage in millivolts
     SampleBattery = 0x6F,
@@ -374,8 +413,9 @@ impl ControlOpCode {
                 Some(DataPoint::from(response))
             }
             ControlOpCode::Shutdown => {
-                info!("Shutdown command received, resetting state");
+                info!("Shutdown command received, entering deep sleep after disconnect");
                 device_state.reset_to_initial_state();
+                device_state.shutdown_requested = true;
                 None
             }
             // Currently unimplemented operations
@@ -408,10 +448,7 @@ impl TryFrom<u8> for ControlOpCode {
             0x67 => Ok(ControlOpCode::StartPeakRFDMeasurement),
             0x68 => Ok(ControlOpCode::StartPeakRFDMeasurementSeries),
             0x6A => Ok(ControlOpCode::SaveCalibration),
-            _ => {
-                error!("Invalid OpCode received: {:#x}", op_code);
-                Err(())
-            }
+            _ => Err(()),
         }
     }
 }
