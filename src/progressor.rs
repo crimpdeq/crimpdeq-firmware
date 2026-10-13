@@ -96,8 +96,6 @@ impl LoadCellCommand {
 pub enum SleepReason {
     /// No user or BLE activity has been observed for too long.
     IdleTimeout,
-    /// The client sent the Shutdown command.
-    Shutdown,
     /// The battery is too low to keep the 3V3 rail regulated.
     LowBattery,
 }
@@ -145,8 +143,6 @@ pub struct DeviceState {
     pub sleep_measurement_ready: bool,
     /// Whether the status LED has been explicitly turned off for sleep.
     pub sleep_status_led_ready: bool,
-    /// Whether the client asked to turn the device off once it disconnects.
-    pub shutdown_requested: bool,
 }
 
 impl Default for DeviceState {
@@ -170,7 +166,6 @@ impl DeviceState {
             sleep_state: SleepState::Awake,
             sleep_measurement_ready: false,
             sleep_status_led_ready: false,
-            shutdown_requested: false,
         }
     }
 
@@ -186,7 +181,7 @@ impl DeviceState {
                 self.sleep_measurement_ready = false;
                 self.sleep_status_led_ready = false;
             }
-            // Activity does not cancel a shutdown or a low battery sleep.
+            // Activity does not cancel a low battery sleep.
             SleepState::Requested(_) | SleepState::Ready(_) | SleepState::Awake => {}
         }
     }
@@ -241,8 +236,8 @@ impl DeviceState {
     pub fn on_ble_connected(&mut self) {
         self.ble_connected = true;
         self.record_activity();
-        // A connection that arrives while a shutdown or low battery sleep is ready must close
-        // before the device sleeps. Activity already cancelled an idle sleep.
+        // A connection that arrives while a low battery sleep is ready must close before the
+        // device sleeps. Activity already cancelled an idle sleep.
         if let SleepState::Ready(reason) = self.sleep_state {
             self.sleep_state = SleepState::Requested(reason);
         }
@@ -255,9 +250,6 @@ impl DeviceState {
         self.measurement_status = MeasurementTaskStatus::Disabled;
         // Restart the idle timeout without cancelling a sleep request, which disconnects BLE.
         self.last_activity_time_ms = Self::now_ms();
-        if self.shutdown_requested {
-            self.request_sleep(SleepReason::Shutdown);
-        }
         self.enter_sleep_when_ready();
     }
 
@@ -281,16 +273,6 @@ impl DeviceState {
             self.sleep_status_led_ready = false;
             self.sleep_state = SleepState::Requested(reason);
         }
-    }
-
-    /// Reset runtime state to the same awake/disconnected state used after boot.
-    pub fn reset_to_initial_state(&mut self) {
-        let battery_voltage = self.battery_voltage;
-        *self = Self {
-            battery_voltage,
-            ..Self::default()
-        };
-        self.on_ble_disconnected();
     }
 
     /// Mark that one peripheral is powered down and deep sleep can start when all are ready.
@@ -344,7 +326,8 @@ pub enum ControlOpCode {
     /// Clear the error information
     // TODO: Implement it
     ClearErrorInformation = 0x6D,
-    /// Turn the Progressor off (enter sleep mode)
+    /// Close the BLE link. The device keeps advertising so another client can connect, and
+    /// sleeps after the disconnected idle timeout.
     Shutdown = 0x6E,
     /// Measures the battery voltage in millivolts
     SampleBattery = 0x6F,
@@ -452,9 +435,7 @@ impl ControlOpCode {
                 Some(DataPoint::from(response))
             }
             ControlOpCode::Shutdown => {
-                info!("Shutdown command received, entering deep sleep after disconnect");
-                device_state.reset_to_initial_state();
-                device_state.shutdown_requested = true;
+                info!("Shutdown command received, disconnecting");
                 None
             }
             // Currently unimplemented operations
