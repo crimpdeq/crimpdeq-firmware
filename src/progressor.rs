@@ -243,14 +243,17 @@ impl DeviceState {
         self.record_activity();
     }
 
-    /// Mark BLE as disconnected and drop the commands of the closed connection.
+    /// Mark BLE as disconnected and drop the measurement and commands of the closed connection.
     pub fn on_ble_disconnected(&mut self) {
         LOAD_CELL_COMMANDS.clear();
         self.ble_connected = false;
-        self.record_activity();
+        self.measurement_status = MeasurementTaskStatus::Disabled;
+        // Restart the idle timeout without cancelling a sleep request, which disconnects BLE.
+        self.last_activity_time_ms = Self::now_ms();
         if self.shutdown_requested {
             self.request_sleep(SleepReason::Shutdown);
         }
+        self.enter_sleep_when_ready();
     }
 
     /// Returns true when BLE is currently connected.
@@ -263,7 +266,8 @@ impl DeviceState {
         Self::now_ms().wrapping_sub(self.last_activity_time_ms)
     }
 
-    /// Request deep sleep. The measurement and LED tasks will power down peripherals first.
+    /// Request deep sleep. The measurement and LED tasks power down peripherals and the connection
+    /// task disconnects BLE first.
     pub fn request_sleep(&mut self, reason: SleepReason) {
         if self.sleep_state == SleepState::Awake {
             LOAD_CELL_COMMANDS.clear();
@@ -286,15 +290,23 @@ impl DeviceState {
 
     /// Mark that one peripheral is powered down and deep sleep can start when all are ready.
     pub fn mark_sleep_ready(&mut self, source: SleepReadySource) {
-        if let SleepState::Requested(reason) = self.sleep_state {
+        if let SleepState::Requested(_) = self.sleep_state {
             match source {
                 SleepReadySource::Measurement => self.sleep_measurement_ready = true,
                 SleepReadySource::StatusLed => self.sleep_status_led_ready = true,
             }
+            self.enter_sleep_when_ready();
+        }
+    }
 
-            if self.sleep_measurement_ready && self.sleep_status_led_ready {
-                self.sleep_state = SleepState::Ready(reason);
-            }
+    /// Allow deep sleep once the peripherals are powered down and BLE is disconnected.
+    fn enter_sleep_when_ready(&mut self) {
+        if let SleepState::Requested(reason) = self.sleep_state
+            && self.sleep_measurement_ready
+            && self.sleep_status_led_ready
+            && !self.ble_connected
+        {
+            self.sleep_state = SleepState::Ready(reason);
         }
     }
 }
