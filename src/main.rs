@@ -35,7 +35,7 @@ use esp_hal::{
     time::Rate,
     timer::timg::TimerGroup,
 };
-use esp_hal_smartled::{RmtSmartLeds, WS2812B_TIMING, buffer_size, color_order};
+use esp_hal_smartled::{RmtSmartLeds, Timing, buffer_size, color_order};
 use esp_radio::ble::controller::BleConnector;
 use esp_storage::FlashStorage;
 use max170xx::Max17048;
@@ -72,6 +72,16 @@ pub mod progressor;
 const STATUS_LED_COUNT: usize = 1;
 const STATUS_LED_RMT_BUFFER_SIZE: usize = buffer_size::<RGB8>(STATUS_LED_COUNT);
 const STATUS_LED_BRIGHTNESS: u8 = 24;
+/// Revision-3 D4 is a Worldsemi WS2812B-V6: T0H 220-380 ns, T1H/T0L/T1L 580-1000 ns,
+/// reset > 280 us. The crate's `WS2812B_TIMING` sends a 400 ns T0H, which the V6 decodes as a
+/// one bit, so every color shows as white.
+const STATUS_LED_TIMING: Timing = Timing {
+    time_0_high: 300,
+    time_0_low: 800,
+    time_1_high: 800,
+    time_1_low: 800,
+    reset_us: 300,
+};
 const STATUS_LED_LOW_BATTERY_MV: u32 = 3500;
 /// Charge rate, in %/h, above which the battery counts as charging.
 const CHARGING_RATE_THRESHOLD: f32 = 0.1;
@@ -225,13 +235,13 @@ async fn main(spawner: Spawner) -> ! {
         .into_async();
     let battery_gauge = Max17048::new(battery_i2c);
 
-    // Initialize WS2812B status LED on GPIO2 using RMT.
+    // Initialize WS2812B-V6 status LED on GPIO2 (U1.5, IO2_LED, R13 0R to D4 DIN) using RMT.
     let status_led_rmt_rate = Rate::from_mhz(80);
     let rmt = Rmt::new(peripherals.RMT, status_led_rmt_rate)
         .expect("Failed to initialize RMT")
         .into_async();
     let status_led = StatusLed::new(
-        WS2812B_TIMING,
+        STATUS_LED_TIMING,
         rmt.channel0,
         peripherals.GPIO2,
         status_led_rmt_rate,
