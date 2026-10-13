@@ -524,8 +524,16 @@ async fn deep_sleep_task(mut low_power: LowPower<'static>) {
                 state_changes.changed().await;
             }
             SleepState::Ready(reason) => {
-                info!("Entering deep sleep: {:?}", reason);
                 Timer::after(Duration::from_millis(20)).await;
+                // Advertising continues until deep sleep, so a connection during the delay can
+                // cancel the sleep request or send it back to wait for a disconnect.
+                let still_ready = critical_section::with(|cs| {
+                    DEVICE_STATE.borrow_ref(cs).sleep_state == SleepState::Ready(reason)
+                });
+                if !still_ready {
+                    continue;
+                }
+                info!("Entering deep sleep: {:?}", reason);
                 // Drive the WS2812B data line low and hold it so the LED does not latch
                 // noise while the digital domain is powered off.
                 // SAFETY: the status LED is already off and its task stops writing once sleep

@@ -241,6 +241,11 @@ impl DeviceState {
     pub fn on_ble_connected(&mut self) {
         self.ble_connected = true;
         self.record_activity();
+        // A connection that arrives while a shutdown or low battery sleep is ready must close
+        // before the device sleeps. Activity already cancelled an idle sleep.
+        if let SleepState::Ready(reason) = self.sleep_state {
+            self.sleep_state = SleepState::Requested(reason);
+        }
     }
 
     /// Mark BLE as disconnected and drop the measurement and commands of the closed connection.
