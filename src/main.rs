@@ -198,7 +198,13 @@ async fn main(spawner: Spawner) -> ! {
     let controller: ExternalController<_, 1> = ExternalController::new(connector);
 
     // Initialize the revision-3 ADS1220 load-cell front end.
-    // GPIO5=SCLK, GPIO4=DIN/MOSI, GPIO3=/CS, GPIO1=DOUT/MISO.
+    // GPIO5=SCLK, GPIO4=DIN/MOSI, GPIO3=/CS, GPIO1=DOUT/DRDY.
+    // GPIO1 is both the SPI MISO and the data ready input. DOUT/DRDY is high impedance while /CS
+    // is high, so the pull-up keeps it from reading as data ready.
+    let load_cell_data_ready = Input::new(
+        peripherals.GPIO1,
+        InputConfig::default().with_pull(Pull::Up),
+    );
     let load_cell_spi = Spi::new(
         peripherals.SPI2,
         SpiConfig::default()
@@ -208,7 +214,7 @@ async fn main(spawner: Spawner) -> ! {
     .expect("Failed to initialize ADS1220 SPI")
     .with_sck(peripherals.GPIO5)
     .with_mosi(peripherals.GPIO4)
-    .with_miso(peripherals.GPIO1)
+    .with_miso(load_cell_data_ready.peripheral_input())
     .into_async();
     let load_cell_chip_select =
         Output::new(peripherals.GPIO3, Level::High, OutputConfig::default());
@@ -292,6 +298,7 @@ async fn main(spawner: Spawner) -> ! {
             measurement_channel,
             load_cell_spi,
             load_cell_chip_select,
+            load_cell_data_ready,
             flash,
         )
         .unwrap(),
@@ -648,9 +655,10 @@ async fn measurement_task(
     measurement_channel: &'static MeasurementDataChannel,
     spi: Spi<'static, Async>,
     chip_select: Output<'static>,
+    data_ready: Input<'static>,
     flash: FlashStorage<'static>,
 ) {
-    let mut load_cell = Ads1220::new(spi, chip_select, flash);
+    let mut load_cell = Ads1220::new(spi, chip_select, data_ready, flash);
     initialize_load_cell(&mut load_cell).await;
     if let Err(e) = load_cell.tare().await {
         error!("Initial tare failed: {:?}", defmt::Debug2Format(&e));
