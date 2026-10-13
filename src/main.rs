@@ -138,7 +138,7 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 }
 
 /// Number of tasks that wait for device state changes: measurement, status LED, deep sleep and
-/// connection parameters.
+/// connection state.
 const STATE_CHANGE_RECEIVERS: usize = 4;
 /// Signals device state changes, so tasks can wait for them instead of polling.
 static STATE_CHANGED: Watch<CriticalSectionRawMutex, (), STATE_CHANGE_RECEIVERS> = Watch::new();
@@ -198,7 +198,13 @@ async fn main(spawner: Spawner) -> ! {
     let controller: ExternalController<_, 1> = ExternalController::new(connector);
 
     // Initialize the revision-3 ADS1220 load-cell front end.
-    // GPIO5=SCLK, GPIO4=DIN/MOSI, GPIO3=/CS, GPIO1=DOUT/MISO.
+    // GPIO5=SCLK, GPIO4=DIN/MOSI, GPIO3=/CS, GPIO1=DOUT/DRDY.
+    // GPIO1 is both the SPI MISO and the data ready input. DOUT/DRDY is high impedance while /CS
+    // is high, so the pull-up keeps it from reading as data ready.
+    let load_cell_data_ready = Input::new(
+        peripherals.GPIO1,
+        InputConfig::default().with_pull(Pull::Up),
+    );
     let load_cell_spi = Spi::new(
         peripherals.SPI2,
         SpiConfig::default()
@@ -208,7 +214,7 @@ async fn main(spawner: Spawner) -> ! {
     .expect("Failed to initialize ADS1220 SPI")
     .with_sck(peripherals.GPIO5)
     .with_mosi(peripherals.GPIO4)
-    .with_miso(peripherals.GPIO1)
+    .with_miso(load_cell_data_ready.peripheral_input())
     .into_async();
     let load_cell_chip_select =
         Output::new(peripherals.GPIO3, Level::High, OutputConfig::default());
@@ -292,6 +298,7 @@ async fn main(spawner: Spawner) -> ! {
             measurement_channel,
             load_cell_spi,
             load_cell_chip_select,
+            load_cell_data_ready,
             flash,
         )
         .unwrap(),
@@ -325,13 +332,12 @@ async fn main(spawner: Spawner) -> ! {
                     select3(
                         gatt_events_task(&server, &conn, control_channel),
                         data_processing_task(&server, &conn, control_channel, measurement_channel),
-                        connection_params_task(&stack, &conn),
+                        connection_state_task(&stack, &conn),
                     )
                     .await;
                     control_channel.clear();
                     measurement_channel.clear();
                     update_device_state(|state| {
-                        state.stop_measurement();
                         state.on_ble_disconnected();
                         debug!("BLE connection closed, inactivity timer restarted");
                     });
@@ -459,7 +465,10 @@ async fn status_led_task(mut led: StatusLed) {
 
 #[embassy_executor::task]
 async fn deep_sleep_task(mut low_power: LowPower<'static>) {
-    const IDLE_TIMEOUT_MS: u32 = 4 * 60 * 1000; // 4 minutes
+    const DISCONNECTED_IDLE_TIMEOUT_MS: u32 = 4 * 60 * 1000;
+    /// Covers long rests between sets, while a client left connected cannot keep the device awake
+    /// indefinitely. Only power cycling wakes the device from deep sleep.
+    const CONNECTED_IDLE_TIMEOUT_MS: u32 = 30 * 60 * 1000;
     const DEEP_SLEEP_FAILSAFE_SECS: u64 = 10 * 365 * 24 * 60 * 60;
 
     let mut state_changes = STATE_CHANGED
@@ -481,18 +490,23 @@ async fn deep_sleep_task(mut low_power: LowPower<'static>) {
         match sleep_state {
             SleepState::Awake => {
                 if measurement_status == MeasurementTaskStatus::Disabled {
+                    let idle_timeout_ms = if ble_connected {
+                        CONNECTED_IDLE_TIMEOUT_MS
+                    } else {
+                        DISCONNECTED_IDLE_TIMEOUT_MS
+                    };
                     debug!(
                         "Device idle for {:?} ms (connected: {}, timeout: {:?} ms)",
-                        inactivity_ms, ble_connected, IDLE_TIMEOUT_MS
+                        inactivity_ms, ble_connected, idle_timeout_ms
                     );
 
-                    if inactivity_ms >= IDLE_TIMEOUT_MS {
+                    if inactivity_ms >= idle_timeout_ms {
                         update_device_state(|state| state.request_sleep(SleepReason::IdleTimeout));
                         continue;
                     }
 
                     // Wait for the idle timeout or for activity that restarts it.
-                    let remaining_ms = IDLE_TIMEOUT_MS - inactivity_ms;
+                    let remaining_ms = idle_timeout_ms - inactivity_ms;
                     select(
                         Timer::after(Duration::from_millis(remaining_ms.into())),
                         state_changes.changed(),
@@ -504,14 +518,22 @@ async fn deep_sleep_task(mut low_power: LowPower<'static>) {
             }
             SleepState::Requested(reason) => {
                 debug!(
-                    "Waiting for peripherals to power down before sleep: {:?}",
+                    "Waiting for peripherals to power down and BLE to disconnect before sleep: {:?}",
                     reason
                 );
                 state_changes.changed().await;
             }
             SleepState::Ready(reason) => {
-                info!("Entering deep sleep: {:?}", reason);
                 Timer::after(Duration::from_millis(20)).await;
+                // Advertising continues until deep sleep, so a connection during the delay can
+                // cancel the sleep request or send it back to wait for a disconnect.
+                let still_ready = critical_section::with(|cs| {
+                    DEVICE_STATE.borrow_ref(cs).sleep_state == SleepState::Ready(reason)
+                });
+                if !still_ready {
+                    continue;
+                }
+                info!("Entering deep sleep: {:?}", reason);
                 // Drive the WS2812B data line low and hold it so the LED does not latch
                 // noise while the digital domain is powered off.
                 // SAFETY: the status LED is already off and its task stops writing once sleep
@@ -648,9 +670,10 @@ async fn measurement_task(
     measurement_channel: &'static MeasurementDataChannel,
     spi: Spi<'static, Async>,
     chip_select: Output<'static>,
+    data_ready: Input<'static>,
     flash: FlashStorage<'static>,
 ) {
-    let mut load_cell = Ads1220::new(spi, chip_select, flash);
+    let mut load_cell = Ads1220::new(spi, chip_select, data_ready, flash);
     initialize_load_cell(&mut load_cell).await;
     if let Err(e) = load_cell.tare().await {
         error!("Initial tare failed: {:?}", defmt::Debug2Format(&e));
@@ -951,8 +974,9 @@ const IDLE_CONNECTION_PARAMS: RequestedConnParams = RequestedConnParams {
     supervision_timeout: Duration::from_millis(4000),
 };
 
-/// Requests connection parameters that match the measurement state.
-async fn connection_params_task<C, P>(stack: &Stack<'_, C, P>, conn: &GattConnection<'_, '_, P>)
+/// Requests connection parameters that match the measurement state, and disconnects once deep
+/// sleep is requested so the client sees the link close instead of a supervision timeout.
+async fn connection_state_task<C, P>(stack: &Stack<'_, C, P>, conn: &GattConnection<'_, '_, P>)
 where
     C: Controller
         + ControllerCmdAsync<LeConnUpdate>
@@ -960,15 +984,25 @@ where
     P: PacketPool,
 {
     let Some(mut state_changes) = STATE_CHANGED.receiver() else {
-        error!("Missing state change receiver for the connection parameters task");
+        error!("Missing state change receiver for the connection state task");
         return core::future::pending().await;
     };
     let mut measuring = None;
 
     loop {
-        let now_measuring = critical_section::with(|cs| {
-            DEVICE_STATE.borrow_ref(cs).measurement_status == MeasurementTaskStatus::Enabled
+        let (sleep_state, now_measuring) = critical_section::with(|cs| {
+            let state = DEVICE_STATE.borrow_ref(cs);
+            (
+                state.sleep_state,
+                state.measurement_status == MeasurementTaskStatus::Enabled,
+            )
         });
+        if let SleepState::Requested(reason) = sleep_state {
+            info!("Disconnecting BLE link before deep sleep: {:?}", reason);
+            conn.raw().disconnect();
+            // gatt_events_task ends the connection once the disconnect completes.
+            return core::future::pending().await;
+        }
         if measuring != Some(now_measuring) {
             let params = if now_measuring {
                 &MEASURING_CONNECTION_PARAMS
@@ -1083,10 +1117,6 @@ async fn gatt_events_task<P: PacketPool>(
     }
 
     info!("BLE task finished");
-    update_device_state(|device_state| {
-        device_state.stop_measurement();
-    });
-
     Ok(())
 }
 

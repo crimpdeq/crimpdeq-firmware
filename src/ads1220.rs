@@ -2,21 +2,25 @@
 //!
 //! The revision-3 PCB connects the ADS1220 over SPI and uses the bridge
 //! excitation voltage as the ADC reference. The dedicated DRDY pin is not
-//! connected, so reads use the RDATA command at a nominal 600 Hz cadence.
+//! connected, so the ADC also signals data ready on DOUT/DRDY, which the
+//! driver watches while chip select is low (datasheet section 8.5.6).
 
 use core::fmt;
 
 use defmt::{debug, error, info, warn};
-use embassy_time::{Duration, Instant, Timer};
+use embassy_time::{Duration, Instant, Timer, with_timeout};
 use embedded_hal_async::spi::SpiBus;
 use esp_bootloader_esp_idf::partitions::{PARTITION_TABLE_MAX_LEN, read_partition_table};
-use esp_hal::{Async, gpio::Output, spi::master::Spi};
+use esp_hal::{
+    Async,
+    gpio::{Input, Output},
+    spi::master::Spi,
+};
 use esp_storage::FlashStorage;
 
 const COMMAND_POWERDOWN: u8 = 0x02;
 const COMMAND_RESET: u8 = 0x06;
 const COMMAND_START_SYNC: u8 = 0x08;
-const COMMAND_RDATA: u8 = 0x10;
 const COMMAND_RREG: u8 = 0x20;
 const COMMAND_WREG: u8 = 0x40;
 
@@ -25,11 +29,17 @@ const CONFIGURATION_REGISTERS: [u8; REGISTER_COUNT] = [
     0x0E, // AIN0-AIN1, gain 128, PGA enabled
     0xA4, // 600 SPS, normal mode, continuous conversion
     0x40, // External reference on REFP0/REFN0
-    0x00, // IDACs disabled; dedicated DRDY mode
+    0x02, // IDACs disabled; data ready also on DOUT/DRDY
 ];
 
 const RESET_DELAY: Duration = Duration::from_micros(100);
-const SAMPLE_INTERVAL: Duration = Duration::from_hz(600);
+/// Time from START/SYNC until the first conversion completes: up to 50 us of oscillator wake-up,
+/// the 210 tCLK start delay and a 6994 tCLK conversion at 600 SPS (datasheet section 8.3.7), with
+/// margin for the 2% oscillator tolerance. Until then, DOUT/DRDY can still flag the conversion that
+/// completed after POWERDOWN.
+const FIRST_CONVERSION_TIME: Duration = Duration::from_millis(2);
+/// Longest wait for a conversion; a 600 SPS conversion takes 6896 tCLK (1.7 ms).
+const DATA_READY_TIMEOUT: Duration = Duration::from_millis(10);
 
 /// Label of the data partition that stores the calibration.
 const CALIBRATION_PARTITION_LABEL: &str = "calib";
@@ -53,6 +63,8 @@ pub enum Ads1220Error {
     InvalidCalibration,
     /// SPI communication failed.
     Spi,
+    /// No conversion became ready on DOUT/DRDY.
+    DataReadyTimeout,
     /// ADS1220 configuration register readback did not match.
     ConfigurationMismatch {
         expected: [u8; REGISTER_COUNT],
@@ -66,6 +78,7 @@ impl fmt::Display for Ads1220Error {
             Ads1220Error::FlashError => write!(f, "Flash storage error"),
             Ads1220Error::InvalidCalibration => write!(f, "Invalid calibration value"),
             Ads1220Error::Spi => write!(f, "ADS1220 SPI error"),
+            Ads1220Error::DataReadyTimeout => write!(f, "ADS1220 data ready timeout"),
             Ads1220Error::ConfigurationMismatch { .. } => {
                 write!(f, "ADS1220 configuration readback mismatch")
             }
@@ -77,25 +90,33 @@ impl fmt::Display for Ads1220Error {
 pub struct Ads1220<'d> {
     spi: Spi<'d, Async>,
     chip_select: Output<'d>,
+    /// DOUT/DRDY, which is also the SPI MISO input.
+    data_ready: Input<'d>,
     flash: FlashStorage<'d>,
     tare_value: i32,
     calibration_factor: f32,
-    next_sample_at: Instant,
+    first_conversion_at: Instant,
     powered_down: bool,
 }
 
 impl<'d> Ads1220<'d> {
     /// Create a driver. Call [`Self::initialize`] before taking measurements.
-    pub fn new(spi: Spi<'d, Async>, mut chip_select: Output<'d>, flash: FlashStorage<'d>) -> Self {
+    pub fn new(
+        spi: Spi<'d, Async>,
+        mut chip_select: Output<'d>,
+        data_ready: Input<'d>,
+        flash: FlashStorage<'d>,
+    ) -> Self {
         chip_select.set_high();
 
         let mut ads1220 = Self {
             spi,
             chip_select,
+            data_ready,
             flash,
             tare_value: 0,
             calibration_factor: 0.0,
-            next_sample_at: Instant::now() + SAMPLE_INTERVAL,
+            first_conversion_at: Instant::now(),
             powered_down: false,
         };
 
@@ -119,14 +140,15 @@ impl<'d> Ads1220<'d> {
             });
         }
 
-        self.send_command(COMMAND_START_SYNC).await?;
-        self.reset_sample_cadence();
+        self.start_conversions().await?;
         info!("ADS1220 initialized at 600 SPS");
         Ok(())
     }
 
-    fn reset_sample_cadence(&mut self) {
-        self.next_sample_at = Instant::now() + SAMPLE_INTERVAL;
+    async fn start_conversions(&mut self) -> Result<(), Ads1220Error> {
+        self.send_command(COMMAND_START_SYNC).await?;
+        self.first_conversion_at = Instant::now() + FIRST_CONVERSION_TIME;
+        Ok(())
     }
 
     async fn send_command(&mut self, command: u8) -> Result<(), Ads1220Error> {
@@ -175,33 +197,26 @@ impl<'d> Ads1220<'d> {
         Ok(registers)
     }
 
-    async fn wait_for_sample_cadence(&mut self) {
-        let now = Instant::now();
-        if self.next_sample_at <= now {
-            self.next_sample_at = now + SAMPLE_INTERVAL;
-        }
-
-        Timer::at(self.next_sample_at).await;
-        self.next_sample_at += SAMPLE_INTERVAL;
-    }
-
+    /// Wait for the next conversion and read it.
     async fn read_raw(&mut self) -> Result<i32, Ads1220Error> {
-        self.wait_for_sample_cadence().await;
+        Timer::at(self.first_conversion_at).await;
 
-        // The first received byte overlaps the RDATA command and is discarded.
-        // The conversion result follows immediately in the same SPI transfer.
-        let mut transaction = [COMMAND_RDATA, 0, 0, 0];
+        // With chip select low, DOUT/DRDY drives low once a conversion is ready. Clocking out the
+        // three data bytes plus one byte with DIN low leaves DOUT/DRDY high until the next
+        // conversion, so every conversion is read exactly once.
+        let mut transaction = [0; 4];
         self.chip_select.set_low();
-        let result = SpiBus::transfer_in_place(&mut self.spi, &mut transaction).await;
+        let result = match with_timeout(DATA_READY_TIMEOUT, self.data_ready.wait_for_low()).await {
+            Ok(()) => SpiBus::transfer_in_place(&mut self.spi, &mut transaction)
+                .await
+                .map_err(|_| Ads1220Error::Spi),
+            Err(_) => Err(Ads1220Error::DataReadyTimeout),
+        };
         self.chip_select.set_high();
-        result.map_err(|_| Ads1220Error::Spi)?;
+        result?;
 
-        let raw = u32::from_be_bytes([0, transaction[1], transaction[2], transaction[3]]);
-        Ok(if raw & 0x0080_0000 != 0 {
-            (raw | 0xFF00_0000) as i32
-        } else {
-            raw as i32
-        })
+        // Sign-extend the 24-bit two's complement result.
+        Ok(i32::from_be_bytes([transaction[0], transaction[1], transaction[2], 0]) >> 8)
     }
 
     async fn take_samples(&mut self, num_samples: usize) -> Result<f32, Ads1220Error> {
@@ -229,8 +244,7 @@ impl<'d> Ads1220<'d> {
     pub async fn wake(&mut self) -> Result<(), Ads1220Error> {
         if self.powered_down {
             debug!("Powering up ADS1220");
-            self.send_command(COMMAND_START_SYNC).await?;
-            self.reset_sample_cadence();
+            self.start_conversions().await?;
             self.powered_down = false;
         }
         Ok(())
