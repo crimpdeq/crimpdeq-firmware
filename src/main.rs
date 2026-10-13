@@ -73,8 +73,8 @@ const STATUS_LED_COUNT: usize = 1;
 const STATUS_LED_RMT_BUFFER_SIZE: usize = buffer_size::<RGB8>(STATUS_LED_COUNT);
 const STATUS_LED_BRIGHTNESS: u8 = 24;
 /// Revision-3 D4 is a Worldsemi WS2812B-V6: T0H 220-380 ns, T1H/T0L/T1L 580-1000 ns,
-/// bit period >= 1.25 us, reset > 280 us. The crate's `WS2812B_TIMING` sends a 400 ns T0H, which the V6 decodes as a
-/// one bit, so every color shows as white.
+/// bit period >= 1.25 us, reset > 280 us. The crate's `WS2812B_TIMING` sends a 400 ns T0H, which
+/// the V6 decodes as a one bit, so every color shows as white.
 const STATUS_LED_TIMING: Timing = Timing {
     time_0_high: 300,
     time_0_low: 950,
