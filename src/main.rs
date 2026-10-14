@@ -22,6 +22,7 @@ use embassy_sync::{
 use embassy_time::{Duration, Timer};
 use esp_hal::{
     Async,
+    Blocking,
     Config,
     clock::CpuClock,
     gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull},
@@ -46,6 +47,7 @@ use crate::{
     ads1220::Ads1220,
     ble::{CONNECTIONS_MAX, DEVICE_NAME, L2CAP_CHANNELS_MAX, L2CAP_MTU, Server, advertise},
     progressor::{
+        BatteryStatus,
         CalibrationPoint,
         ControlOpCode,
         ControlResponseChannel,
@@ -53,6 +55,7 @@ use crate::{
         DeviceState,
         LOAD_CELL_COMMANDS,
         LoadCellCommand,
+        MAX_BATCH_DURATION,
         MAX_CALIBRATION_POINTS,
         MeasurementDataChannel,
         MeasurementTaskStatus,
@@ -192,8 +195,12 @@ async fn main(spawner: Spawner) -> ! {
 
     // Initialize BLE
     let bluetooth = peripherals.BT;
+    // Each transmission couples into the ADS1220 input and offsets the conversion it overlaps:
+    // with no load and the default calibration, +20 dBm gave single-sample spikes up to 1.4 kg,
+    // +9 dBm up to 0.12 kg, and 0 dBm stayed within the ADC noise. +9 dBm trades those smaller
+    // spikes for BLE range.
     let ble_config =
-        esp_radio::ble::Config::default().with_default_tx_power(esp_radio::ble::TxPower::P20);
+        esp_radio::ble::Config::default().with_default_tx_power(esp_radio::ble::TxPower::P9);
     let connector = BleConnector::new(bluetooth, ble_config).unwrap();
     let controller: ExternalController<_, 1> = ExternalController::new(connector);
 
@@ -214,8 +221,7 @@ async fn main(spawner: Spawner) -> ! {
     .expect("Failed to initialize ADS1220 SPI")
     .with_sck(peripherals.GPIO5)
     .with_mosi(peripherals.GPIO4)
-    .with_miso(load_cell_data_ready.peripheral_input())
-    .into_async();
+    .with_miso(load_cell_data_ready.peripheral_input());
     let load_cell_chip_select =
         Output::new(peripherals.GPIO3, Level::High, OutputConfig::default());
 
@@ -291,8 +297,16 @@ async fn main(spawner: Spawner) -> ! {
     // Start inactivity tracking from boot so the device can auto-sleep if left unused.
     update_device_state(|state| state.on_ble_disconnected());
 
+    // Run the measurement task above the BLE host, so packet transmission does not delay ADC
+    // reads past the next conversion at high sample rates.
+    let measurement_executor = mk_static!(
+        esp_rtos::embassy::InterruptExecutor<2>,
+        esp_rtos::embassy::InterruptExecutor::new(peripherals.FROM_CPU_INTR2)
+    );
+    let measurement_spawner = measurement_executor.start(esp_hal::interrupt::Priority::Priority2);
+
     // Spawn tasks
-    spawner.spawn(
+    measurement_spawner.spawn(
         measurement_task(
             control_channel,
             measurement_channel,
@@ -311,8 +325,6 @@ async fn main(spawner: Spawner) -> ! {
         loop {
             match advertise(&mut peripheral, &server).await {
                 Ok(conn) => {
-                    info!("BLE connection established");
-
                     let initial_att_mtu = conn.raw().att_mtu();
                     update_measurement_batch_size(initial_att_mtu);
                     info!("Initial ATT MTU: {}", initial_att_mtu);
@@ -335,12 +347,14 @@ async fn main(spawner: Spawner) -> ! {
                         connection_state_task(&stack, &conn),
                     )
                     .await;
-                    control_channel.clear();
-                    measurement_channel.clear();
+                    // Mark the link closed before clearing, so a reply blocked on the full
+                    // channel completes and the measurement task stops queuing more.
                     update_device_state(|state| {
                         state.on_ble_disconnected();
                         debug!("BLE connection closed, inactivity timer restarted");
                     });
+                    control_channel.clear();
+                    measurement_channel.clear();
                 }
                 Err(e) => {
                     error!("BLE advertising failed: {:?}", defmt::Debug2Format(&e));
@@ -579,6 +593,11 @@ async fn battery_gauge_task(
                 // Update device state
                 let ble_connected = update_device_state(|state| {
                     state.battery_voltage = battery_voltage_mv;
+                    state.battery_status = Some(BatteryStatus {
+                        // Rounded; the model can report slightly above 100 % when full.
+                        soc_percent: (soc.clamp(0.0, 100.0) + 0.5) as u8,
+                        charging: battery_charging,
+                    });
                     state.is_ble_connected()
                 });
 
@@ -620,24 +639,6 @@ async fn battery_gauge_task(
     }
 }
 
-async fn initialize_load_cell(load_cell: &mut Ads1220<'_>) {
-    let mut attempt = 1u32;
-    loop {
-        match load_cell.initialize().await {
-            Ok(()) => return,
-            Err(error) => {
-                error!(
-                    "ADS1220 initialization attempt {} failed: {:?}",
-                    attempt,
-                    defmt::Debug2Format(&error)
-                );
-                attempt = attempt.saturating_add(1);
-                Timer::after(Duration::from_millis(250)).await;
-            }
-        }
-    }
-}
-
 fn enqueue_measurement_batch(
     channel: &'static MeasurementDataChannel,
     measurements: WeightMeasurementBatch,
@@ -668,16 +669,15 @@ fn enqueue_measurement_batch(
 async fn measurement_task(
     control_channel: &'static ControlResponseChannel,
     measurement_channel: &'static MeasurementDataChannel,
-    spi: Spi<'static, Async>,
+    spi: Spi<'static, Blocking>,
     chip_select: Output<'static>,
     data_ready: Input<'static>,
     flash: FlashStorage<'static>,
 ) {
-    let mut load_cell = Ads1220::new(spi, chip_select, data_ready, flash);
-    initialize_load_cell(&mut load_cell).await;
-    if let Err(e) = load_cell.tare().await {
-        error!("Initial tare failed: {:?}", defmt::Debug2Format(&e));
-    }
+    let mut load_cell = Ads1220::new(spi.into_async(), chip_select, data_ready, flash);
+    let stored_sample_rate = load_cell.sample_rate();
+    update_device_state(|state| state.sample_rate = stored_sample_rate);
+    let mut initialized = false;
     let mut measurement_buffer = WeightMeasurementBatch::new();
     let mut dropped_measurement_batches = 0u32;
     // Whether the current measurement has started sampling.
@@ -688,7 +688,7 @@ async fn measurement_task(
 
     loop {
         // Get current device state
-        let (sleep_state, status, start_time, measurement_batch_size) =
+        let (sleep_state, status, start_time, measurement_batch_size, sample_rate) =
             critical_section::with(|cs| {
                 let state = DEVICE_STATE.borrow_ref(cs);
                 (
@@ -696,6 +696,7 @@ async fn measurement_task(
                     state.measurement_status,
                     state.start_time,
                     state.measurement_batch_size,
+                    state.sample_rate,
                 )
             });
 
@@ -723,6 +724,38 @@ async fn measurement_task(
                 continue;
             }
             SleepState::Awake => {}
+        }
+
+        // Retry inside the loop, so a missing or faulty ADS1220 cannot block sleep requests.
+        if !initialized {
+            if let Err(e) = load_cell.initialize().await {
+                error!(
+                    "ADS1220 initialization failed: {:?}",
+                    defmt::Debug2Format(&e)
+                );
+                select(
+                    Timer::after(Duration::from_millis(250)),
+                    state_changes.changed(),
+                )
+                .await;
+                continue;
+            }
+            if let Err(e) = load_cell.tare().await {
+                error!("Initial tare failed: {:?}", defmt::Debug2Format(&e));
+            }
+            initialized = true;
+            continue;
+        }
+
+        if load_cell.sample_rate() != sample_rate {
+            if let Err(e) = load_cell.set_sample_rate(sample_rate).await {
+                error!(
+                    "Failed to set ADS1220 sample rate: {:?}",
+                    defmt::Debug2Format(&e)
+                );
+                Timer::after(Duration::from_millis(250)).await;
+            }
+            continue;
         }
 
         if let Ok(command) = LOAD_CELL_COMMANDS.try_receive() {
@@ -811,7 +844,9 @@ async fn measurement_task(
                 let now = (esp_hal::time::Instant::now().duration_since_epoch()).as_micros() as u32;
                 let timestamp = now.wrapping_sub(start_time);
                 measurement_buffer.push((weight, timestamp));
-                if measurement_buffer.len() >= measurement_batch_size {
+                let batch_size =
+                    measurement_batch_size.min(sample_rate.samples_in(MAX_BATCH_DURATION));
+                if measurement_buffer.len() >= batch_size {
                     enqueue_measurement_batch(
                         measurement_channel,
                         core::mem::take(&mut measurement_buffer),
@@ -899,11 +934,7 @@ async fn run_load_cell_command(
         }
         LoadCellCommand::GetCalibration => {
             match load_cell.get_calibration_factor() {
-                Ok(factor) => {
-                    DataPoint::from(ResponseCode::CalibrationFactor(factor))
-                        .send(channel)
-                        .await;
-                }
+                Ok(factor) => notify_calibration_factor(channel, factor).await,
                 Err(e) => {
                     error!(
                         "Failed to read calibration factor: {:?}",
@@ -937,9 +968,11 @@ async fn notify_calibration_points(
 ) {
     for (raw_value, weight) in calibration_points {
         debug!("Notifying calibration point: {:?}", (raw_value, weight));
-        DataPoint::from(ResponseCode::CalibrationPoint(*raw_value, *weight))
-            .send(channel)
-            .await;
+        send_load_cell_reply(
+            channel,
+            DataPoint::from(ResponseCode::CalibrationPoint(*raw_value, *weight)),
+        )
+        .await;
     }
 }
 
@@ -948,12 +981,23 @@ async fn notify_calibration_factor(
     calibration_factor: f32,
 ) {
     debug!("Notifying calibration factor: {:?}", calibration_factor);
-    DataPoint::from(ResponseCode::CalibrationFactor(calibration_factor))
-        .send(channel)
-        .await;
+    send_load_cell_reply(
+        channel,
+        DataPoint::from(ResponseCode::CalibrationFactor(calibration_factor)),
+    )
+    .await;
 }
 
-/// Connection parameters while measuring. The interval is short enough to carry 600 samples/s.
+/// Queues a load cell command reply for the connected client. Replies are dropped once BLE
+/// disconnects: nothing drains the channel then, and a full channel would block the measurement
+/// task, and with it sleep, until the next connection.
+async fn send_load_cell_reply(channel: &'static ControlResponseChannel, reply: DataPoint) {
+    if critical_section::with(|cs| DEVICE_STATE.borrow_ref(cs).is_ble_connected()) {
+        channel.send(reply).await;
+    }
+}
+
+/// Connection parameters while measuring. The interval is meant to carry up to 1000 samples/s.
 const MEASURING_CONNECTION_PARAMS: RequestedConnParams = RequestedConnParams {
     min_connection_interval: Duration::from_micros(7_500),
     max_connection_interval: Duration::from_millis(15),
@@ -1048,15 +1092,20 @@ async fn gatt_events_task<P: PacketPool>(
                     peripheral_latency,
                     supervision_timeout.as_millis()
                 );
-                let measuring = critical_section::with(|cs| {
-                    DEVICE_STATE.borrow_ref(cs).measurement_status == MeasurementTaskStatus::Enabled
+                let (measuring, sample_rate) = critical_section::with(|cs| {
+                    let state = DEVICE_STATE.borrow_ref(cs);
+                    (
+                        state.measurement_status == MeasurementTaskStatus::Enabled,
+                        state.sample_rate,
+                    )
                 });
                 if measuring
                     && (conn_interval > MEASURING_CONNECTION_PARAMS.max_connection_interval
                         || peripheral_latency != 0)
                 {
                     warn!(
-                        "Negotiated BLE parameters may not sustain 600 Hz: interval={} us, latency={}",
+                        "Negotiated BLE parameters may not sustain {} SPS: interval={} us, latency={}",
+                        sample_rate.sps(),
                         conn_interval.as_micros(),
                         peripheral_latency
                     );
@@ -1104,7 +1153,7 @@ async fn gatt_events_task<P: PacketPool>(
                 }
 
                 if let Some(response) = immediate_response {
-                    response.send(control_channel).await;
+                    control_channel.send(response).await;
                 }
 
                 if disconnect_after_response {

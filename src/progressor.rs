@@ -4,21 +4,22 @@
 ///
 /// [Tindeq API documentation]: https://tindeq.com/progressor_api/
 use defmt::{Format, error, info, warn};
-use embassy_sync::{
-    blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex},
-    channel::Channel,
-};
+use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
 use esp_hal::time;
 use trouble_host::types::gatt_traits::{AsGatt, FromGatt, FromGattError};
+
+use crate::ads1220::SampleRate;
 
 /// Number of high-priority control responses that can be queued.
 const CONTROL_RESPONSE_CHANNEL_SIZE: usize = 16;
 /// Number of measurement packets retained by the BLE transport ring buffer.
 const MEASUREMENT_CHANNEL_SIZE: usize = 80;
 /// Channel reserved for calibration, status, and other control responses.
-pub type ControlResponseChannel = Channel<NoopRawMutex, DataPoint, CONTROL_RESPONSE_CHANNEL_SIZE>;
+pub type ControlResponseChannel =
+    Channel<CriticalSectionRawMutex, DataPoint, CONTROL_RESPONSE_CHANNEL_SIZE>;
 /// Ring buffer used to decouple measurement acquisition from BLE transmission.
-pub type MeasurementDataChannel = Channel<NoopRawMutex, DataPoint, MEASUREMENT_CHANNEL_SIZE>;
+pub type MeasurementDataChannel =
+    Channel<CriticalSectionRawMutex, DataPoint, MEASUREMENT_CHANNEL_SIZE>;
 /// Number of load cell commands that can wait for the measurement task.
 const LOAD_CELL_COMMAND_QUEUE_SIZE: usize = 4;
 /// Queue of one-shot commands for the measurement task.
@@ -30,6 +31,8 @@ pub static LOAD_CELL_COMMANDS: Channel<
 
 /// Maximum number of samples packed into one BLE measurement packet.
 pub const MAX_SAMPLES_PER_PACKET: usize = 10;
+/// Longest time a batch collects samples, so low sample rates still update the client often.
+pub const MAX_BATCH_DURATION: embassy_time::Duration = embassy_time::Duration::from_millis(50);
 /// Size in bytes of one packed weight measurement (f32 weight + u32 timestamp).
 const WEIGHT_MEASUREMENT_SIZE: usize = 8;
 /// ATT notification opcode/handle plus the Progressor response code/length.
@@ -61,6 +64,14 @@ pub const MAX_CALIBRATION_POINTS: usize = 20;
 
 /// Calibration point storing raw value and known weight
 pub type CalibrationPoint = (f32, f32);
+
+/// Fuel gauge reading reported to clients.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct BatteryStatus {
+    /// State of charge from the MAX17048 model, 0-100 %.
+    pub soc_percent: u8,
+    pub charging: bool,
+}
 
 /// Status of the weight measurement task
 #[derive(Copy, Debug, Clone, PartialEq)]
@@ -131,6 +142,8 @@ pub struct DeviceState {
     pub calibration_point_count: usize,
     /// Battery voltage in millivolts
     pub battery_voltage: u32,
+    /// Fuel gauge reading, `None` until the first successful read.
+    pub battery_status: Option<BatteryStatus>,
     /// Timestamp of the last user-visible activity.
     pub last_activity_time_ms: u32,
     /// Whether BLE is currently connected.
@@ -143,6 +156,8 @@ pub struct DeviceState {
     pub sleep_measurement_ready: bool,
     /// Whether the status LED has been explicitly turned off for sleep.
     pub sleep_status_led_ready: bool,
+    /// ADS1220 data rate, persisted by the measurement task so it applies to every client.
+    pub sample_rate: SampleRate,
 }
 
 impl Default for DeviceState {
@@ -160,12 +175,14 @@ impl DeviceState {
             calibration_points: [(0.0, 0.0); MAX_CALIBRATION_POINTS],
             calibration_point_count: 0,
             battery_voltage: 4300,
+            battery_status: None,
             last_activity_time_ms: 0,
             ble_connected: false,
             measurement_batch_size: measurement_batch_size_for_att_mtu(23),
             sleep_state: SleepState::Awake,
             sleep_measurement_ready: false,
             sleep_status_led_ready: false,
+            sample_rate: SampleRate::DEFAULT,
         }
     }
 
@@ -341,6 +358,16 @@ pub enum ControlOpCode {
     /// Default calibration
     // Custom command, no part of Tindeq API
     DefaultCalibration = 0x74,
+    /// Set and persist the ADS1220 sample rate (u16 LE samples per second) and reply with the rate
+    /// in use, which stays unchanged for unsupported rates
+    // Custom command, no part of Tindeq API
+    SetSampleRate = 0x75,
+    /// Reply with the ADS1220 sample rate in use
+    // Custom command, no part of Tindeq API
+    GetSampleRate = 0x76,
+    /// Reply with the fuel gauge state of charge and whether the battery is charging
+    // Custom command, no part of Tindeq API
+    GetBatteryStatus = 0x77,
 }
 
 impl ControlOpCode {
@@ -438,6 +465,31 @@ impl ControlOpCode {
                 info!("Shutdown command received, disconnecting");
                 None
             }
+            ControlOpCode::SetSampleRate => {
+                if data.len() < 3 {
+                    error!("SetSampleRate: Invalid data length");
+                    return None;
+                }
+
+                let sps = u16::from_le_bytes([data[1], data[2]]);
+                match SampleRate::from_sps(sps) {
+                    Some(sample_rate) => device_state.sample_rate = sample_rate,
+                    None => warn!("SetSampleRate: Unsupported rate {} SPS", sps),
+                }
+                Some(DataPoint::from(ResponseCode::SampleRate(
+                    device_state.sample_rate,
+                )))
+            }
+            ControlOpCode::GetSampleRate => Some(DataPoint::from(ResponseCode::SampleRate(
+                device_state.sample_rate,
+            ))),
+            ControlOpCode::GetBatteryStatus => match device_state.battery_status {
+                Some(status) => Some(DataPoint::from(ResponseCode::BatteryStatus(status))),
+                None => {
+                    warn!("GetBatteryStatus: no fuel gauge reading yet");
+                    None
+                }
+            },
             // Currently unimplemented operations
             ControlOpCode::StartPeakRFDMeasurement
             | ControlOpCode::StartPeakRFDMeasurementSeries
@@ -463,6 +515,9 @@ impl TryFrom<u8> for ControlOpCode {
             0x6B => Ok(ControlOpCode::GetAppVersion),
             0x72 => Ok(ControlOpCode::GetCalibration),
             0x74 => Ok(ControlOpCode::DefaultCalibration),
+            0x75 => Ok(ControlOpCode::SetSampleRate),
+            0x76 => Ok(ControlOpCode::GetSampleRate),
+            0x77 => Ok(ControlOpCode::GetBatteryStatus),
             0x6C => Ok(ControlOpCode::GetErrorInformation),
             0x6D => Ok(ControlOpCode::ClearErrorInformation),
             0x67 => Ok(ControlOpCode::StartPeakRFDMeasurement),
@@ -486,6 +541,9 @@ impl Format for ControlOpCode {
             ControlOpCode::GetCalibration => defmt::write!(fmt, "GetCalibration"),
             ControlOpCode::AddCalibrationPoint => defmt::write!(fmt, "AddCalibrationPoint"),
             ControlOpCode::DefaultCalibration => defmt::write!(fmt, "DefaultCalibration"),
+            ControlOpCode::SetSampleRate => defmt::write!(fmt, "SetSampleRate"),
+            ControlOpCode::GetSampleRate => defmt::write!(fmt, "GetSampleRate"),
+            ControlOpCode::GetBatteryStatus => defmt::write!(fmt, "GetBatteryStatus"),
             ControlOpCode::StartPeakRFDMeasurement => defmt::write!(fmt, "StartPeakRFDMeasurement"),
             ControlOpCode::StartPeakRFDMeasurementSeries => {
                 defmt::write!(fmt, "StartPeakRFDMeasurementSeries")
@@ -562,11 +620,6 @@ impl DataPoint {
         }
     }
 
-    /// Send data point to the channel.
-    pub async fn send(self, channel: &'static ControlResponseChannel) {
-        channel.send(self).await;
-    }
-
     /// Create a weight measurement data point
     pub fn weight_measurement(measurements: WeightMeasurementBatch) -> Self {
         Self::from(ResponseCode::WeightMeasurement(measurements))
@@ -610,6 +663,10 @@ pub enum ResponseCode {
     CalibrationFactor(f32),
     /// Calibration point response (raw value, weight)
     CalibrationPoint(f32, f32),
+    /// Sample rate in use, in samples per second
+    SampleRate(SampleRate),
+    /// Fuel gauge state of charge (u8 %) and charging flag (u8)
+    BatteryStatus(BatteryStatus),
     /// Low power warning indicating that the battery is empty. The Progressor will turn itself off after sending this warning
     LowPowerWarning,
     /// Response to app version request command
@@ -639,6 +696,13 @@ impl Format for ResponseCode {
             ResponseCode::CalibrationPoint(raw, weight) => {
                 defmt::write!(fmt, "CalibrationPoint: Raw: {}, Weight: {}", raw, weight)
             }
+            ResponseCode::SampleRate(rate) => defmt::write!(fmt, "SampleRate: {}", rate.sps()),
+            ResponseCode::BatteryStatus(status) => defmt::write!(
+                fmt,
+                "BatteryStatus: {}%, charging: {}",
+                status.soc_percent,
+                status.charging
+            ),
             ResponseCode::LowPowerWarning => defmt::write!(fmt, "LowPowerWarning"),
             ResponseCode::AppVersion(version) => defmt::write!(fmt, "AppVersion: {:x}", version),
             ResponseCode::ProgressorId(id) => defmt::write!(fmt, "ProgressorId: {:x}", id),
@@ -661,6 +725,8 @@ impl ResponseCode {
             ResponseCode::LowPowerWarning => 0x04,
             ResponseCode::CalibrationFactor(..) => 0x05,
             ResponseCode::CalibrationPoint(..) => 0x06,
+            ResponseCode::SampleRate(..) => 0x07,
+            ResponseCode::BatteryStatus(..) => 0x08,
         }
     }
 
@@ -673,6 +739,8 @@ impl ResponseCode {
             }
             ResponseCode::CalibrationFactor(..) => 4,
             ResponseCode::CalibrationPoint(..) => 8,
+            ResponseCode::SampleRate(..) => 2,
+            ResponseCode::BatteryStatus(..) => 2,
             ResponseCode::LowPowerWarning => 0,
             ResponseCode::AppVersion(version) => {
                 version.len().min(DATA_POINT_MAX_PAYLOAD_SIZE) as u8
@@ -704,6 +772,13 @@ impl ResponseCode {
             ResponseCode::CalibrationPoint(raw_value, weight) => {
                 value[0..4].copy_from_slice(&raw_value.to_le_bytes());
                 value[4..8].copy_from_slice(&weight.to_le_bytes());
+            }
+            ResponseCode::SampleRate(rate) => {
+                value[0..2].copy_from_slice(&rate.sps().to_le_bytes());
+            }
+            ResponseCode::BatteryStatus(status) => {
+                value[0] = status.soc_percent;
+                value[1] = u8::from(status.charging);
             }
             ResponseCode::LowPowerWarning => (),
             ResponseCode::ProgressorId(id) => {

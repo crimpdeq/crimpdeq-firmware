@@ -7,7 +7,7 @@
 
 use core::fmt;
 
-use defmt::{debug, error, info, warn};
+use defmt::{Format, debug, error, info, warn};
 use embassy_time::{Duration, Instant, Timer, with_timeout};
 use embedded_hal_async::spi::SpiBus;
 use esp_bootloader_esp_idf::partitions::{PARTITION_TABLE_MAX_LEN, read_partition_table};
@@ -25,34 +25,144 @@ const COMMAND_RREG: u8 = 0x20;
 const COMMAND_WREG: u8 = 0x40;
 
 const REGISTER_COUNT: usize = 4;
-const CONFIGURATION_REGISTERS: [u8; REGISTER_COUNT] = [
-    0x0E, // AIN0-AIN1, gain 128, PGA enabled
-    0xA4, // 600 SPS, normal mode, continuous conversion
-    0x40, // External reference on REFP0/REFN0
-    0x02, // IDACs disabled; data ready also on DOUT/DRDY
-];
+
+const fn configuration_registers(sample_rate: SampleRate) -> [u8; REGISTER_COUNT] {
+    [
+        0x0E,                                       // AIN0-AIN1, gain 128, PGA enabled
+        (sample_rate.data_rate_bits() << 5) | 0x04, // Normal mode, continuous conversion
+        0x40,                                       // External reference on REFP0/REFN0
+        0x02,                                       // IDACs disabled; data ready also on DOUT/DRDY
+    ]
+}
 
 const RESET_DELAY: Duration = Duration::from_micros(100);
-/// Time from START/SYNC until the first conversion completes: up to 50 us of oscillator wake-up,
-/// the 210 tCLK start delay and a 6994 tCLK conversion at 600 SPS (datasheet section 8.3.7), with
-/// margin for the 2% oscillator tolerance. Until then, DOUT/DRDY can still flag the conversion that
-/// completed after POWERDOWN.
-const FIRST_CONVERSION_TIME: Duration = Duration::from_millis(2);
-/// Longest wait for a conversion; a 600 SPS conversion takes 6896 tCLK (1.7 ms).
-const DATA_READY_TIMEOUT: Duration = Duration::from_millis(10);
+/// Internal oscillator frequency; tCLK = 1 / CLOCK_HZ.
+const CLOCK_HZ: u64 = 4_096_000;
+/// Internal oscillator wake-up time after START/SYNC (datasheet section 8.3.7).
+const OSCILLATOR_WAKE_UP_TIME: Duration = Duration::from_micros(50);
+/// Delay from START/SYNC until the first conversion starts in normal mode (datasheet section
+/// 8.3.7).
+const START_DELAY_CLOCKS: u32 = 210;
+/// Extra wait for a conversion beyond its nominal conversion time.
+const DATA_READY_TIMEOUT_MARGIN: Duration = Duration::from_millis(8);
 
-/// Label of the data partition that stores the calibration.
+/// Label of the data partition that stores the calibration and the sample rate.
 const CALIBRATION_PARTITION_LABEL: &str = "calib";
-/// Magic value used to validate stored calibration data.
-const CALIBRATION_STORAGE_MAGIC: u32 = 0x4344_5146;
-/// Version 2 invalidates calibration factors saved for the old HX711 front end.
-const CALIBRATION_STORAGE_VERSION: u32 = 2;
-const CALIBRATION_STORAGE_SIZE: usize = 16;
-// Preserve approximately the previous 200 ms tare and 1.25 s calibration
-// windows after increasing the sample rate from 80 Hz to 600 Hz.
-const DEFAULT_TARING_SAMPLES: usize = 120;
-const DEFAULT_CALIBRATION_SAMPLES: usize = 750;
+/// Size of a stored setting: magic, version, value and checksum, as little-endian u32 words.
+const STORAGE_RECORD_SIZE: usize = 16;
+/// The calibration record stays at the partition start, where earlier firmware stored it.
+const CALIBRATION_RECORD: StorageRecord = StorageRecord {
+    offset: 0,
+    magic: 0x4344_5146,
+    // Version 2 invalidates calibration factors saved for the old HX711 front end.
+    version: 2,
+};
+const SAMPLE_RATE_RECORD: StorageRecord = StorageRecord {
+    offset: STORAGE_RECORD_SIZE as u32,
+    magic: 0x4344_5352,
+    version: 1,
+};
+const STORAGE_SIZE: usize = 2 * STORAGE_RECORD_SIZE;
+const TARING_TIME: Duration = Duration::from_millis(200);
+const CALIBRATION_TIME: Duration = Duration::from_millis(1250);
+/// Calibration points are averaged at a low rate, which has less noise per conversion.
+const CALIBRATION_SAMPLE_RATE: SampleRate = SampleRate::Sps90;
 const DEFAULT_CALIBRATION_FACTOR: f32 = 0.08;
+
+/// Location and validation constants of one stored setting.
+struct StorageRecord {
+    /// Offset within the storage partition.
+    offset: u32,
+    magic: u32,
+    version: u32,
+}
+
+impl StorageRecord {
+    fn checksum(&self, value: u32) -> u32 {
+        self.magic ^ self.version ^ value ^ 0xA5A5_5A5A
+    }
+}
+
+/// Normal-mode data rates (datasheet table 8-12). The discriminant is the DR[2:0] value.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Format)]
+pub enum SampleRate {
+    Sps20 = 0,
+    Sps45 = 1,
+    Sps90 = 2,
+    Sps175 = 3,
+    Sps330 = 4,
+    Sps600 = 5,
+    Sps1000 = 6,
+}
+
+impl SampleRate {
+    pub const DEFAULT: Self = Self::Sps175;
+    const ALL: [Self; 7] = [
+        Self::Sps20,
+        Self::Sps45,
+        Self::Sps90,
+        Self::Sps175,
+        Self::Sps330,
+        Self::Sps600,
+        Self::Sps1000,
+    ];
+
+    /// Returns the rate with the given samples per second, if the ADS1220 supports it.
+    pub fn from_sps(sps: u16) -> Option<Self> {
+        Self::ALL.into_iter().find(|rate| rate.sps() == sps)
+    }
+
+    pub const fn sps(self) -> u16 {
+        match self {
+            Self::Sps20 => 20,
+            Self::Sps45 => 45,
+            Self::Sps90 => 90,
+            Self::Sps175 => 175,
+            Self::Sps330 => 330,
+            Self::Sps600 => 600,
+            Self::Sps1000 => 1000,
+        }
+    }
+
+    const fn data_rate_bits(self) -> u8 {
+        self as u8
+    }
+
+    /// Continuous and single-shot conversion times in tCLK (datasheet table 8-4).
+    const fn conversion_clocks(self) -> (u32, u32) {
+        match self {
+            Self::Sps20 => (204_768, 204_850),
+            Self::Sps45 => (91_120, 91_218),
+            Self::Sps90 => (46_128, 46_226),
+            Self::Sps175 => (23_664, 23_762),
+            Self::Sps330 => (12_464, 12_562),
+            Self::Sps600 => (6_896, 6_994),
+            Self::Sps1000 => (4_144, 4_242),
+        }
+    }
+
+    /// Longest wait for a conversion while converting continuously.
+    fn data_ready_timeout(self) -> Duration {
+        clocks_to_duration(self.conversion_clocks().0) + DATA_READY_TIMEOUT_MARGIN
+    }
+
+    /// Time from START/SYNC until the first conversion completes. Until then, DOUT/DRDY can still
+    /// flag the conversion that completed before POWERDOWN or before the rate changed.
+    fn first_conversion_time(self) -> Duration {
+        OSCILLATOR_WAKE_UP_TIME
+            + clocks_to_duration(START_DELAY_CLOCKS + self.conversion_clocks().1)
+    }
+
+    /// Number of conversions that cover `window`, at least one.
+    pub fn samples_in(self, window: Duration) -> usize {
+        (u64::from(self.sps()) * window.as_millis() / 1000).max(1) as usize
+    }
+}
+
+/// Converts tCLK periods to time, with margin for the 2% internal oscillator tolerance.
+fn clocks_to_duration(clocks: u32) -> Duration {
+    Duration::from_micros((u64::from(clocks) * 1_000_000 * 102).div_ceil(CLOCK_HZ * 100))
+}
 
 /// Errors produced by the ADS1220 load-cell driver.
 #[derive(Debug)]
@@ -97,6 +207,7 @@ pub struct Ads1220<'d> {
     calibration_factor: f32,
     first_conversion_at: Instant,
     powered_down: bool,
+    sample_rate: SampleRate,
 }
 
 impl<'d> Ads1220<'d> {
@@ -118,11 +229,13 @@ impl<'d> Ads1220<'d> {
             calibration_factor: 0.0,
             first_conversion_at: Instant::now(),
             powered_down: false,
+            sample_rate: SampleRate::DEFAULT,
         };
 
         ads1220.calibration_factor = ads1220
             .get_calibration_factor()
             .unwrap_or(DEFAULT_CALIBRATION_FACTOR);
+        ads1220.sample_rate = ads1220.stored_sample_rate();
         ads1220
     }
 
@@ -131,23 +244,75 @@ impl<'d> Ads1220<'d> {
         self.send_command(COMMAND_RESET).await?;
         Timer::after(RESET_DELAY).await;
 
-        self.write_configuration(CONFIGURATION_REGISTERS).await?;
-        let actual = self.read_configuration().await?;
-        if actual != CONFIGURATION_REGISTERS {
-            return Err(Ads1220Error::ConfigurationMismatch {
-                expected: CONFIGURATION_REGISTERS,
-                actual,
-            });
-        }
-
+        self.configure(self.sample_rate).await?;
         self.start_conversions().await?;
-        info!("ADS1220 initialized at 600 SPS");
+        info!("ADS1220 initialized at {} SPS", self.sample_rate.sps());
+        Ok(())
+    }
+
+    /// Returns the configured data rate.
+    pub fn sample_rate(&self) -> SampleRate {
+        self.sample_rate
+    }
+
+    /// Persist the data rate, so it also applies after a reboot, then switch to it. The rate in use
+    /// only changes once both steps succeed, so the caller retries until it does.
+    pub async fn set_sample_rate(&mut self, sample_rate: SampleRate) -> Result<(), Ads1220Error> {
+        let sps = u32::from(sample_rate.sps());
+        // Skip the write when an earlier attempt stored the rate, to spare the flash while the ADC
+        // keeps failing.
+        if self.read_record(&SAMPLE_RATE_RECORD)? != Some(sps) {
+            self.write_record(&SAMPLE_RATE_RECORD, sps)?;
+        }
+        self.switch_sample_rate(sample_rate).await?;
+        info!("ADS1220 sample rate set to {} SPS", sample_rate.sps());
+        Ok(())
+    }
+
+    /// Change the data rate without persisting it. Restarts conversions unless the ADC is powered
+    /// down, which keeps the registers until the next START/SYNC.
+    async fn switch_sample_rate(&mut self, sample_rate: SampleRate) -> Result<(), Ads1220Error> {
+        self.configure(sample_rate).await?;
+        if !self.powered_down {
+            self.start_conversions().await?;
+        }
+        Ok(())
+    }
+
+    fn stored_sample_rate(&mut self) -> SampleRate {
+        let stored = match self.read_record(&SAMPLE_RATE_RECORD) {
+            Ok(stored) => stored,
+            Err(error) => {
+                error!(
+                    "Failed to read the stored sample rate: {:?}",
+                    defmt::Debug2Format(&error)
+                );
+                None
+            }
+        };
+        match stored.and_then(|sps| SampleRate::from_sps(u16::try_from(sps).ok()?)) {
+            Some(sample_rate) => sample_rate,
+            None => {
+                info!("Using default sample rate");
+                SampleRate::DEFAULT
+            }
+        }
+    }
+
+    async fn configure(&mut self, sample_rate: SampleRate) -> Result<(), Ads1220Error> {
+        let expected = configuration_registers(sample_rate);
+        self.write_configuration(expected).await?;
+        let actual = self.read_configuration().await?;
+        if actual != expected {
+            return Err(Ads1220Error::ConfigurationMismatch { expected, actual });
+        }
+        self.sample_rate = sample_rate;
         Ok(())
     }
 
     async fn start_conversions(&mut self) -> Result<(), Ads1220Error> {
         self.send_command(COMMAND_START_SYNC).await?;
-        self.first_conversion_at = Instant::now() + FIRST_CONVERSION_TIME;
+        self.first_conversion_at = Instant::now() + self.sample_rate.first_conversion_time();
         Ok(())
     }
 
@@ -205,8 +370,9 @@ impl<'d> Ads1220<'d> {
         // three data bytes plus one byte with DIN low leaves DOUT/DRDY high until the next
         // conversion, so every conversion is read exactly once.
         let mut transaction = [0; 4];
+        let timeout = self.sample_rate.data_ready_timeout();
         self.chip_select.set_low();
-        let result = match with_timeout(DATA_READY_TIMEOUT, self.data_ready.wait_for_low()).await {
+        let result = match with_timeout(timeout, self.data_ready.wait_for_low()).await {
             Ok(()) => SpiBus::transfer_in_place(&mut self.spi, &mut transaction)
                 .await
                 .map_err(|_| Ads1220Error::Spi),
@@ -253,7 +419,9 @@ impl<'d> Ads1220<'d> {
     /// Tare the load cell with an average of multiple readings.
     pub async fn tare(&mut self) -> Result<(), Ads1220Error> {
         debug!("Taring the scale");
-        let average = self.take_samples(DEFAULT_TARING_SAMPLES).await?;
+        let average = self
+            .take_samples(self.sample_rate.samples_in(TARING_TIME))
+            .await?;
         self.tare_value = average as i32;
         debug!("Tare value set to: {}", self.tare_value);
         Ok(())
@@ -275,14 +443,20 @@ impl<'d> Ads1220<'d> {
         Ok((raw_tared as f32) * self.calibration_factor / 1000.0)
     }
 
-    /// Collect an averaged raw calibration point.
+    /// Collect an averaged raw calibration point at the calibration sample rate.
     pub async fn perform_calibration(&mut self) -> Result<f32, Ads1220Error> {
-        let average = self.take_samples(DEFAULT_CALIBRATION_SAMPLES).await?;
+        let sample_rate = self.sample_rate;
+        self.switch_sample_rate(CALIBRATION_SAMPLE_RATE).await?;
+        let average = self
+            .take_samples(CALIBRATION_SAMPLE_RATE.samples_in(CALIBRATION_TIME))
+            .await;
+        self.switch_sample_rate(sample_rate).await?;
+        let average = average?;
         debug!("Calibration point collected: {}", average);
         Ok(average)
     }
 
-    fn calibration_storage_offset(&mut self) -> Result<u32, Ads1220Error> {
+    fn storage_offset(&mut self) -> Result<u32, Ads1220Error> {
         let mut table_buffer = [0u8; PARTITION_TABLE_MAX_LEN];
         match read_partition_table(&mut self.flash, &mut table_buffer) {
             Ok(table) => {
@@ -290,7 +464,7 @@ impl<'d> Ads1220<'d> {
                     .iter()
                     .find(|partition| partition.label_as_str() == CALIBRATION_PARTITION_LABEL)
                 {
-                    if (partition.len() as usize) < CALIBRATION_STORAGE_SIZE {
+                    if (partition.len() as usize) < STORAGE_SIZE {
                         error!("Calibration partition too small");
                         return Err(Ads1220Error::FlashError);
                     }
@@ -315,32 +489,10 @@ impl<'d> Ads1220<'d> {
         Ok((capacity - sector_size) as u32)
     }
 
-    fn calibration_checksum(factor_bits: u32) -> u32 {
-        CALIBRATION_STORAGE_MAGIC ^ CALIBRATION_STORAGE_VERSION ^ factor_bits ^ 0xA5A5_5A5A
-    }
-
     fn read_from_flash(&mut self) -> Result<f32, Ads1220Error> {
-        let mut bytes = [0; CALIBRATION_STORAGE_SIZE];
-        let offset = self.calibration_storage_offset()?;
-
-        self.flash.read(offset, &mut bytes).map_err(|_| {
-            error!("Failed to read calibration factor from flash");
-            Ads1220Error::FlashError
-        })?;
-
-        let magic = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
-        let version = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
-        let factor_bits = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
-        let checksum = u32::from_le_bytes(bytes[12..16].try_into().unwrap());
-
-        if magic != CALIBRATION_STORAGE_MAGIC || version != CALIBRATION_STORAGE_VERSION {
-            info!("Calibration storage missing or version mismatch");
+        let Some(factor_bits) = self.read_record(&CALIBRATION_RECORD)? else {
             return Err(Ads1220Error::InvalidCalibration);
-        }
-        if checksum != Self::calibration_checksum(factor_bits) {
-            error!("Calibration storage checksum mismatch");
-            return Err(Ads1220Error::InvalidCalibration);
-        }
+        };
 
         let factor = f32::from_bits(factor_bits);
         if !Self::is_valid_calibration_factor(factor) {
@@ -359,18 +511,52 @@ impl<'d> Ads1220<'d> {
         if !Self::is_valid_calibration_factor(calibration_factor) {
             return Err(Ads1220Error::InvalidCalibration);
         }
+        self.write_record(&CALIBRATION_RECORD, calibration_factor.to_bits())
+    }
 
-        let factor_bits = calibration_factor.to_bits();
-        let checksum = Self::calibration_checksum(factor_bits);
-        let mut bytes = [0; CALIBRATION_STORAGE_SIZE];
-        bytes[0..4].copy_from_slice(&CALIBRATION_STORAGE_MAGIC.to_le_bytes());
-        bytes[4..8].copy_from_slice(&CALIBRATION_STORAGE_VERSION.to_le_bytes());
-        bytes[8..12].copy_from_slice(&factor_bits.to_le_bytes());
-        bytes[12..16].copy_from_slice(&checksum.to_le_bytes());
+    /// Read a stored value, or `None` when the record is missing or corrupt.
+    fn read_record(&mut self, record: &StorageRecord) -> Result<Option<u32>, Ads1220Error> {
+        let mut bytes = [0; STORAGE_RECORD_SIZE];
+        let offset = self.storage_offset()? + record.offset;
+        self.flash.read(offset, &mut bytes).map_err(|_| {
+            error!(
+                "Failed to read storage record {:#x} from flash",
+                record.magic
+            );
+            Ads1220Error::FlashError
+        })?;
 
-        let offset = self.calibration_storage_offset()?;
+        let words = bytes.as_chunks::<4>().0;
+        let [magic, version, value, checksum] =
+            core::array::from_fn(|i| u32::from_le_bytes(words[i]));
+        if magic != record.magic || version != record.version {
+            info!(
+                "Storage record {:#x} missing or version mismatch",
+                record.magic
+            );
+            return Ok(None);
+        }
+        if checksum != record.checksum(value) {
+            error!("Storage record {:#x} checksum mismatch", record.magic);
+            return Ok(None);
+        }
+        Ok(Some(value))
+    }
+
+    fn write_record(&mut self, record: &StorageRecord, value: u32) -> Result<(), Ads1220Error> {
+        let words = [record.magic, record.version, value, record.checksum(value)];
+        let mut bytes = [0; STORAGE_RECORD_SIZE];
+        for (chunk, word) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(words) {
+            *chunk = word.to_le_bytes();
+        }
+
+        // FlashStorage::write preserves the rest of the sector, including the other records.
+        let offset = self.storage_offset()? + record.offset;
         self.flash.write(offset, &bytes).map_err(|_| {
-            error!("Failed to write calibration factor to flash");
+            error!(
+                "Failed to write storage record {:#x} to flash",
+                record.magic
+            );
             Ads1220Error::FlashError
         })
     }
