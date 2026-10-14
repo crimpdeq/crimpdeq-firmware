@@ -637,24 +637,6 @@ async fn battery_gauge_task(
     }
 }
 
-async fn initialize_load_cell(load_cell: &mut Ads1220<'_>) {
-    let mut attempt = 1u32;
-    loop {
-        match load_cell.initialize().await {
-            Ok(()) => return,
-            Err(error) => {
-                error!(
-                    "ADS1220 initialization attempt {} failed: {:?}",
-                    attempt,
-                    defmt::Debug2Format(&error)
-                );
-                attempt = attempt.saturating_add(1);
-                Timer::after(Duration::from_millis(250)).await;
-            }
-        }
-    }
-}
-
 fn enqueue_measurement_batch(
     channel: &'static MeasurementDataChannel,
     measurements: WeightMeasurementBatch,
@@ -693,10 +675,7 @@ async fn measurement_task(
     let mut load_cell = Ads1220::new(spi.into_async(), chip_select, data_ready, flash);
     let stored_sample_rate = load_cell.sample_rate();
     update_device_state(|state| state.sample_rate = stored_sample_rate);
-    initialize_load_cell(&mut load_cell).await;
-    if let Err(e) = load_cell.tare().await {
-        error!("Initial tare failed: {:?}", defmt::Debug2Format(&e));
-    }
+    let mut initialized = false;
     let mut measurement_buffer = WeightMeasurementBatch::new();
     let mut dropped_measurement_batches = 0u32;
     // Whether the current measurement has started sampling.
@@ -743,6 +722,27 @@ async fn measurement_task(
                 continue;
             }
             SleepState::Awake => {}
+        }
+
+        // Retry inside the loop, so a missing or faulty ADS1220 cannot block sleep requests.
+        if !initialized {
+            if let Err(e) = load_cell.initialize().await {
+                error!(
+                    "ADS1220 initialization failed: {:?}",
+                    defmt::Debug2Format(&e)
+                );
+                select(
+                    Timer::after(Duration::from_millis(250)),
+                    state_changes.changed(),
+                )
+                .await;
+                continue;
+            }
+            if let Err(e) = load_cell.tare().await {
+                error!("Initial tare failed: {:?}", defmt::Debug2Format(&e));
+            }
+            initialized = true;
+            continue;
         }
 
         if load_cell.sample_rate() != sample_rate {
