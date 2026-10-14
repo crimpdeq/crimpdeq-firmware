@@ -159,6 +159,9 @@ pub struct DeviceState {
     pub sleep_measurement_ready: bool,
     /// Whether the status LED has been explicitly turned off for sleep.
     pub sleep_status_led_ready: bool,
+    /// Whether a low battery check has disabled the battery gauge's hibernate. The gauge stays
+    /// powered from the battery, so deep sleep waits for the check to restore it.
+    pub battery_gauge_check: bool,
     /// ADS1220 data rate, persisted by the measurement task so it applies to every client.
     pub sample_rate: SampleRate,
 }
@@ -185,6 +188,7 @@ impl DeviceState {
             sleep_state: SleepState::Awake,
             sleep_measurement_ready: false,
             sleep_status_led_ready: false,
+            battery_gauge_check: false,
             sample_rate: SampleRate::DEFAULT,
         }
     }
@@ -306,12 +310,30 @@ impl DeviceState {
         }
     }
 
-    /// Allow deep sleep once the peripherals are powered down and BLE is disconnected.
+    /// Start a low battery check, which holds off deep sleep until it ends. Returns false once
+    /// sleep is requested, as the device then sleeps without the check.
+    pub fn begin_battery_gauge_check(&mut self) -> bool {
+        if self.sleep_state != SleepState::Awake {
+            return false;
+        }
+        self.battery_gauge_check = true;
+        true
+    }
+
+    /// End the low battery check and allow a pending deep sleep.
+    pub fn end_battery_gauge_check(&mut self) {
+        self.battery_gauge_check = false;
+        self.enter_sleep_when_ready();
+    }
+
+    /// Allow deep sleep once the peripherals are powered down, BLE is disconnected and no low
+    /// battery check is running.
     fn enter_sleep_when_ready(&mut self) {
         if let SleepState::Requested(reason) = self.sleep_state
             && self.sleep_measurement_ready
             && self.sleep_status_led_ready
             && !self.ble_connected
+            && !self.battery_gauge_check
         {
             self.sleep_state = SleepState::Ready(reason);
         }

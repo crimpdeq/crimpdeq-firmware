@@ -597,13 +597,7 @@ async fn battery_gauge_task(
 ) {
     // The gauge stays powered from the battery, so a power cut during a low battery check would
     // leave hibernate disabled.
-    if let Err(e) = write_max17048_register(&mut i2c, MAX17048_HIBRT, MAX17048_HIBRT_DEFAULT).await
-    {
-        warn!(
-            "Failed to restore MAX17048 hibernate thresholds: {:?}",
-            defmt::Debug2Format(&e)
-        );
-    }
+    restore_max17048_hibernate(&mut i2c).await;
 
     loop {
         if read_battery(&mut i2c)
@@ -681,28 +675,50 @@ async fn read_battery(i2c: &mut I2c<'static, Async>) -> Option<BatteryReading> {
 /// it, so the reading is a new VCELL sample within seconds instead of the next one up to 45 s
 /// later.
 async fn confirm_low_battery(i2c: &mut I2c<'static, Async>) -> bool {
-    if let Err(e) = write_max17048_register(i2c, MAX17048_HIBRT, MAX17048_HIBRT_DISABLED).await {
-        warn!(
-            "Failed to disable MAX17048 hibernate: {:?}",
-            defmt::Debug2Format(&e)
-        );
+    if !update_device_state(DeviceState::begin_battery_gauge_check) {
         return false;
     }
 
-    let confirmed = if wait_for_max17048_active(i2c).await {
-        Timer::after(MAX17048_ACTIVE_VCELL_SETTLE).await;
-        read_battery(i2c).await.is_some_and(BatteryReading::is_low)
-    } else {
-        false
-    };
+    let confirmed =
+        match write_max17048_register(i2c, MAX17048_HIBRT, MAX17048_HIBRT_DISABLED).await {
+            Ok(()) if wait_for_max17048_active(i2c).await => {
+                Timer::after(MAX17048_ACTIVE_VCELL_SETTLE).await;
+                read_battery(i2c).await.is_some_and(BatteryReading::is_low)
+            }
+            Ok(()) => false,
+            Err(e) => {
+                warn!(
+                    "Failed to disable MAX17048 hibernate: {:?}",
+                    defmt::Debug2Format(&e)
+                );
+                false
+            }
+        };
 
-    if let Err(e) = write_max17048_register(i2c, MAX17048_HIBRT, MAX17048_HIBRT_DEFAULT).await {
-        warn!(
-            "Failed to restore MAX17048 hibernate thresholds: {:?}",
-            defmt::Debug2Format(&e)
-        );
-    }
+    // Also after a failed write, which the gauge may still have applied.
+    restore_max17048_hibernate(i2c).await;
+    update_device_state(DeviceState::end_battery_gauge_check);
     confirmed
+}
+
+/// Writes the default HIBRT, retrying transient I2C failures. When every attempt fails, deep sleep
+/// still proceeds: staying awake draws far more than the gauge in active mode, and the next boot
+/// restores HIBRT.
+async fn restore_max17048_hibernate(i2c: &mut I2c<'static, Async>) {
+    const ATTEMPTS: u8 = 5;
+    for attempt in 1..=ATTEMPTS {
+        match write_max17048_register(i2c, MAX17048_HIBRT, MAX17048_HIBRT_DEFAULT).await {
+            Ok(()) => return,
+            Err(e) => warn!(
+                "Failed to restore MAX17048 hibernate thresholds ({}/{}): {:?}",
+                attempt,
+                ATTEMPTS,
+                defmt::Debug2Format(&e)
+            ),
+        }
+        Timer::after(Duration::from_millis(100)).await;
+    }
+    error!("MAX17048 hibernate stays disabled until the next boot");
 }
 
 /// Waits for MODE.HibStat to clear. The datasheet does not say whether disabling hibernate takes
