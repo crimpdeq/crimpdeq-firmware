@@ -325,8 +325,6 @@ async fn main(spawner: Spawner) -> ! {
         loop {
             match advertise(&mut peripheral, &server).await {
                 Ok(conn) => {
-                    info!("BLE connection established");
-
                     let initial_att_mtu = conn.raw().att_mtu();
                     update_measurement_batch_size(initial_att_mtu);
                     info!("Initial ATT MTU: {}", initial_att_mtu);
