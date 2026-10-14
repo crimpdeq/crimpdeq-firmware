@@ -11,6 +11,8 @@ use embassy_sync::{
 use esp_hal::time;
 use trouble_host::types::gatt_traits::{AsGatt, FromGatt, FromGattError};
 
+use crate::ads1220::SampleRate;
+
 /// Number of high-priority control responses that can be queued.
 const CONTROL_RESPONSE_CHANNEL_SIZE: usize = 16;
 /// Number of measurement packets retained by the BLE transport ring buffer.
@@ -143,6 +145,8 @@ pub struct DeviceState {
     pub sleep_measurement_ready: bool,
     /// Whether the status LED has been explicitly turned off for sleep.
     pub sleep_status_led_ready: bool,
+    /// ADS1220 data rate requested by the connected client.
+    pub sample_rate: SampleRate,
 }
 
 impl Default for DeviceState {
@@ -166,6 +170,7 @@ impl DeviceState {
             sleep_state: SleepState::Awake,
             sleep_measurement_ready: false,
             sleep_status_led_ready: false,
+            sample_rate: SampleRate::DEFAULT,
         }
     }
 
@@ -248,6 +253,8 @@ impl DeviceState {
         LOAD_CELL_COMMANDS.clear();
         self.ble_connected = false;
         self.measurement_status = MeasurementTaskStatus::Disabled;
+        // Every connection starts at the default rate, which clients without SetSampleRate expect.
+        self.sample_rate = SampleRate::DEFAULT;
         // Restart the idle timeout without cancelling a sleep request, which disconnects BLE.
         self.last_activity_time_ms = Self::now_ms();
         self.enter_sleep_when_ready();
@@ -341,6 +348,10 @@ pub enum ControlOpCode {
     /// Default calibration
     // Custom command, no part of Tindeq API
     DefaultCalibration = 0x74,
+    /// Set the ADS1220 sample rate for this connection (u16 LE samples per second) and reply with
+    /// the rate in use, which stays unchanged for unsupported rates
+    // Custom command, no part of Tindeq API
+    SetSampleRate = 0x75,
 }
 
 impl ControlOpCode {
@@ -438,6 +449,21 @@ impl ControlOpCode {
                 info!("Shutdown command received, disconnecting");
                 None
             }
+            ControlOpCode::SetSampleRate => {
+                if data.len() < 3 {
+                    error!("SetSampleRate: Invalid data length");
+                    return None;
+                }
+
+                let sps = u16::from_le_bytes([data[1], data[2]]);
+                match SampleRate::from_sps(sps) {
+                    Some(sample_rate) => device_state.sample_rate = sample_rate,
+                    None => warn!("SetSampleRate: Unsupported rate {} SPS", sps),
+                }
+                Some(DataPoint::from(ResponseCode::SampleRate(
+                    device_state.sample_rate,
+                )))
+            }
             // Currently unimplemented operations
             ControlOpCode::StartPeakRFDMeasurement
             | ControlOpCode::StartPeakRFDMeasurementSeries
@@ -463,6 +489,7 @@ impl TryFrom<u8> for ControlOpCode {
             0x6B => Ok(ControlOpCode::GetAppVersion),
             0x72 => Ok(ControlOpCode::GetCalibration),
             0x74 => Ok(ControlOpCode::DefaultCalibration),
+            0x75 => Ok(ControlOpCode::SetSampleRate),
             0x6C => Ok(ControlOpCode::GetErrorInformation),
             0x6D => Ok(ControlOpCode::ClearErrorInformation),
             0x67 => Ok(ControlOpCode::StartPeakRFDMeasurement),
@@ -486,6 +513,7 @@ impl Format for ControlOpCode {
             ControlOpCode::GetCalibration => defmt::write!(fmt, "GetCalibration"),
             ControlOpCode::AddCalibrationPoint => defmt::write!(fmt, "AddCalibrationPoint"),
             ControlOpCode::DefaultCalibration => defmt::write!(fmt, "DefaultCalibration"),
+            ControlOpCode::SetSampleRate => defmt::write!(fmt, "SetSampleRate"),
             ControlOpCode::StartPeakRFDMeasurement => defmt::write!(fmt, "StartPeakRFDMeasurement"),
             ControlOpCode::StartPeakRFDMeasurementSeries => {
                 defmt::write!(fmt, "StartPeakRFDMeasurementSeries")
@@ -610,6 +638,8 @@ pub enum ResponseCode {
     CalibrationFactor(f32),
     /// Calibration point response (raw value, weight)
     CalibrationPoint(f32, f32),
+    /// Sample rate in use, in samples per second
+    SampleRate(SampleRate),
     /// Low power warning indicating that the battery is empty. The Progressor will turn itself off after sending this warning
     LowPowerWarning,
     /// Response to app version request command
@@ -639,6 +669,7 @@ impl Format for ResponseCode {
             ResponseCode::CalibrationPoint(raw, weight) => {
                 defmt::write!(fmt, "CalibrationPoint: Raw: {}, Weight: {}", raw, weight)
             }
+            ResponseCode::SampleRate(rate) => defmt::write!(fmt, "SampleRate: {}", rate.sps()),
             ResponseCode::LowPowerWarning => defmt::write!(fmt, "LowPowerWarning"),
             ResponseCode::AppVersion(version) => defmt::write!(fmt, "AppVersion: {:x}", version),
             ResponseCode::ProgressorId(id) => defmt::write!(fmt, "ProgressorId: {:x}", id),
@@ -661,6 +692,7 @@ impl ResponseCode {
             ResponseCode::LowPowerWarning => 0x04,
             ResponseCode::CalibrationFactor(..) => 0x05,
             ResponseCode::CalibrationPoint(..) => 0x06,
+            ResponseCode::SampleRate(..) => 0x07,
         }
     }
 
@@ -673,6 +705,7 @@ impl ResponseCode {
             }
             ResponseCode::CalibrationFactor(..) => 4,
             ResponseCode::CalibrationPoint(..) => 8,
+            ResponseCode::SampleRate(..) => 2,
             ResponseCode::LowPowerWarning => 0,
             ResponseCode::AppVersion(version) => {
                 version.len().min(DATA_POINT_MAX_PAYLOAD_SIZE) as u8
@@ -704,6 +737,9 @@ impl ResponseCode {
             ResponseCode::CalibrationPoint(raw_value, weight) => {
                 value[0..4].copy_from_slice(&raw_value.to_le_bytes());
                 value[4..8].copy_from_slice(&weight.to_le_bytes());
+            }
+            ResponseCode::SampleRate(rate) => {
+                value[0..2].copy_from_slice(&rate.sps().to_le_bytes());
             }
             ResponseCode::LowPowerWarning => (),
             ResponseCode::ProgressorId(id) => {

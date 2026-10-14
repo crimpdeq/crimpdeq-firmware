@@ -688,7 +688,7 @@ async fn measurement_task(
 
     loop {
         // Get current device state
-        let (sleep_state, status, start_time, measurement_batch_size) =
+        let (sleep_state, status, start_time, measurement_batch_size, sample_rate) =
             critical_section::with(|cs| {
                 let state = DEVICE_STATE.borrow_ref(cs);
                 (
@@ -696,6 +696,7 @@ async fn measurement_task(
                     state.measurement_status,
                     state.start_time,
                     state.measurement_batch_size,
+                    state.sample_rate,
                 )
             });
 
@@ -723,6 +724,17 @@ async fn measurement_task(
                 continue;
             }
             SleepState::Awake => {}
+        }
+
+        if load_cell.sample_rate() != sample_rate {
+            if let Err(e) = load_cell.set_sample_rate(sample_rate).await {
+                error!(
+                    "Failed to set ADS1220 sample rate: {:?}",
+                    defmt::Debug2Format(&e)
+                );
+                Timer::after(Duration::from_millis(250)).await;
+            }
+            continue;
         }
 
         if let Ok(command) = LOAD_CELL_COMMANDS.try_receive() {
@@ -953,7 +965,7 @@ async fn notify_calibration_factor(
         .await;
 }
 
-/// Connection parameters while measuring. The interval is short enough to carry 600 samples/s.
+/// Connection parameters while measuring. The interval is meant to carry up to 1000 samples/s.
 const MEASURING_CONNECTION_PARAMS: RequestedConnParams = RequestedConnParams {
     min_connection_interval: Duration::from_micros(7_500),
     max_connection_interval: Duration::from_millis(15),
@@ -1048,15 +1060,20 @@ async fn gatt_events_task<P: PacketPool>(
                     peripheral_latency,
                     supervision_timeout.as_millis()
                 );
-                let measuring = critical_section::with(|cs| {
-                    DEVICE_STATE.borrow_ref(cs).measurement_status == MeasurementTaskStatus::Enabled
+                let (measuring, sample_rate) = critical_section::with(|cs| {
+                    let state = DEVICE_STATE.borrow_ref(cs);
+                    (
+                        state.measurement_status == MeasurementTaskStatus::Enabled,
+                        state.sample_rate,
+                    )
                 });
                 if measuring
                     && (conn_interval > MEASURING_CONNECTION_PARAMS.max_connection_interval
                         || peripheral_latency != 0)
                 {
                     warn!(
-                        "Negotiated BLE parameters may not sustain 600 Hz: interval={} us, latency={}",
+                        "Negotiated BLE parameters may not sustain {} SPS: interval={} us, latency={}",
+                        sample_rate.sps(),
                         conn_interval.as_micros(),
                         peripheral_latency
                     );
