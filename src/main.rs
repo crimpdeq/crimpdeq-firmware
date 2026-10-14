@@ -47,6 +47,7 @@ use crate::{
     ads1220::Ads1220,
     ble::{CONNECTIONS_MAX, DEVICE_NAME, L2CAP_CHANNELS_MAX, L2CAP_MTU, Server, advertise},
     progressor::{
+        BatteryStatus,
         CalibrationPoint,
         ControlOpCode,
         ControlResponseChannel,
@@ -592,6 +593,11 @@ async fn battery_gauge_task(
                 // Update device state
                 let ble_connected = update_device_state(|state| {
                     state.battery_voltage = battery_voltage_mv;
+                    state.battery_status = Some(BatteryStatus {
+                        // Rounded; the model can report slightly above 100 % when full.
+                        soc_percent: (soc.clamp(0.0, 100.0) + 0.5) as u8,
+                        charging: battery_charging,
+                    });
                     state.is_ble_connected()
                 });
 

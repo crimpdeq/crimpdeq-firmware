@@ -65,6 +65,14 @@ pub const MAX_CALIBRATION_POINTS: usize = 20;
 /// Calibration point storing raw value and known weight
 pub type CalibrationPoint = (f32, f32);
 
+/// Fuel gauge reading reported to clients.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct BatteryStatus {
+    /// State of charge from the MAX17048 model, 0-100 %.
+    pub soc_percent: u8,
+    pub charging: bool,
+}
+
 /// Status of the weight measurement task
 #[derive(Copy, Debug, Clone, PartialEq)]
 pub enum MeasurementTaskStatus {
@@ -134,6 +142,8 @@ pub struct DeviceState {
     pub calibration_point_count: usize,
     /// Battery voltage in millivolts
     pub battery_voltage: u32,
+    /// Fuel gauge reading, `None` until the first successful read.
+    pub battery_status: Option<BatteryStatus>,
     /// Timestamp of the last user-visible activity.
     pub last_activity_time_ms: u32,
     /// Whether BLE is currently connected.
@@ -165,6 +175,7 @@ impl DeviceState {
             calibration_points: [(0.0, 0.0); MAX_CALIBRATION_POINTS],
             calibration_point_count: 0,
             battery_voltage: 4300,
+            battery_status: None,
             last_activity_time_ms: 0,
             ble_connected: false,
             measurement_batch_size: measurement_batch_size_for_att_mtu(23),
@@ -354,6 +365,9 @@ pub enum ControlOpCode {
     /// Reply with the ADS1220 sample rate in use
     // Custom command, no part of Tindeq API
     GetSampleRate = 0x76,
+    /// Reply with the fuel gauge state of charge and whether the battery is charging
+    // Custom command, no part of Tindeq API
+    GetBatteryStatus = 0x77,
 }
 
 impl ControlOpCode {
@@ -469,6 +483,13 @@ impl ControlOpCode {
             ControlOpCode::GetSampleRate => Some(DataPoint::from(ResponseCode::SampleRate(
                 device_state.sample_rate,
             ))),
+            ControlOpCode::GetBatteryStatus => match device_state.battery_status {
+                Some(status) => Some(DataPoint::from(ResponseCode::BatteryStatus(status))),
+                None => {
+                    warn!("GetBatteryStatus: no fuel gauge reading yet");
+                    None
+                }
+            },
             // Currently unimplemented operations
             ControlOpCode::StartPeakRFDMeasurement
             | ControlOpCode::StartPeakRFDMeasurementSeries
@@ -496,6 +517,7 @@ impl TryFrom<u8> for ControlOpCode {
             0x74 => Ok(ControlOpCode::DefaultCalibration),
             0x75 => Ok(ControlOpCode::SetSampleRate),
             0x76 => Ok(ControlOpCode::GetSampleRate),
+            0x77 => Ok(ControlOpCode::GetBatteryStatus),
             0x6C => Ok(ControlOpCode::GetErrorInformation),
             0x6D => Ok(ControlOpCode::ClearErrorInformation),
             0x67 => Ok(ControlOpCode::StartPeakRFDMeasurement),
@@ -521,6 +543,7 @@ impl Format for ControlOpCode {
             ControlOpCode::DefaultCalibration => defmt::write!(fmt, "DefaultCalibration"),
             ControlOpCode::SetSampleRate => defmt::write!(fmt, "SetSampleRate"),
             ControlOpCode::GetSampleRate => defmt::write!(fmt, "GetSampleRate"),
+            ControlOpCode::GetBatteryStatus => defmt::write!(fmt, "GetBatteryStatus"),
             ControlOpCode::StartPeakRFDMeasurement => defmt::write!(fmt, "StartPeakRFDMeasurement"),
             ControlOpCode::StartPeakRFDMeasurementSeries => {
                 defmt::write!(fmt, "StartPeakRFDMeasurementSeries")
@@ -647,6 +670,8 @@ pub enum ResponseCode {
     CalibrationPoint(f32, f32),
     /// Sample rate in use, in samples per second
     SampleRate(SampleRate),
+    /// Fuel gauge state of charge (u8 %) and charging flag (u8)
+    BatteryStatus(BatteryStatus),
     /// Low power warning indicating that the battery is empty. The Progressor will turn itself off after sending this warning
     LowPowerWarning,
     /// Response to app version request command
@@ -677,6 +702,12 @@ impl Format for ResponseCode {
                 defmt::write!(fmt, "CalibrationPoint: Raw: {}, Weight: {}", raw, weight)
             }
             ResponseCode::SampleRate(rate) => defmt::write!(fmt, "SampleRate: {}", rate.sps()),
+            ResponseCode::BatteryStatus(status) => defmt::write!(
+                fmt,
+                "BatteryStatus: {}%, charging: {}",
+                status.soc_percent,
+                status.charging
+            ),
             ResponseCode::LowPowerWarning => defmt::write!(fmt, "LowPowerWarning"),
             ResponseCode::AppVersion(version) => defmt::write!(fmt, "AppVersion: {:x}", version),
             ResponseCode::ProgressorId(id) => defmt::write!(fmt, "ProgressorId: {:x}", id),
@@ -700,6 +731,7 @@ impl ResponseCode {
             ResponseCode::CalibrationFactor(..) => 0x05,
             ResponseCode::CalibrationPoint(..) => 0x06,
             ResponseCode::SampleRate(..) => 0x07,
+            ResponseCode::BatteryStatus(..) => 0x08,
         }
     }
 
@@ -713,6 +745,7 @@ impl ResponseCode {
             ResponseCode::CalibrationFactor(..) => 4,
             ResponseCode::CalibrationPoint(..) => 8,
             ResponseCode::SampleRate(..) => 2,
+            ResponseCode::BatteryStatus(..) => 2,
             ResponseCode::LowPowerWarning => 0,
             ResponseCode::AppVersion(version) => {
                 version.len().min(DATA_POINT_MAX_PAYLOAD_SIZE) as u8
@@ -747,6 +780,10 @@ impl ResponseCode {
             }
             ResponseCode::SampleRate(rate) => {
                 value[0..2].copy_from_slice(&rate.sps().to_le_bytes());
+            }
+            ResponseCode::BatteryStatus(status) => {
+                value[0] = status.soc_percent;
+                value[1] = u8::from(status.charging);
             }
             ResponseCode::LowPowerWarning => (),
             ResponseCode::ProgressorId(id) => {
