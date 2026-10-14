@@ -986,6 +986,19 @@ async fn run_load_cell_command(
                 return;
             }
 
+            // Like the other calibration failures, a full buffer sends no reply, so the client
+            // reads the unchanged points back with GetCalibration. Only this task changes the
+            // points, so the buffer has room for the new point after sampling.
+            let stored_points =
+                critical_section::with(|cs| DEVICE_STATE.borrow_ref(cs).calibration_point_count);
+            if stored_points >= MAX_CALIBRATION_POINTS {
+                warn!(
+                    "Calibration point buffer full (max {}), ignoring new point",
+                    MAX_CALIBRATION_POINTS
+                );
+                return;
+            }
+
             // Use the load cell's own calibration method to collect a calibration point
             let calibration_point = match load_cell.perform_calibration().await {
                 Ok(calibration_point) => calibration_point,
@@ -1003,17 +1016,9 @@ async fn run_load_cell_command(
             }
 
             let (calibration_points, calibration_point_count) = update_device_state(|state| {
-                let new_point: CalibrationPoint = (calibration_point, weight);
-                if state.calibration_point_count < MAX_CALIBRATION_POINTS {
-                    let index = state.calibration_point_count;
-                    state.calibration_points[index] = new_point;
-                    state.calibration_point_count += 1;
-                } else {
-                    warn!(
-                        "Calibration point buffer full (max {}), ignoring new point",
-                        MAX_CALIBRATION_POINTS
-                    );
-                }
+                state.calibration_points[state.calibration_point_count] =
+                    (calibration_point, weight);
+                state.calibration_point_count += 1;
                 (state.calibration_points, state.calibration_point_count)
             });
 
