@@ -145,7 +145,7 @@ pub struct DeviceState {
     pub sleep_measurement_ready: bool,
     /// Whether the status LED has been explicitly turned off for sleep.
     pub sleep_status_led_ready: bool,
-    /// ADS1220 data rate requested by the connected client.
+    /// ADS1220 data rate, persisted by the measurement task so it applies to every client.
     pub sample_rate: SampleRate,
 }
 
@@ -253,8 +253,6 @@ impl DeviceState {
         LOAD_CELL_COMMANDS.clear();
         self.ble_connected = false;
         self.measurement_status = MeasurementTaskStatus::Disabled;
-        // Every connection starts at the default rate, which clients without SetSampleRate expect.
-        self.sample_rate = SampleRate::DEFAULT;
         // Restart the idle timeout without cancelling a sleep request, which disconnects BLE.
         self.last_activity_time_ms = Self::now_ms();
         self.enter_sleep_when_ready();
@@ -348,10 +346,13 @@ pub enum ControlOpCode {
     /// Default calibration
     // Custom command, no part of Tindeq API
     DefaultCalibration = 0x74,
-    /// Set the ADS1220 sample rate for this connection (u16 LE samples per second) and reply with
-    /// the rate in use, which stays unchanged for unsupported rates
+    /// Set and persist the ADS1220 sample rate (u16 LE samples per second) and reply with the rate
+    /// in use, which stays unchanged for unsupported rates
     // Custom command, no part of Tindeq API
     SetSampleRate = 0x75,
+    /// Reply with the ADS1220 sample rate in use
+    // Custom command, no part of Tindeq API
+    GetSampleRate = 0x76,
 }
 
 impl ControlOpCode {
@@ -464,6 +465,9 @@ impl ControlOpCode {
                     device_state.sample_rate,
                 )))
             }
+            ControlOpCode::GetSampleRate => Some(DataPoint::from(ResponseCode::SampleRate(
+                device_state.sample_rate,
+            ))),
             // Currently unimplemented operations
             ControlOpCode::StartPeakRFDMeasurement
             | ControlOpCode::StartPeakRFDMeasurementSeries
@@ -490,6 +494,7 @@ impl TryFrom<u8> for ControlOpCode {
             0x72 => Ok(ControlOpCode::GetCalibration),
             0x74 => Ok(ControlOpCode::DefaultCalibration),
             0x75 => Ok(ControlOpCode::SetSampleRate),
+            0x76 => Ok(ControlOpCode::GetSampleRate),
             0x6C => Ok(ControlOpCode::GetErrorInformation),
             0x6D => Ok(ControlOpCode::ClearErrorInformation),
             0x67 => Ok(ControlOpCode::StartPeakRFDMeasurement),
@@ -514,6 +519,7 @@ impl Format for ControlOpCode {
             ControlOpCode::AddCalibrationPoint => defmt::write!(fmt, "AddCalibrationPoint"),
             ControlOpCode::DefaultCalibration => defmt::write!(fmt, "DefaultCalibration"),
             ControlOpCode::SetSampleRate => defmt::write!(fmt, "SetSampleRate"),
+            ControlOpCode::GetSampleRate => defmt::write!(fmt, "GetSampleRate"),
             ControlOpCode::StartPeakRFDMeasurement => defmt::write!(fmt, "StartPeakRFDMeasurement"),
             ControlOpCode::StartPeakRFDMeasurementSeries => {
                 defmt::write!(fmt, "StartPeakRFDMeasurementSeries")

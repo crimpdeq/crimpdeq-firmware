@@ -674,6 +674,8 @@ async fn measurement_task(
     flash: FlashStorage<'static>,
 ) {
     let mut load_cell = Ads1220::new(spi, chip_select, data_ready, flash);
+    let stored_sample_rate = load_cell.sample_rate();
+    update_device_state(|state| state.sample_rate = stored_sample_rate);
     initialize_load_cell(&mut load_cell).await;
     if let Err(e) = load_cell.tare().await {
         error!("Initial tare failed: {:?}", defmt::Debug2Format(&e));

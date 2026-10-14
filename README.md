@@ -22,7 +22,7 @@ Crimpdeq is a fully open-source project based on an [ESP32-C3](https://github.co
 - Automatic sleep when inactive
 - Compatible with Tindeq Progressor app ([Android](https://play.google.com/store/apps/details?id=com.progressor&hl=es_419) | [iOS](https://apps.apple.com/es/app/tindeq-progressor/id1380412428))
 - Compatible with Frez app (formerly ClimbHarder) ([Android](https://play.google.com/store/apps/details?id=com.holdtight.climbharder&pcampaignid=web_share) | [iOS](https://apps.apple.com/us/app/climbharder-no-hang-training/id6730120024))
-- Sampling frequency: 600 Hz by default, selectable from 20 to 1000 Hz with the Crimpdeq app
+- Sampling frequency: 175 Hz by default, selectable from 20 to 1000 Hz with the Crimpdeq app and kept across reboots
 - Design load: 1500 N (≈150 kg), full scale
 - Precision:
     - 0.05 kg between 0 and 99 kg
