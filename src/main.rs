@@ -1108,8 +1108,10 @@ async fn send_load_cell_reply(channel: &'static ControlResponseChannel, reply: D
 }
 
 /// Connection parameters while measuring. The interval is meant to carry up to 1000 samples/s.
+/// Apple's accessory guidelines require a minimum interval of at least 15 ms, and a maximum 15 ms
+/// above it unless both are 15 ms.
 const MEASURING_CONNECTION_PARAMS: RequestedConnParams = RequestedConnParams {
-    min_connection_interval: Duration::from_micros(7_500),
+    min_connection_interval: Duration::from_millis(15),
     max_connection_interval: Duration::from_millis(15),
     max_latency: 0,
     min_event_length: Duration::from_millis(0),
