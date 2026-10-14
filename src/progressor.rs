@@ -32,6 +32,8 @@ pub static LOAD_CELL_COMMANDS: Channel<
 
 /// Maximum number of samples packed into one BLE measurement packet.
 pub const MAX_SAMPLES_PER_PACKET: usize = 10;
+/// Longest time a batch collects samples, so low sample rates still update the client often.
+pub const MAX_BATCH_DURATION: embassy_time::Duration = embassy_time::Duration::from_millis(50);
 /// Size in bytes of one packed weight measurement (f32 weight + u32 timestamp).
 const WEIGHT_MEASUREMENT_SIZE: usize = 8;
 /// ATT notification opcode/handle plus the Progressor response code/length.

@@ -53,6 +53,7 @@ use crate::{
         DeviceState,
         LOAD_CELL_COMMANDS,
         LoadCellCommand,
+        MAX_BATCH_DURATION,
         MAX_CALIBRATION_POINTS,
         MeasurementDataChannel,
         MeasurementTaskStatus,
@@ -825,7 +826,9 @@ async fn measurement_task(
                 let now = (esp_hal::time::Instant::now().duration_since_epoch()).as_micros() as u32;
                 let timestamp = now.wrapping_sub(start_time);
                 measurement_buffer.push((weight, timestamp));
-                if measurement_buffer.len() >= measurement_batch_size {
+                let batch_size =
+                    measurement_batch_size.min(sample_rate.samples_in(MAX_BATCH_DURATION));
+                if measurement_buffer.len() >= batch_size {
                     enqueue_measurement_batch(
                         measurement_channel,
                         core::mem::take(&mut measurement_buffer),

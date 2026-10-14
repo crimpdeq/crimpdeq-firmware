@@ -154,7 +154,7 @@ impl SampleRate {
     }
 
     /// Number of conversions that cover `window`, at least one.
-    fn samples_in(self, window: Duration) -> usize {
+    pub fn samples_in(self, window: Duration) -> usize {
         (u64::from(self.sps()) * window.as_millis() / 1000).max(1) as usize
     }
 }
