@@ -22,6 +22,7 @@ use embassy_sync::{
 use embassy_time::{Duration, Timer};
 use esp_hal::{
     Async,
+    Blocking,
     Config,
     clock::CpuClock,
     gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull},
@@ -219,8 +220,7 @@ async fn main(spawner: Spawner) -> ! {
     .expect("Failed to initialize ADS1220 SPI")
     .with_sck(peripherals.GPIO5)
     .with_mosi(peripherals.GPIO4)
-    .with_miso(load_cell_data_ready.peripheral_input())
-    .into_async();
+    .with_miso(load_cell_data_ready.peripheral_input());
     let load_cell_chip_select =
         Output::new(peripherals.GPIO3, Level::High, OutputConfig::default());
 
@@ -296,8 +296,16 @@ async fn main(spawner: Spawner) -> ! {
     // Start inactivity tracking from boot so the device can auto-sleep if left unused.
     update_device_state(|state| state.on_ble_disconnected());
 
+    // Run the measurement task above the BLE host, so packet transmission does not delay ADC
+    // reads past the next conversion at high sample rates.
+    let measurement_executor = mk_static!(
+        esp_rtos::embassy::InterruptExecutor<2>,
+        esp_rtos::embassy::InterruptExecutor::new(peripherals.FROM_CPU_INTR2)
+    );
+    let measurement_spawner = measurement_executor.start(esp_hal::interrupt::Priority::Priority2);
+
     // Spawn tasks
-    spawner.spawn(
+    measurement_spawner.spawn(
         measurement_task(
             control_channel,
             measurement_channel,
@@ -673,12 +681,12 @@ fn enqueue_measurement_batch(
 async fn measurement_task(
     control_channel: &'static ControlResponseChannel,
     measurement_channel: &'static MeasurementDataChannel,
-    spi: Spi<'static, Async>,
+    spi: Spi<'static, Blocking>,
     chip_select: Output<'static>,
     data_ready: Input<'static>,
     flash: FlashStorage<'static>,
 ) {
-    let mut load_cell = Ads1220::new(spi, chip_select, data_ready, flash);
+    let mut load_cell = Ads1220::new(spi.into_async(), chip_select, data_ready, flash);
     let stored_sample_rate = load_cell.sample_rate();
     update_device_state(|state| state.sample_rate = stored_sample_rate);
     initialize_load_cell(&mut load_cell).await;
