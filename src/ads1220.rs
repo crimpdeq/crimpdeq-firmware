@@ -255,10 +255,16 @@ impl<'d> Ads1220<'d> {
         self.sample_rate
     }
 
-    /// Change the data rate and persist it, so it also applies after a reboot.
+    /// Persist the data rate, so it also applies after a reboot, then switch to it. The rate in use
+    /// only changes once both steps succeed, so the caller retries until it does.
     pub async fn set_sample_rate(&mut self, sample_rate: SampleRate) -> Result<(), Ads1220Error> {
+        let sps = u32::from(sample_rate.sps());
+        // Skip the write when an earlier attempt stored the rate, to spare the flash while the ADC
+        // keeps failing.
+        if self.read_record(&SAMPLE_RATE_RECORD)? != Some(sps) {
+            self.write_record(&SAMPLE_RATE_RECORD, sps)?;
+        }
         self.switch_sample_rate(sample_rate).await?;
-        self.write_record(&SAMPLE_RATE_RECORD, sample_rate.sps().into())?;
         info!("ADS1220 sample rate set to {} SPS", sample_rate.sps());
         Ok(())
     }
