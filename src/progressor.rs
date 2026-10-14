@@ -1,12 +1,13 @@
-/// Progressor data types
-///
-/// See [Tindeq API documentation] for more information
-///
-/// [Tindeq API documentation]: https://tindeq.com/progressor_api/
+//! Progressor data types
+//!
+//! See [Tindeq API documentation] for more information
+//!
+//! [Tindeq API documentation]: https://tindeq.com/progressor_api/
+use arrayvec::ArrayVec;
 use defmt::{Format, error, info, warn};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
 use esp_hal::time;
-use trouble_host::types::gatt_traits::{AsGatt, FromGatt, FromGattError};
+use trouble_host::types::gatt_traits::AsGatt;
 
 use crate::ads1220::SampleRate;
 
@@ -40,7 +41,9 @@ const MEASUREMENT_PACKET_OVERHEAD: usize = 5;
 /// Maximum size of the payload written to the Control Point characteristic.
 pub const CONTROL_POINT_MAX_PAYLOAD_SIZE: usize = 10;
 /// Batch of weight measurements sent in a single BLE packet.
-pub type WeightMeasurementBatch = arrayvec::ArrayVec<(f32, u32), MAX_SAMPLES_PER_PACKET>;
+pub type WeightMeasurementBatch = ArrayVec<(f32, u32), MAX_SAMPLES_PER_PACKET>;
+/// Size of the Data Point response code and payload length.
+const DATA_POINT_HEADER_SIZE: usize = 2;
 /// Maximum size of the payload sent in a Data Point notification.
 pub const DATA_POINT_MAX_PAYLOAD_SIZE: usize = MAX_SAMPLES_PER_PACKET * WEIGHT_MEASUREMENT_SIZE;
 
@@ -316,7 +319,7 @@ impl DeviceState {
 }
 
 /// Progressor Commands
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Format)]
 /// Commands that Tindeq app can send to the device
 // Source: Tindeq API documentation and https://github.com/blims/Tindeq-Progressor-API/blob/78a0bd244303589d0c773ee15ede53e0299712ee/progressor_client.py#L21-L33
 pub enum ControlOpCode {
@@ -528,98 +531,27 @@ impl TryFrom<u8> for ControlOpCode {
     }
 }
 
-impl Format for ControlOpCode {
-    fn format(&self, fmt: defmt::Formatter) {
-        match self {
-            ControlOpCode::TareScale => defmt::write!(fmt, "TareScale"),
-            ControlOpCode::StartMeasurement => defmt::write!(fmt, "StartMeasurement"),
-            ControlOpCode::StopMeasurement => defmt::write!(fmt, "StopMeasurement"),
-            ControlOpCode::GetAppVersion => defmt::write!(fmt, "GetAppVersion"),
-            ControlOpCode::Shutdown => defmt::write!(fmt, "Shutdown"),
-            ControlOpCode::SampleBattery => defmt::write!(fmt, "SampleBattery"),
-            ControlOpCode::GetProgressorId => defmt::write!(fmt, "GetProgressorId"),
-            ControlOpCode::GetCalibration => defmt::write!(fmt, "GetCalibration"),
-            ControlOpCode::AddCalibrationPoint => defmt::write!(fmt, "AddCalibrationPoint"),
-            ControlOpCode::DefaultCalibration => defmt::write!(fmt, "DefaultCalibration"),
-            ControlOpCode::SetSampleRate => defmt::write!(fmt, "SetSampleRate"),
-            ControlOpCode::GetSampleRate => defmt::write!(fmt, "GetSampleRate"),
-            ControlOpCode::GetBatteryStatus => defmt::write!(fmt, "GetBatteryStatus"),
-            ControlOpCode::StartPeakRFDMeasurement => defmt::write!(fmt, "StartPeakRFDMeasurement"),
-            ControlOpCode::StartPeakRFDMeasurementSeries => {
-                defmt::write!(fmt, "StartPeakRFDMeasurementSeries")
-            }
-            ControlOpCode::SaveCalibration => defmt::write!(fmt, "SaveCalibration"),
-            ControlOpCode::GetErrorInformation => defmt::write!(fmt, "GetErrorInformation"),
-            ControlOpCode::ClearErrorInformation => defmt::write!(fmt, "ClearErrorInformation"),
-        }
-    }
-}
-
-/// Data point characteristic is where we receive data from the Progressor
+/// Notification on the Data Point characteristic: response code, payload length and payload.
 #[derive(Debug, Clone)]
-#[repr(C, packed)]
-pub struct DataPoint {
-    /// Response code
-    pub(crate) response_code: u8,
-    /// Length of the data
-    pub(crate) length: u8,
-    /// Data
-    pub(crate) value: [u8; DATA_POINT_MAX_PAYLOAD_SIZE],
-}
+pub struct DataPoint(ArrayVec<u8, { DATA_POINT_HEADER_SIZE + DATA_POINT_MAX_PAYLOAD_SIZE }>);
 
 impl AsGatt for DataPoint {
-    const MIN_SIZE: usize = 2;
-    const MAX_SIZE: usize = DATA_POINT_MAX_PAYLOAD_SIZE + 2; // +2 for response_code and length
+    const MIN_SIZE: usize = DATA_POINT_HEADER_SIZE;
+    const MAX_SIZE: usize = DATA_POINT_HEADER_SIZE + DATA_POINT_MAX_PAYLOAD_SIZE;
 
     fn as_gatt(&self) -> &[u8] {
-        let len = (self.length as usize).min(DATA_POINT_MAX_PAYLOAD_SIZE);
-        unsafe { core::slice::from_raw_parts(self as *const DataPoint as *const u8, 2 + len) }
+        &self.0
     }
 }
 
-impl FromGatt for DataPoint {
-    fn from_gatt(data: &[u8]) -> Result<Self, FromGattError> {
-        if data.len() < 2 || data.len() > Self::MAX_SIZE {
-            return Err(FromGattError::InvalidLength);
-        }
-
-        let response_code = data[0];
-        let length = data[1] as usize;
-        if length > DATA_POINT_MAX_PAYLOAD_SIZE || data.len() != 2 + length {
-            return Err(FromGattError::InvalidLength);
-        }
-
-        Ok(DataPoint::new(response_code, data[1], &data[2..]))
-    }
-}
-
+/// Initial characteristic value: response code 0 with an empty payload.
 impl Default for DataPoint {
     fn default() -> Self {
-        Self {
-            response_code: 0,
-            length: 0,
-            value: [0; DATA_POINT_MAX_PAYLOAD_SIZE],
-        }
+        Self(ArrayVec::from_iter([0; DATA_POINT_HEADER_SIZE]))
     }
 }
 
 impl DataPoint {
-    /// Create a new data point with specified response code, length and data
-    pub fn new(response_code: u8, length: u8, data: &[u8]) -> Self {
-        let mut value = [0; DATA_POINT_MAX_PAYLOAD_SIZE];
-        let max_len = length.min(DATA_POINT_MAX_PAYLOAD_SIZE as u8) as usize;
-        let copy_len = max_len.min(data.len());
-        if copy_len > 0 {
-            value[..copy_len].copy_from_slice(&data[..copy_len]);
-        }
-
-        Self {
-            response_code,
-            length: copy_len as u8,
-            value,
-        }
-    }
-
     /// Create a weight measurement data point
     pub fn weight_measurement(measurements: WeightMeasurementBatch) -> Self {
         Self::from(ResponseCode::WeightMeasurement(measurements))
@@ -628,24 +560,24 @@ impl DataPoint {
 
 impl Format for DataPoint {
     fn format(&self, fmt: defmt::Formatter) {
-        let len = (self.length as usize).min(DATA_POINT_MAX_PAYLOAD_SIZE);
         defmt::write!(
             fmt,
             "Code: {}, Length: {}, Data: {:x}",
-            self.response_code,
-            self.length,
-            &self.value[0..len]
+            self.0[0],
+            self.0[1],
+            &self.0[DATA_POINT_HEADER_SIZE..]
         );
     }
 }
 
 impl From<ResponseCode> for DataPoint {
     fn from(response_code: ResponseCode) -> Self {
-        Self {
-            response_code: response_code.op_code(),
-            length: response_code.length(),
-            value: response_code.value(),
-        }
+        let payload = response_code.payload();
+        let mut bytes = ArrayVec::new();
+        bytes.push(response_code.op_code());
+        bytes.push(payload.len() as u8);
+        bytes.extend(payload);
+        Self(bytes)
     }
 }
 
@@ -673,12 +605,6 @@ pub enum ResponseCode {
     AppVersion(&'static [u8]),
     /// Response to progressor ID request command
     ProgressorId([u8; DEVICE_ID_SIZE]),
-    /// RFD peak response.
-    // TODO: Implement it
-    RfdPeak,
-    /// RFD peak series response.
-    // TODO: Implement it
-    RfdPeakSeries,
 }
 
 impl Format for ResponseCode {
@@ -706,8 +632,6 @@ impl Format for ResponseCode {
             ResponseCode::LowPowerWarning => defmt::write!(fmt, "LowPowerWarning"),
             ResponseCode::AppVersion(version) => defmt::write!(fmt, "AppVersion: {:x}", version),
             ResponseCode::ProgressorId(id) => defmt::write!(fmt, "ProgressorId: {:x}", id),
-            ResponseCode::RfdPeak => defmt::write!(fmt, "RfdPeak"),
-            ResponseCode::RfdPeakSeries => defmt::write!(fmt, "RfdPeakSeries"),
         }
     }
 }
@@ -720,8 +644,6 @@ impl ResponseCode {
             | ResponseCode::AppVersion(..)
             | ResponseCode::ProgressorId(..) => 0x00,
             ResponseCode::WeightMeasurement(..) => 0x01,
-            ResponseCode::RfdPeak => 0x02,
-            ResponseCode::RfdPeakSeries => 0x03,
             ResponseCode::LowPowerWarning => 0x04,
             ResponseCode::CalibrationFactor(..) => 0x05,
             ResponseCode::CalibrationPoint(..) => 0x06,
@@ -730,74 +652,34 @@ impl ResponseCode {
         }
     }
 
-    /// Get the length of the data for this response
-    fn length(&self) -> u8 {
+    /// Get the payload bytes for this response. Every payload fits the data point: a batch holds
+    /// at most `MAX_SAMPLES_PER_PACKET` measurements and the app version is truncated.
+    fn payload(&self) -> ArrayVec<u8, DATA_POINT_MAX_PAYLOAD_SIZE> {
+        let mut payload = ArrayVec::new();
         match self {
-            ResponseCode::SampleBatteryVoltage(..) => 4,
+            ResponseCode::SampleBatteryVoltage(voltage) => payload.extend(voltage.to_le_bytes()),
             ResponseCode::WeightMeasurement(measurements) => {
-                (measurements.len() * WEIGHT_MEASUREMENT_SIZE) as u8
-            }
-            ResponseCode::CalibrationFactor(..) => 4,
-            ResponseCode::CalibrationPoint(..) => 8,
-            ResponseCode::SampleRate(..) => 2,
-            ResponseCode::BatteryStatus(..) => 2,
-            ResponseCode::LowPowerWarning => 0,
-            ResponseCode::AppVersion(version) => {
-                version.len().min(DATA_POINT_MAX_PAYLOAD_SIZE) as u8
-            }
-            ResponseCode::ProgressorId(..) => DEVICE_ID_SIZE as u8,
-            ResponseCode::RfdPeak => 0,
-            ResponseCode::RfdPeakSeries => 0,
-        }
-    }
-
-    /// Get the value bytes for this response
-    fn value(&self) -> [u8; DATA_POINT_MAX_PAYLOAD_SIZE] {
-        let mut value = [0; DATA_POINT_MAX_PAYLOAD_SIZE];
-        match self {
-            ResponseCode::SampleBatteryVoltage(voltage) => {
-                value[0..4].copy_from_slice(&voltage.to_le_bytes());
-            }
-            ResponseCode::WeightMeasurement(measurements) => {
-                for (i, (weight, timestamp)) in measurements.iter().enumerate() {
-                    let offset = i * WEIGHT_MEASUREMENT_SIZE;
-                    value[offset..offset + 4].copy_from_slice(&weight.to_le_bytes());
-                    value[offset + 4..offset + WEIGHT_MEASUREMENT_SIZE]
-                        .copy_from_slice(&timestamp.to_le_bytes());
+                for (weight, timestamp) in measurements {
+                    payload.extend(weight.to_le_bytes());
+                    payload.extend(timestamp.to_le_bytes());
                 }
             }
-            ResponseCode::CalibrationFactor(factor) => {
-                value[0..4].copy_from_slice(&factor.to_le_bytes());
-            }
+            ResponseCode::CalibrationFactor(factor) => payload.extend(factor.to_le_bytes()),
             ResponseCode::CalibrationPoint(raw_value, weight) => {
-                value[0..4].copy_from_slice(&raw_value.to_le_bytes());
-                value[4..8].copy_from_slice(&weight.to_le_bytes());
+                payload.extend(raw_value.to_le_bytes());
+                payload.extend(weight.to_le_bytes());
             }
-            ResponseCode::SampleRate(rate) => {
-                value[0..2].copy_from_slice(&rate.sps().to_le_bytes());
-            }
+            ResponseCode::SampleRate(rate) => payload.extend(rate.sps().to_le_bytes()),
             ResponseCode::BatteryStatus(status) => {
-                value[0] = status.soc_percent;
-                value[1] = u8::from(status.charging);
+                payload.extend([status.soc_percent, u8::from(status.charging)]);
             }
             ResponseCode::LowPowerWarning => (),
-            ResponseCode::ProgressorId(id) => {
-                // Reverse the bytes as they are LE
-                let mut reversed = *id;
-                reversed.reverse();
-                value[..DEVICE_ID_SIZE].copy_from_slice(&reversed);
-            }
+            // Reverse the bytes as they are LE
+            ResponseCode::ProgressorId(id) => payload.extend(id.iter().rev().copied()),
             ResponseCode::AppVersion(version) => {
-                let len = version.len().min(DATA_POINT_MAX_PAYLOAD_SIZE);
-                value[0..len].copy_from_slice(&version[0..len]);
+                payload.extend(version.iter().copied().take(DATA_POINT_MAX_PAYLOAD_SIZE));
             }
-            ResponseCode::RfdPeak => {
-                warn!("RfdPeak response not implemented");
-            }
-            ResponseCode::RfdPeakSeries => {
-                warn!("RfdPeakSeries response not implemented");
-            }
-        };
-        value
+        }
+        payload
     }
 }

@@ -68,9 +68,9 @@ use crate::{
     },
 };
 
-pub mod ads1220;
-pub mod ble;
-pub mod progressor;
+mod ads1220;
+mod ble;
+mod progressor;
 
 const STATUS_LED_COUNT: usize = 1;
 const STATUS_LED_RMT_BUFFER_SIZE: usize = buffer_size::<RGB8>(STATUS_LED_COUNT);
@@ -815,10 +815,7 @@ async fn measurement_task(
                 if !load_cell.is_powered_down() {
                     info!("Powering down ADS1220 before deep sleep: {:?}", reason);
                     if let Err(e) = load_cell.power_down().await {
-                        error!(
-                            "Failed to power down ADS1220: {:?}",
-                            defmt::Debug2Format(&e)
-                        );
+                        error!("Failed to power down ADS1220: {:?}", e);
                     }
                 }
                 measurement_buffer.clear();
@@ -839,10 +836,7 @@ async fn measurement_task(
         // Retry inside the loop, so a missing or faulty ADS1220 cannot block sleep requests.
         if !initialized {
             if let Err(e) = load_cell.initialize().await {
-                error!(
-                    "ADS1220 initialization failed: {:?}",
-                    defmt::Debug2Format(&e)
-                );
+                error!("ADS1220 initialization failed: {:?}", e);
                 select(
                     Timer::after(Duration::from_millis(250)),
                     state_changes.changed(),
@@ -851,7 +845,7 @@ async fn measurement_task(
                 continue;
             }
             if let Err(e) = load_cell.tare().await {
-                error!("Initial tare failed: {:?}", defmt::Debug2Format(&e));
+                error!("Initial tare failed: {:?}", e);
             }
             initialized = true;
             continue;
@@ -859,10 +853,7 @@ async fn measurement_task(
 
         if load_cell.sample_rate() != sample_rate {
             if let Err(e) = load_cell.set_sample_rate(sample_rate).await {
-                error!(
-                    "Failed to set ADS1220 sample rate: {:?}",
-                    defmt::Debug2Format(&e)
-                );
+                error!("Failed to set ADS1220 sample rate: {:?}", e);
                 Timer::after(Duration::from_millis(250)).await;
             }
             continue;
@@ -880,11 +871,7 @@ async fn measurement_task(
             if command.uses_load_cell() && load_cell.is_powered_down() {
                 info!("Waking ADS1220 for {:?}", command);
                 if let Err(e) = load_cell.wake().await {
-                    error!(
-                        "ADS1220 wake failed, dropping {:?}: {:?}",
-                        command,
-                        defmt::Debug2Format(&e)
-                    );
+                    error!("ADS1220 wake failed, dropping {:?}: {:?}", command, e);
                     continue;
                 }
             }
@@ -905,10 +892,7 @@ async fn measurement_task(
                 if !load_cell.is_powered_down() {
                     debug!("Powering down idle ADS1220");
                     if let Err(e) = load_cell.power_down().await {
-                        error!(
-                            "Failed to power down ADS1220: {:?}",
-                            defmt::Debug2Format(&e)
-                        );
+                        error!("Failed to power down ADS1220: {:?}", e);
                     }
                 }
                 select(
@@ -924,7 +908,7 @@ async fn measurement_task(
                     }
                     if let Err(e) = load_cell.wake().await {
                         // The ADS1220 is still powered down, so the next iteration retries.
-                        error!("ADS1220 wake failed: {:?}", defmt::Debug2Format(&e));
+                        error!("ADS1220 wake failed: {:?}", e);
                         continue;
                     }
                     // Start the timestamps once the ADS1220 converts, also when a queued tare or
@@ -944,10 +928,7 @@ async fn measurement_task(
                 let weight = match load_cell.read_calibrated().await {
                     Ok(weight) => weight,
                     Err(e) => {
-                        error!(
-                            "Failed to read weight measurement: {:?}",
-                            defmt::Debug2Format(&e)
-                        );
+                        error!("Failed to read weight measurement: {:?}", e);
                         continue;
                     }
                 };
@@ -977,15 +958,10 @@ async fn run_load_cell_command(
     match command {
         LoadCellCommand::Tare => {
             if let Err(e) = load_cell.tare().await {
-                error!("Tare failed: {:?}", defmt::Debug2Format(&e));
+                error!("Tare failed: {:?}", e);
             }
         }
         LoadCellCommand::Calibrate(weight) => {
-            if !weight.is_finite() || weight < 0.0 {
-                error!("Ignoring invalid calibration weight: {}", weight);
-                return;
-            }
-
             // Like the other calibration failures, a full buffer sends no reply, so the client
             // reads the unchanged points back with GetCalibration. Only this task changes the
             // points, so the buffer has room for the new point after sampling.
@@ -999,25 +975,16 @@ async fn run_load_cell_command(
                 return;
             }
 
-            // Use the load cell's own calibration method to collect a calibration point
-            let calibration_point = match load_cell.perform_calibration().await {
-                Ok(calibration_point) => calibration_point,
+            let raw_value = match load_cell.perform_calibration().await {
+                Ok(raw_value) => raw_value,
                 Err(e) => {
-                    error!("Calibration sampling failed: {:?}", defmt::Debug2Format(&e));
+                    error!("Calibration sampling failed: {:?}", e);
                     return;
                 }
             };
-            if !calibration_point.is_finite() {
-                error!(
-                    "Ignoring invalid calibration raw point: {}",
-                    calibration_point
-                );
-                return;
-            }
 
             let (calibration_points, calibration_point_count) = update_device_state(|state| {
-                state.calibration_points[state.calibration_point_count] =
-                    (calibration_point, weight);
+                state.calibration_points[state.calibration_point_count] = (raw_value, weight);
                 state.calibration_point_count += 1;
                 (state.calibration_points, state.calibration_point_count)
             });
@@ -1038,25 +1005,14 @@ async fn run_load_cell_command(
         LoadCellCommand::DefaultCalibration => {
             // Reset calibration to default values
             if let Err(e) = load_cell.default_calibration_factor() {
-                error!(
-                    "Error applying default calibration: {:?}",
-                    defmt::Debug2Format(&e)
-                );
+                error!("Error applying default calibration: {:?}", e);
             } else {
                 notify_calibration_factor(channel, load_cell.current_calibration_factor()).await;
             }
             update_device_state(|state| state.calibration_point_count = 0);
         }
         LoadCellCommand::GetCalibration => {
-            match load_cell.get_calibration_factor() {
-                Ok(factor) => notify_calibration_factor(channel, factor).await,
-                Err(e) => {
-                    error!(
-                        "Failed to read calibration factor: {:?}",
-                        defmt::Debug2Format(&e)
-                    );
-                }
-            }
+            notify_calibration_factor(channel, load_cell.current_calibration_factor()).await;
 
             let (calibration_points, calibration_point_count) = critical_section::with(|cs| {
                 let state = DEVICE_STATE.borrow_ref(cs);
