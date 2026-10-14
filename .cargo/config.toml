@@ -11,7 +11,6 @@ runner = "probe-rs run --chip esp32c3 --idf-partition-table partitions.csv --no-
 DEFMT_LOG = "off" # Use "trace/debug/info/error/off,crimpdeq=debug" to enable defmt logging
 
 # Progressor
-CALIBRATION_CURVE     = "FFFFFFFFFFFFFFFF00000000"
 DEVICE_ID             = "AAAAAAAAAAAA"
 DEVICE_NAME           = "Progressor_7125"
 DEVICE_VERSION_NUMBER = "2.0.4"

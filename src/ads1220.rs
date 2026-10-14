@@ -5,8 +5,6 @@
 //! connected, so the ADC also signals data ready on DOUT/DRDY, which the
 //! driver watches while chip select is low (datasheet section 8.5.6).
 
-use core::fmt;
-
 use defmt::{Format, debug, error, info, warn};
 use embassy_time::{Duration, Instant, Timer, with_timeout};
 use embedded_hal_async::spi::SpiBus;
@@ -165,7 +163,7 @@ fn clocks_to_duration(clocks: u32) -> Duration {
 }
 
 /// Errors produced by the ADS1220 load-cell driver.
-#[derive(Debug)]
+#[derive(Format)]
 pub enum Ads1220Error {
     /// Flash storage access failed.
     FlashError,
@@ -180,20 +178,6 @@ pub enum Ads1220Error {
         expected: [u8; REGISTER_COUNT],
         actual: [u8; REGISTER_COUNT],
     },
-}
-
-impl fmt::Display for Ads1220Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Ads1220Error::FlashError => write!(f, "Flash storage error"),
-            Ads1220Error::InvalidCalibration => write!(f, "Invalid calibration value"),
-            Ads1220Error::Spi => write!(f, "ADS1220 SPI error"),
-            Ads1220Error::DataReadyTimeout => write!(f, "ADS1220 data ready timeout"),
-            Ads1220Error::ConfigurationMismatch { .. } => {
-                write!(f, "ADS1220 configuration readback mismatch")
-            }
-        }
-    }
 }
 
 /// ADS1220 load-cell front end.
@@ -232,9 +216,7 @@ impl<'d> Ads1220<'d> {
             sample_rate: SampleRate::DEFAULT,
         };
 
-        ads1220.calibration_factor = ads1220
-            .get_calibration_factor()
-            .unwrap_or(DEFAULT_CALIBRATION_FACTOR);
+        ads1220.calibration_factor = ads1220.stored_calibration_factor();
         ads1220.sample_rate = ads1220.stored_sample_rate();
         ads1220
     }
@@ -283,10 +265,7 @@ impl<'d> Ads1220<'d> {
         let stored = match self.read_record(&SAMPLE_RATE_RECORD) {
             Ok(stored) => stored,
             Err(error) => {
-                error!(
-                    "Failed to read the stored sample rate: {:?}",
-                    defmt::Debug2Format(&error)
-                );
+                error!("Failed to read the stored sample rate: {:?}", error);
                 None
             }
         };
@@ -425,11 +404,6 @@ impl<'d> Ads1220<'d> {
         self.tare_value = average as i32;
         debug!("Tare value set to: {}", self.tare_value);
         Ok(())
-    }
-
-    /// Read an uncalibrated ADC code.
-    pub async fn read_raw_value(&mut self) -> Result<i32, Ads1220Error> {
-        self.read_raw().await
     }
 
     /// Read an ADC code with the tare offset removed.
@@ -575,17 +549,20 @@ impl<'d> Ads1220<'d> {
     }
 
     /// Load the persisted calibration factor, or the default if none is valid.
-    pub fn get_calibration_factor(&mut self) -> Result<f32, Ads1220Error> {
+    fn stored_calibration_factor(&mut self) -> f32 {
         match self.read_from_flash() {
             Ok(factor) => {
                 info!("Calibration factor read from flash: {:?}", factor);
-                Ok(factor)
+                factor
             }
             Err(Ads1220Error::InvalidCalibration) => {
                 info!("Using default calibration factor");
-                Ok(DEFAULT_CALIBRATION_FACTOR)
+                DEFAULT_CALIBRATION_FACTOR
             }
-            Err(error) => Err(error),
+            Err(error) => {
+                error!("Failed to read the stored calibration factor: {:?}", error);
+                DEFAULT_CALIBRATION_FACTOR
+            }
         }
     }
 
@@ -602,46 +579,31 @@ impl<'d> Ads1220<'d> {
         Ok(())
     }
 
-    /// Apply a best-fit factor to raw-code/weight calibration points.
+    /// Apply a best-fit factor to raw-code/weight calibration points. The raw codes are averages
+    /// of ADC codes and the weights were validated when received, so every point is finite.
     pub fn apply_multi_point_calibration(&mut self, calibration_points: &[(f32, f32)]) -> bool {
         if calibration_points.len() < 2 {
             error!("Calibration requires at least two points");
             return false;
         }
 
-        let is_valid = |(raw_value, weight): &&(f32, f32)| {
-            raw_value.is_finite() && weight.is_finite() && *weight >= 0.0
-        };
-        for (raw_value, weight) in calibration_points.iter().filter(|point| !is_valid(point)) {
-            error!(
-                "Skipping invalid calibration point raw={}, weight={}",
-                raw_value, weight
-            );
-        }
-
         // Incoming calibration weights are expressed in kg, while calibration_factor operates on
         // grams before read_calibrated() converts back to kg.
-        let valid_points = || {
+        let points = || {
             calibration_points
                 .iter()
-                .filter(is_valid)
                 .map(|(raw_value, weight)| (f64::from(*raw_value), f64::from(*weight) * 1000.0))
         };
-
-        let valid_count = valid_points().count();
-        if valid_count < 2 {
-            error!("Calibration requires at least two valid points");
-            return false;
-        }
+        let count = calibration_points.len() as f64;
 
         // Least-squares slope around the mean, so no single point anchors the fit.
-        let (sum_raw, sum_weight) = valid_points()
+        let (sum_raw, sum_weight) = points()
             .fold((0.0, 0.0), |(sum_raw, sum_weight), (raw, weight)| {
                 (sum_raw + raw, sum_weight + weight)
             });
-        let mean_raw = sum_raw / valid_count as f64;
-        let mean_weight = sum_weight / valid_count as f64;
-        let (sum_delta_raw_weight, sum_delta_raw_sq) = valid_points().fold(
+        let mean_raw = sum_raw / count;
+        let mean_weight = sum_weight / count;
+        let (sum_delta_raw_weight, sum_delta_raw_sq) = points().fold(
             (0.0, 0.0),
             |(sum_delta_raw_weight, sum_delta_raw_sq), (raw, weight)| {
                 let delta_raw = raw - mean_raw;
@@ -667,10 +629,7 @@ impl<'d> Ads1220<'d> {
                 true
             }
             Err(error) => {
-                error!(
-                    "Failed to apply calibration factor: {:?}",
-                    defmt::Debug2Format(&error)
-                );
+                error!("Failed to apply calibration factor: {:?}", error);
                 false
             }
         }

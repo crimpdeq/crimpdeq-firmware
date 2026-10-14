@@ -51,7 +51,9 @@ Keep `.with_sda(peripherals.GPIO7)` and `.with_scl(peripherals.GPIO6)` in
 
 To validate on hardware, build with `DEFMT_LOG=info`, flash, and confirm the
 `Battery:` log reports voltage, state of charge, and charge rate without
-`Failed to read MAX17048 battery gauge` warnings. Readings occur every 45 seconds.
+`Failed to read MAX17048 battery gauge` warnings. Readings occur every 45 seconds;
+a reading at or below 3.3 V while not charging is confirmed by a second one with
+the gauge's hibernate disabled, normally within a few seconds, before deep sleep.
 
 ## Contributing
 Contributions are welcome! Feel free to:
