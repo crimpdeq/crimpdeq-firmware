@@ -620,11 +620,6 @@ impl DataPoint {
         }
     }
 
-    /// Send data point to the channel.
-    pub async fn send(self, channel: &'static ControlResponseChannel) {
-        channel.send(self).await;
-    }
-
     /// Create a weight measurement data point
     pub fn weight_measurement(measurements: WeightMeasurementBatch) -> Self {
         Self::from(ResponseCode::WeightMeasurement(measurements))

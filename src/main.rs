@@ -347,12 +347,14 @@ async fn main(spawner: Spawner) -> ! {
                         connection_state_task(&stack, &conn),
                     )
                     .await;
-                    control_channel.clear();
-                    measurement_channel.clear();
+                    // Mark the link closed before clearing, so a reply blocked on the full
+                    // channel completes and the measurement task stops queuing more.
                     update_device_state(|state| {
                         state.on_ble_disconnected();
                         debug!("BLE connection closed, inactivity timer restarted");
                     });
+                    control_channel.clear();
+                    measurement_channel.clear();
                 }
                 Err(e) => {
                     error!("BLE advertising failed: {:?}", defmt::Debug2Format(&e));
@@ -932,11 +934,7 @@ async fn run_load_cell_command(
         }
         LoadCellCommand::GetCalibration => {
             match load_cell.get_calibration_factor() {
-                Ok(factor) => {
-                    DataPoint::from(ResponseCode::CalibrationFactor(factor))
-                        .send(channel)
-                        .await;
-                }
+                Ok(factor) => notify_calibration_factor(channel, factor).await,
                 Err(e) => {
                     error!(
                         "Failed to read calibration factor: {:?}",
@@ -970,9 +968,11 @@ async fn notify_calibration_points(
 ) {
     for (raw_value, weight) in calibration_points {
         debug!("Notifying calibration point: {:?}", (raw_value, weight));
-        DataPoint::from(ResponseCode::CalibrationPoint(*raw_value, *weight))
-            .send(channel)
-            .await;
+        send_load_cell_reply(
+            channel,
+            DataPoint::from(ResponseCode::CalibrationPoint(*raw_value, *weight)),
+        )
+        .await;
     }
 }
 
@@ -981,9 +981,20 @@ async fn notify_calibration_factor(
     calibration_factor: f32,
 ) {
     debug!("Notifying calibration factor: {:?}", calibration_factor);
-    DataPoint::from(ResponseCode::CalibrationFactor(calibration_factor))
-        .send(channel)
-        .await;
+    send_load_cell_reply(
+        channel,
+        DataPoint::from(ResponseCode::CalibrationFactor(calibration_factor)),
+    )
+    .await;
+}
+
+/// Queues a load cell command reply for the connected client. Replies are dropped once BLE
+/// disconnects: nothing drains the channel then, and a full channel would block the measurement
+/// task, and with it sleep, until the next connection.
+async fn send_load_cell_reply(channel: &'static ControlResponseChannel, reply: DataPoint) {
+    if critical_section::with(|cs| DEVICE_STATE.borrow_ref(cs).is_ble_connected()) {
+        channel.send(reply).await;
+    }
 }
 
 /// Connection parameters while measuring. The interval is meant to carry up to 1000 samples/s.
@@ -1142,7 +1153,7 @@ async fn gatt_events_task<P: PacketPool>(
                 }
 
                 if let Some(response) = immediate_response {
-                    response.send(control_channel).await;
+                    control_channel.send(response).await;
                 }
 
                 if disconnect_after_response {
