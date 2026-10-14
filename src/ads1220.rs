@@ -65,6 +65,8 @@ const SAMPLE_RATE_RECORD: StorageRecord = StorageRecord {
 const STORAGE_SIZE: usize = 2 * STORAGE_RECORD_SIZE;
 const TARING_TIME: Duration = Duration::from_millis(200);
 const CALIBRATION_TIME: Duration = Duration::from_millis(1250);
+/// Calibration points are averaged at a low rate, which has less noise per conversion.
+const CALIBRATION_SAMPLE_RATE: SampleRate = SampleRate::Sps90;
 const DEFAULT_CALIBRATION_FACTOR: f32 = 0.08;
 
 /// Location and validation constants of one stored setting.
@@ -435,11 +437,15 @@ impl<'d> Ads1220<'d> {
         Ok((raw_tared as f32) * self.calibration_factor / 1000.0)
     }
 
-    /// Collect an averaged raw calibration point.
+    /// Collect an averaged raw calibration point at the calibration sample rate.
     pub async fn perform_calibration(&mut self) -> Result<f32, Ads1220Error> {
+        let sample_rate = self.sample_rate;
+        self.switch_sample_rate(CALIBRATION_SAMPLE_RATE).await?;
         let average = self
-            .take_samples(self.sample_rate.samples_in(CALIBRATION_TIME))
-            .await?;
+            .take_samples(CALIBRATION_SAMPLE_RATE.samples_in(CALIBRATION_TIME))
+            .await;
+        self.switch_sample_rate(sample_rate).await?;
+        let average = average?;
         debug!("Calibration point collected: {}", average);
         Ok(average)
     }
