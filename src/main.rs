@@ -19,7 +19,7 @@ use embassy_sync::{
     channel::{Channel, TrySendError},
     watch::Watch,
 };
-use embassy_time::{Duration, Timer};
+use embassy_time::{Duration, Instant, Timer};
 use esp_hal::{
     Async,
     Blocking,
@@ -91,8 +91,22 @@ const CHARGING_RATE_THRESHOLD: f32 = 0.1;
 /// Battery voltage at or below which the device warns and enters deep sleep. Below about 3.3 V
 /// the 3V3 regulator drops out.
 const LOW_BATTERY_SHUTDOWN_MV: u32 = 3300;
-/// Consecutive low battery readings needed before shutting down, to ignore load transients.
-const LOW_BATTERY_SHUTDOWN_READINGS: u8 = 2;
+/// Matches the MAX17048 VCELL update period in hibernate.
+const BATTERY_READ_PERIOD: Duration = Duration::from_secs(45);
+/// Registers that the max170xx driver does not expose.
+const MAX17048_ADDRESS: u8 = 0x36;
+const MAX17048_MODE: u8 = 0x06;
+const MAX17048_MODE_HIBSTAT: u16 = 1 << 12;
+const MAX17048_HIBRT: u8 = 0x0A;
+/// Power-on HIBRT: hibernate after 6 min below 26.6 %/h, which the device's load stays under, and
+/// exit on a 60 mV step. VCELL then updates every 45 s instead of every 250 ms.
+const MAX17048_HIBRT_DEFAULT: u16 = 0x8030;
+const MAX17048_HIBRT_DISABLED: u16 = 0x0000;
+/// Longest wait for the MAX17048 to leave hibernate: one hibernate ADC period plus its 3.5 % time
+/// base error.
+const MAX17048_HIBERNATE_EXIT_TIMEOUT: Duration = Duration::from_secs(47);
+/// VCELL averages four 250 ms active-mode conversions.
+const MAX17048_ACTIVE_VCELL_SETTLE: Duration = Duration::from_secs(1);
 const STATUS_LED_OFF: RGB8 = RGB8 { r: 0, g: 0, b: 0 };
 const STATUS_LED_DISCONNECTED: RGB8 = RGB8 { r: 0, g: 0, b: 255 };
 const STATUS_LED_CONNECTED: RGB8 = RGB8 { r: 0, g: 255, b: 0 };
@@ -245,7 +259,6 @@ async fn main(spawner: Spawner) -> ! {
         .with_sda(peripherals.GPIO7)
         .with_scl(peripherals.GPIO6)
         .into_async();
-    let battery_gauge = Max17048::new(battery_i2c);
 
     // Initialize WS2812B-V6 status LED on GPIO2 (U1.5, IO2_LED, R13 0R to D4 DIN) using RMT.
     let status_led_rmt_rate = Rate::from_mhz(80);
@@ -317,7 +330,7 @@ async fn main(spawner: Spawner) -> ! {
         )
         .unwrap(),
     );
-    spawner.spawn(battery_gauge_task(battery_gauge, control_channel).unwrap());
+    spawner.spawn(battery_gauge_task(battery_i2c, control_channel).unwrap());
     spawner.spawn(status_led_task(status_led).unwrap());
     spawner.spawn(deep_sleep_task(low_power).unwrap());
 
@@ -579,72 +592,161 @@ async fn deep_sleep_task(mut low_power: LowPower<'static>) {
 
 #[embassy_executor::task]
 async fn battery_gauge_task(
-    mut gauge: Max17048<I2c<'static, Async>>,
+    mut i2c: I2c<'static, Async>,
     channel: &'static ControlResponseChannel,
 ) {
-    let mut low_battery_readings = 0;
+    // The gauge stays powered from the battery, so a power cut during a low battery check would
+    // leave hibernate disabled.
+    if let Err(e) = write_max17048_register(&mut i2c, MAX17048_HIBRT, MAX17048_HIBRT_DEFAULT).await
+    {
+        warn!(
+            "Failed to restore MAX17048 hibernate thresholds: {:?}",
+            defmt::Debug2Format(&e)
+        );
+    }
 
     loop {
-        let voltage = gauge.voltage().await;
-        let soc = gauge.soc().await;
-        let charge_rate = gauge.charge_rate().await;
-
-        match (voltage, soc, charge_rate) {
-            (Ok(voltage), Ok(soc), Ok(charge_rate)) => {
-                let battery_voltage_mv = (voltage * 1000.0) as u32;
-                let battery_charging = charge_rate > CHARGING_RATE_THRESHOLD;
-                info!(
-                    "Battery: {:?} mV, SOC: {:?}%, charge rate: {:?}%/h",
-                    battery_voltage_mv, soc, charge_rate
-                );
-
-                // Update device state
-                let ble_connected = update_device_state(|state| {
-                    state.battery_voltage = battery_voltage_mv;
-                    state.battery_status = Some(BatteryStatus {
-                        // Rounded; the model can report slightly above 100 % when full.
-                        soc_percent: (soc.clamp(0.0, 100.0) + 0.5) as u8,
-                        charging: battery_charging,
-                    });
-                    state.is_ble_connected()
-                });
-
-                if battery_voltage_mv <= LOW_BATTERY_SHUTDOWN_MV && !battery_charging {
-                    low_battery_readings += 1;
-                } else {
-                    low_battery_readings = 0;
+        if read_battery(&mut i2c)
+            .await
+            .is_some_and(BatteryReading::is_low)
+            && confirm_low_battery(&mut i2c).await
+        {
+            warn!("Battery low, entering deep sleep");
+            if critical_section::with(|cs| DEVICE_STATE.borrow_ref(cs).is_ble_connected()) {
+                if channel
+                    .try_send(DataPoint::from(ResponseCode::LowPowerWarning))
+                    .is_err()
+                {
+                    warn!("Failed to queue low power warning");
                 }
-
-                if low_battery_readings >= LOW_BATTERY_SHUTDOWN_READINGS {
-                    warn!(
-                        "Battery at {:?} mV, entering deep sleep",
-                        battery_voltage_mv
-                    );
-                    if ble_connected {
-                        if channel
-                            .try_send(DataPoint::from(ResponseCode::LowPowerWarning))
-                            .is_err()
-                        {
-                            warn!("Failed to queue low power warning");
-                        }
-                        // Give the notification time to reach the client.
-                        Timer::after(Duration::from_millis(500)).await;
-                    }
-                    update_device_state(|state| state.request_sleep(SleepReason::LowBattery));
-                }
+                // Give the notification time to reach the client.
+                Timer::after(Duration::from_millis(500)).await;
             }
-            (voltage, soc, charge_rate) => {
-                warn!(
-                    "Failed to read MAX17048 battery gauge: voltage={:?}, soc={:?}, charge_rate={:?}",
-                    defmt::Debug2Format(&voltage),
-                    defmt::Debug2Format(&soc),
-                    defmt::Debug2Format(&charge_rate)
-                );
-            }
+            update_device_state(|state| state.request_sleep(SleepReason::LowBattery));
         }
 
-        Timer::after(Duration::from_secs(45)).await;
+        Timer::after(BATTERY_READ_PERIOD).await;
     }
+}
+
+#[derive(Clone, Copy)]
+struct BatteryReading {
+    voltage_mv: u32,
+    charging: bool,
+}
+
+impl BatteryReading {
+    fn is_low(self) -> bool {
+        self.voltage_mv <= LOW_BATTERY_SHUTDOWN_MV && !self.charging
+    }
+}
+
+/// Reads the gauge and stores the result in the device state.
+async fn read_battery(i2c: &mut I2c<'static, Async>) -> Option<BatteryReading> {
+    let mut gauge = Max17048::new(i2c);
+    let voltage = gauge.voltage().await;
+    let soc = gauge.soc().await;
+    let charge_rate = gauge.charge_rate().await;
+
+    let (Ok(voltage), Ok(soc), Ok(charge_rate)) = (&voltage, &soc, &charge_rate) else {
+        warn!(
+            "Failed to read MAX17048 battery gauge: voltage={:?}, soc={:?}, charge_rate={:?}",
+            defmt::Debug2Format(&voltage),
+            defmt::Debug2Format(&soc),
+            defmt::Debug2Format(&charge_rate)
+        );
+        return None;
+    };
+    let reading = BatteryReading {
+        voltage_mv: (voltage * 1000.0) as u32,
+        charging: *charge_rate > CHARGING_RATE_THRESHOLD,
+    };
+    info!(
+        "Battery: {:?} mV, SOC: {:?}%, charge rate: {:?}%/h",
+        reading.voltage_mv, soc, charge_rate
+    );
+
+    update_device_state(|state| {
+        state.battery_voltage = reading.voltage_mv;
+        state.battery_status = Some(BatteryStatus {
+            // Rounded; the model can report slightly above 100 % when full.
+            soc_percent: (soc.clamp(0.0, 100.0) + 0.5) as u8,
+            charging: reading.charging,
+        });
+    });
+    Some(reading)
+}
+
+/// Takes a second reading after a low one, to ignore load transients. Hibernate is disabled for
+/// it, so the reading is a new VCELL sample within seconds instead of the next one up to 45 s
+/// later.
+async fn confirm_low_battery(i2c: &mut I2c<'static, Async>) -> bool {
+    if let Err(e) = write_max17048_register(i2c, MAX17048_HIBRT, MAX17048_HIBRT_DISABLED).await {
+        warn!(
+            "Failed to disable MAX17048 hibernate: {:?}",
+            defmt::Debug2Format(&e)
+        );
+        return false;
+    }
+
+    let confirmed = if wait_for_max17048_active(i2c).await {
+        Timer::after(MAX17048_ACTIVE_VCELL_SETTLE).await;
+        read_battery(i2c).await.is_some_and(BatteryReading::is_low)
+    } else {
+        false
+    };
+
+    if let Err(e) = write_max17048_register(i2c, MAX17048_HIBRT, MAX17048_HIBRT_DEFAULT).await {
+        warn!(
+            "Failed to restore MAX17048 hibernate thresholds: {:?}",
+            defmt::Debug2Format(&e)
+        );
+    }
+    confirmed
+}
+
+/// Waits for MODE.HibStat to clear. The datasheet does not say whether disabling hibernate takes
+/// effect at once or at the next hibernate ADC sample.
+async fn wait_for_max17048_active(i2c: &mut I2c<'static, Async>) -> bool {
+    let deadline = Instant::now() + MAX17048_HIBERNATE_EXIT_TIMEOUT;
+    loop {
+        match read_max17048_register(i2c, MAX17048_MODE).await {
+            Ok(mode) if mode & MAX17048_MODE_HIBSTAT == 0 => return true,
+            Ok(_) if Instant::now() >= deadline => {
+                warn!("MAX17048 still in hibernate after disabling it");
+                return false;
+            }
+            Ok(_) => {}
+            Err(e) => {
+                warn!(
+                    "Failed to read MAX17048 mode: {:?}",
+                    defmt::Debug2Format(&e)
+                );
+                return false;
+            }
+        }
+        Timer::after(Duration::from_millis(250)).await;
+    }
+}
+
+async fn write_max17048_register(
+    i2c: &mut I2c<'static, Async>,
+    register: u8,
+    value: u16,
+) -> Result<(), esp_hal::i2c::master::Error> {
+    let [high, low] = value.to_be_bytes();
+    i2c.write_async(MAX17048_ADDRESS, &[register, high, low])
+        .await
+}
+
+async fn read_max17048_register(
+    i2c: &mut I2c<'static, Async>,
+    register: u8,
+) -> Result<u16, esp_hal::i2c::master::Error> {
+    let mut value = [0; 2];
+    i2c.write_read_async(MAX17048_ADDRESS, &[register], &mut value)
+        .await?;
+    Ok(u16::from_be_bytes(value))
 }
 
 fn enqueue_measurement_batch(
