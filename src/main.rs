@@ -1054,9 +1054,11 @@ async fn run_load_cell_command(
         LoadCellCommand::Calibrate(weight) => {
             // Like the other calibration failures, a full buffer sends no reply, so the client
             // reads the unchanged points back with GetCalibration. Only this task changes the
-            // points, so the buffer has room for the new point after sampling.
-            let stored_points =
-                critical_section::with(|cs| DEVICE_STATE.borrow_ref(cs).calibration_point_count);
+            // points, so they are unchanged after sampling.
+            let (mut calibration_points, stored_points) = critical_section::with(|cs| {
+                let state = DEVICE_STATE.borrow_ref(cs);
+                (state.calibration_points, state.calibration_point_count)
+            });
             if stored_points >= MAX_CALIBRATION_POINTS {
                 warn!(
                     "Calibration point buffer full (max {}), ignoring new point",
@@ -1073,26 +1075,38 @@ async fn run_load_cell_command(
                 }
             };
 
-            let (calibration_points, calibration_point_count) = update_device_state(|state| {
-                state.calibration_points[state.calibration_point_count] = (raw_value, weight);
-                state.calibration_point_count += 1;
-                (state.calibration_points, state.calibration_point_count)
-            });
+            calibration_points[stored_points] = (raw_value, weight);
+            let calibration_point_count = stored_points + 1;
+            let points = &calibration_points[..calibration_point_count];
 
-            if calibration_point_count >= 2 {
-                let points = &calibration_points[..calibration_point_count];
-                match fit_calibration_factor(points) {
-                    Some(factor) => {
-                        info!("Calibration factor applied: {}", factor);
-                        update_device_state(|state| state.set_calibration_factor(factor));
-                        notify_calibration_factor(channel, factor).await;
-                        notify_calibration_points(channel, points).await;
-                    }
-                    None => error!("Failed to apply calibration points: {:?}", points),
-                }
-            } else {
+            if calibration_point_count < 2 {
+                update_device_state(|state| {
+                    state.calibration_points = calibration_points;
+                    state.calibration_point_count = calibration_point_count;
+                });
                 info!("Calibration needs at least two points before applying.");
+                return;
             }
+
+            // A point is stored only with an accepted fit, so a rejected one does not skew later
+            // fits. A stored first point was never validated and may be the wrong one, so it is
+            // dropped too, letting the calibration restart instead of rejecting every new point.
+            let Some(factor) = fit_calibration_factor(points) else {
+                error!("Rejected calibration point {:?}", (raw_value, weight));
+                if stored_points == 1 {
+                    warn!("Dropping the unvalidated first calibration point");
+                    update_device_state(|state| state.calibration_point_count = 0);
+                }
+                return;
+            };
+            info!("Calibration factor applied: {}", factor);
+            update_device_state(|state| {
+                state.calibration_points = calibration_points;
+                state.calibration_point_count = calibration_point_count;
+                state.set_calibration_factor(factor);
+            });
+            notify_calibration_factor(channel, factor).await;
+            notify_calibration_points(channel, points).await;
         }
         LoadCellCommand::DefaultCalibration => {
             debug!("Restoring default calibration factor");
