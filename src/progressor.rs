@@ -9,7 +9,7 @@ use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channe
 use esp_hal::time;
 use trouble_host::types::gatt_traits::AsGatt;
 
-use crate::ads1220::SampleRate;
+use crate::{ads1220::SampleRate, storage::Settings};
 
 /// Number of high-priority control responses that can be queued.
 const CONTROL_RESPONSE_CHANNEL_SIZE: usize = 16;
@@ -162,8 +162,11 @@ pub struct DeviceState {
     /// Whether a low battery check has disabled the battery gauge's hibernate. The gauge stays
     /// powered from the battery, so deep sleep waits for the check to restore it.
     pub battery_gauge_check: bool,
-    /// ADS1220 data rate, persisted by the measurement task so it applies to every client.
-    pub sample_rate: SampleRate,
+    /// Settings in use. They apply to every client and the storage task persists them.
+    pub settings: Settings,
+    /// Whether the settings changed since the storage task last persisted them. Deep sleep waits
+    /// for the write.
+    pub settings_write_pending: bool,
 }
 
 impl Default for DeviceState {
@@ -189,7 +192,8 @@ impl DeviceState {
             sleep_measurement_ready: false,
             sleep_status_led_ready: false,
             battery_gauge_check: false,
-            sample_rate: SampleRate::DEFAULT,
+            settings: Settings::DEFAULT,
+            settings_write_pending: false,
         }
     }
 
@@ -326,14 +330,47 @@ impl DeviceState {
         self.enter_sleep_when_ready();
     }
 
+    /// Apply a sample rate now and persist it later.
+    pub fn set_sample_rate(&mut self, sample_rate: SampleRate) {
+        self.update_settings(Settings {
+            sample_rate,
+            ..self.settings
+        });
+    }
+
+    /// Apply a calibration factor now and persist it later.
+    pub fn set_calibration_factor(&mut self, calibration_factor: f32) {
+        self.update_settings(Settings {
+            calibration_factor,
+            ..self.settings
+        });
+    }
+
+    fn update_settings(&mut self, settings: Settings) {
+        if settings != self.settings {
+            self.settings = settings;
+            self.settings_write_pending = true;
+        }
+    }
+
+    /// End a settings write and allow a pending deep sleep, unless the settings changed during
+    /// the write.
+    pub fn end_settings_write(&mut self, written: Settings) {
+        if written == self.settings {
+            self.settings_write_pending = false;
+            self.enter_sleep_when_ready();
+        }
+    }
+
     /// Allow deep sleep once the peripherals are powered down, BLE is disconnected and no low
-    /// battery check is running.
+    /// battery check or settings write is pending.
     fn enter_sleep_when_ready(&mut self) {
         if let SleepState::Requested(reason) = self.sleep_state
             && self.sleep_measurement_ready
             && self.sleep_status_led_ready
             && !self.ble_connected
             && !self.battery_gauge_check
+            && !self.settings_write_pending
         {
             self.sleep_state = SleepState::Ready(reason);
         }
@@ -383,8 +420,8 @@ pub enum ControlOpCode {
     /// Default calibration
     // Custom command, no part of Tindeq API
     DefaultCalibration = 0x74,
-    /// Set and persist the ADS1220 sample rate (u16 LE samples per second) and reply with the rate
-    /// in use, which stays unchanged for unsupported rates
+    /// Set the ADS1220 sample rate (u16 LE samples per second), persisted once measurement stops,
+    /// and reply with the rate in use, which stays unchanged for unsupported rates
     // Custom command, no part of Tindeq API
     SetSampleRate = 0x75,
     /// Reply with the ADS1220 sample rate in use
@@ -498,15 +535,15 @@ impl ControlOpCode {
 
                 let sps = u16::from_le_bytes([data[1], data[2]]);
                 match SampleRate::from_sps(sps) {
-                    Some(sample_rate) => device_state.sample_rate = sample_rate,
+                    Some(sample_rate) => device_state.set_sample_rate(sample_rate),
                     None => warn!("SetSampleRate: Unsupported rate {} SPS", sps),
                 }
                 Some(DataPoint::from(ResponseCode::SampleRate(
-                    device_state.sample_rate,
+                    device_state.settings.sample_rate,
                 )))
             }
             ControlOpCode::GetSampleRate => Some(DataPoint::from(ResponseCode::SampleRate(
-                device_state.sample_rate,
+                device_state.settings.sample_rate,
             ))),
             ControlOpCode::GetBatteryStatus => match device_state.battery_status {
                 Some(status) => Some(DataPoint::from(ResponseCode::BatteryStatus(status))),

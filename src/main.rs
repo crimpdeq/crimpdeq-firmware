@@ -44,7 +44,7 @@ use smart_leds::{RGB8, SmartLedsWriteAsync as _, brightness};
 use trouble_host::prelude::*;
 
 use crate::{
-    ads1220::Ads1220,
+    ads1220::{Ads1220, DEFAULT_CALIBRATION_FACTOR, fit_calibration_factor},
     ble::{CONNECTIONS_MAX, DEVICE_NAME, L2CAP_CHANNELS_MAX, L2CAP_MTU, Server, advertise},
     progressor::{
         BatteryStatus,
@@ -66,11 +66,13 @@ use crate::{
         WeightMeasurementBatch,
         measurement_batch_size_for_att_mtu,
     },
+    storage::{Settings, Storage},
 };
 
 mod ads1220;
 mod ble;
 mod progressor;
+mod storage;
 
 const STATUS_LED_COUNT: usize = 1;
 const STATUS_LED_RMT_BUFFER_SIZE: usize = buffer_size::<RGB8>(STATUS_LED_COUNT);
@@ -113,6 +115,11 @@ const STATUS_LED_CONNECTED: RGB8 = RGB8 { r: 0, g: 255, b: 0 };
 const STATUS_LED_LOW_BATTERY: RGB8 = RGB8 { r: 255, g: 0, b: 0 };
 /// Delay before retrying failed BLE advertising.
 const BLE_RETRY_DELAY: Duration = Duration::from_secs(1);
+/// Attempts to store a settings change before giving up, so a flash that keeps failing cannot
+/// hold off deep sleep.
+const SETTINGS_WRITE_ATTEMPTS: u32 = 3;
+/// Delay before retrying a failed settings write.
+const SETTINGS_WRITE_RETRY_DELAY: Duration = Duration::from_secs(1);
 type StatusLed = RmtSmartLeds<'static, STATUS_LED_RMT_BUFFER_SIZE, Async, RGB8, color_order::Grb>;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -154,9 +161,9 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     })
 }
 
-/// Number of tasks that wait for device state changes: measurement, status LED, deep sleep and
-/// connection state.
-const STATE_CHANGE_RECEIVERS: usize = 4;
+/// Number of tasks that wait for device state changes: measurement, status LED, deep sleep,
+/// storage and connection state.
+const STATE_CHANGE_RECEIVERS: usize = 5;
 /// Signals device state changes, so tasks can wait for them instead of polling.
 static STATE_CHANGED: Watch<CriticalSectionRawMutex, (), STATE_CHANGE_RECEIVERS> = Watch::new();
 
@@ -207,6 +214,11 @@ async fn main(spawner: Spawner) -> ! {
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
 
+    // Read the persisted settings before BLE starts and before any task uses them.
+    let mut storage = Storage::new(FlashStorage::new(peripherals.FLASH));
+    let stored_settings = storage.read();
+    update_device_state(|state| state.settings = stored_settings);
+
     // Initialize BLE
     let bluetooth = peripherals.BT;
     // Each transmission couples into the ADS1220 input and offsets the conversion it overlaps:
@@ -238,9 +250,6 @@ async fn main(spawner: Spawner) -> ! {
     .with_miso(load_cell_data_ready.peripheral_input());
     let load_cell_chip_select =
         Output::new(peripherals.GPIO3, Level::High, OutputConfig::default());
-
-    // Initialize Flash Storage
-    let flash = FlashStorage::new(peripherals.FLASH);
 
     // Initialize low-power control.
     let low_power = LowPower::new(peripherals.LPWR);
@@ -326,10 +335,10 @@ async fn main(spawner: Spawner) -> ! {
             load_cell_spi,
             load_cell_chip_select,
             load_cell_data_ready,
-            flash,
         )
         .unwrap(),
     );
+    spawner.spawn(storage_task(storage, stored_settings).unwrap());
     spawner.spawn(battery_gauge_task(battery_i2c, control_channel).unwrap());
     spawner.spawn(status_led_task(status_led).unwrap());
     spawner.spawn(deep_sleep_task(low_power).unwrap());
@@ -623,6 +632,68 @@ async fn battery_gauge_task(
     }
 }
 
+/// Persists settings changes once measurement stops.
+///
+/// Flash writes from the priority-2 measurement executor while streaming made the BLE controller
+/// interrupt panic and reboot the device (#83), so this task writes from thread mode and only
+/// while not measuring.
+#[embassy_executor::task]
+async fn storage_task(mut storage: Storage, mut stored: Settings) {
+    let mut state_changes = STATE_CHANGED
+        .receiver()
+        .expect("Missing state change receiver for the storage task");
+    let mut failed_attempts = 0;
+
+    loop {
+        let (write_pending, measuring, settings) = critical_section::with(|cs| {
+            let state = DEVICE_STATE.borrow_ref(cs);
+            (
+                state.settings_write_pending,
+                state.measurement_status == MeasurementTaskStatus::Enabled,
+                state.settings,
+            )
+        });
+
+        if write_pending && !measuring {
+            // A failed write keeps `stored`, so the next attempt retries it.
+            if settings.sample_rate != stored.sample_rate {
+                match storage.write_sample_rate(settings.sample_rate) {
+                    Ok(()) => {
+                        info!("Sample rate stored: {} SPS", settings.sample_rate.sps());
+                        stored.sample_rate = settings.sample_rate;
+                    }
+                    Err(e) => error!("Failed to store the sample rate: {:?}", e),
+                }
+            }
+            if settings.calibration_factor != stored.calibration_factor {
+                match storage.write_calibration_factor(settings.calibration_factor) {
+                    Ok(()) => {
+                        info!("Calibration factor stored: {}", settings.calibration_factor);
+                        stored.calibration_factor = settings.calibration_factor;
+                    }
+                    Err(e) => error!("Failed to store the calibration factor: {:?}", e),
+                }
+            }
+            if settings != stored {
+                failed_attempts += 1;
+                if failed_attempts < SETTINGS_WRITE_ATTEMPTS {
+                    select(
+                        Timer::after(SETTINGS_WRITE_RETRY_DELAY),
+                        state_changes.changed(),
+                    )
+                    .await;
+                    continue;
+                }
+                error!("Settings not stored after {} attempts", failed_attempts);
+            }
+            failed_attempts = 0;
+            update_device_state(|state| state.end_settings_write(settings));
+        }
+
+        state_changes.changed().await;
+    }
+}
+
 #[derive(Clone, Copy)]
 struct BatteryReading {
     voltage_mv: u32,
@@ -798,11 +869,8 @@ async fn measurement_task(
     spi: Spi<'static, Blocking>,
     chip_select: Output<'static>,
     data_ready: Input<'static>,
-    flash: FlashStorage<'static>,
 ) {
-    let mut load_cell = Ads1220::new(spi.into_async(), chip_select, data_ready, flash);
-    let stored_sample_rate = load_cell.sample_rate();
-    update_device_state(|state| state.sample_rate = stored_sample_rate);
+    let mut load_cell = Ads1220::new(spi.into_async(), chip_select, data_ready);
     let mut initialized = false;
     let mut measurement_buffer = WeightMeasurementBatch::new();
     let mut dropped_measurement_batches = 0u32;
@@ -814,7 +882,7 @@ async fn measurement_task(
 
     loop {
         // Get current device state
-        let (sleep_state, status, start_time, measurement_batch_size, sample_rate) =
+        let (sleep_state, status, start_time, measurement_batch_size, settings) =
             critical_section::with(|cs| {
                 let state = DEVICE_STATE.borrow_ref(cs);
                 (
@@ -822,7 +890,7 @@ async fn measurement_task(
                     state.measurement_status,
                     state.start_time,
                     state.measurement_batch_size,
-                    state.sample_rate,
+                    state.settings,
                 )
             });
 
@@ -851,7 +919,7 @@ async fn measurement_task(
 
         // Retry inside the loop, so a missing or faulty ADS1220 cannot block sleep requests.
         if !initialized {
-            if let Err(e) = load_cell.initialize().await {
+            if let Err(e) = load_cell.initialize(settings.sample_rate).await {
                 error!("ADS1220 initialization failed: {:?}", e);
                 select(
                     Timer::after(Duration::from_millis(250)),
@@ -867,10 +935,16 @@ async fn measurement_task(
             continue;
         }
 
-        if load_cell.sample_rate() != sample_rate {
-            if let Err(e) = load_cell.set_sample_rate(sample_rate).await {
-                error!("Failed to set ADS1220 sample rate: {:?}", e);
-                Timer::after(Duration::from_millis(250)).await;
+        if load_cell.sample_rate() != settings.sample_rate {
+            match load_cell.set_sample_rate(settings.sample_rate).await {
+                Ok(()) => info!(
+                    "ADS1220 sample rate set to {} SPS",
+                    settings.sample_rate.sps()
+                ),
+                Err(e) => {
+                    error!("Failed to set ADS1220 sample rate: {:?}", e);
+                    Timer::after(Duration::from_millis(250)).await;
+                }
             }
             continue;
         }
@@ -941,7 +1015,7 @@ async fn measurement_task(
                     continue;
                 }
 
-                let weight = match load_cell.read_calibrated().await {
+                let weight = match load_cell.read_calibrated(settings.calibration_factor).await {
                     Ok(weight) => weight,
                     Err(e) => {
                         error!("Failed to read weight measurement: {:?}", e);
@@ -952,7 +1026,7 @@ async fn measurement_task(
                 let timestamp = now.wrapping_sub(start_time);
                 measurement_buffer.push((weight, timestamp));
                 let batch_size =
-                    measurement_batch_size.min(sample_rate.samples_in(MAX_BATCH_DURATION));
+                    measurement_batch_size.min(settings.sample_rate.samples_in(MAX_BATCH_DURATION));
                 if measurement_buffer.len() >= batch_size {
                     enqueue_measurement_batch(
                         measurement_channel,
@@ -1007,33 +1081,38 @@ async fn run_load_cell_command(
 
             if calibration_point_count >= 2 {
                 let points = &calibration_points[..calibration_point_count];
-                if !load_cell.apply_multi_point_calibration(points) {
-                    error!("Failed to apply calibration points: {:?}", points);
-                } else {
-                    notify_calibration_factor(channel, load_cell.current_calibration_factor())
-                        .await;
-                    notify_calibration_points(channel, points).await;
+                match fit_calibration_factor(points) {
+                    Some(factor) => {
+                        info!("Calibration factor applied: {}", factor);
+                        update_device_state(|state| state.set_calibration_factor(factor));
+                        notify_calibration_factor(channel, factor).await;
+                        notify_calibration_points(channel, points).await;
+                    }
+                    None => error!("Failed to apply calibration points: {:?}", points),
                 }
             } else {
                 info!("Calibration needs at least two points before applying.");
             }
         }
         LoadCellCommand::DefaultCalibration => {
-            // Reset calibration to default values
-            if let Err(e) = load_cell.default_calibration_factor() {
-                error!("Error applying default calibration: {:?}", e);
-            } else {
-                notify_calibration_factor(channel, load_cell.current_calibration_factor()).await;
-            }
-            update_device_state(|state| state.calibration_point_count = 0);
+            debug!("Restoring default calibration factor");
+            update_device_state(|state| {
+                state.set_calibration_factor(DEFAULT_CALIBRATION_FACTOR);
+                state.calibration_point_count = 0;
+            });
+            notify_calibration_factor(channel, DEFAULT_CALIBRATION_FACTOR).await;
         }
         LoadCellCommand::GetCalibration => {
-            notify_calibration_factor(channel, load_cell.current_calibration_factor()).await;
-
-            let (calibration_points, calibration_point_count) = critical_section::with(|cs| {
-                let state = DEVICE_STATE.borrow_ref(cs);
-                (state.calibration_points, state.calibration_point_count)
-            });
+            let (calibration_factor, calibration_points, calibration_point_count) =
+                critical_section::with(|cs| {
+                    let state = DEVICE_STATE.borrow_ref(cs);
+                    (
+                        state.settings.calibration_factor,
+                        state.calibration_points,
+                        state.calibration_point_count,
+                    )
+                });
+            notify_calibration_factor(channel, calibration_factor).await;
 
             notify_calibration_points(channel, &calibration_points[..calibration_point_count])
                 .await;
@@ -1185,7 +1264,7 @@ async fn gatt_events_task<P: PacketPool>(
                     let state = DEVICE_STATE.borrow_ref(cs);
                     (
                         state.measurement_status == MeasurementTaskStatus::Enabled,
-                        state.sample_rate,
+                        state.settings.sample_rate,
                     )
                 });
                 if measuring
