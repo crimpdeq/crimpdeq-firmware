@@ -581,6 +581,10 @@ impl<'d> Ads1220<'d> {
 
     /// Apply a best-fit factor to raw-code/weight calibration points. The raw codes are averages
     /// of ADC codes and the weights were validated when received, so every point is finite.
+    ///
+    /// Measurements are tared with no load, so the applied line passes through the no-load
+    /// reading. To match, the fit passes through the average of the zero-weight points, or through
+    /// the mean point, the least-squares estimate of that reading, when there is none.
     pub fn apply_multi_point_calibration(&mut self, calibration_points: &[(f32, f32)]) -> bool {
         if calibration_points.len() < 2 {
             error!("Calibration requires at least two points");
@@ -594,21 +598,19 @@ impl<'d> Ads1220<'d> {
                 .iter()
                 .map(|(raw_value, weight)| (f64::from(*raw_value), f64::from(*weight) * 1000.0))
         };
-        let count = calibration_points.len() as f64;
+        let (anchor_raw, anchor_weight) =
+            match mean_point(points().filter(|&(_, weight)| weight == 0.0)) {
+                Some(zero_point) => zero_point,
+                None => mean_point(points()).expect("checked that there are at least two points"),
+            };
 
-        // Least-squares slope around the mean, so no single point anchors the fit.
-        let (sum_raw, sum_weight) = points()
-            .fold((0.0, 0.0), |(sum_raw, sum_weight), (raw, weight)| {
-                (sum_raw + raw, sum_weight + weight)
-            });
-        let mean_raw = sum_raw / count;
-        let mean_weight = sum_weight / count;
+        // Least-squares slope of a line through the anchor.
         let (sum_delta_raw_weight, sum_delta_raw_sq) = points().fold(
             (0.0, 0.0),
             |(sum_delta_raw_weight, sum_delta_raw_sq), (raw, weight)| {
-                let delta_raw = raw - mean_raw;
+                let delta_raw = raw - anchor_raw;
                 (
-                    sum_delta_raw_weight + delta_raw * (weight - mean_weight),
+                    sum_delta_raw_weight + delta_raw * (weight - anchor_weight),
                     sum_delta_raw_sq + delta_raw * delta_raw,
                 )
             },
@@ -634,4 +636,15 @@ impl<'d> Ads1220<'d> {
             }
         }
     }
+}
+
+/// Average of (raw code, weight) points, or `None` without points.
+fn mean_point(points: impl Iterator<Item = (f64, f64)>) -> Option<(f64, f64)> {
+    let (count, sum_raw, sum_weight) = points.fold(
+        (0usize, 0.0, 0.0),
+        |(count, sum_raw, sum_weight), (raw, weight)| {
+            (count + 1, sum_raw + raw, sum_weight + weight)
+        },
+    );
+    (count > 0).then(|| (sum_raw / count as f64, sum_weight / count as f64))
 }
