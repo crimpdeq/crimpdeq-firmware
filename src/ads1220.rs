@@ -65,7 +65,7 @@ const TARING_TIME: Duration = Duration::from_millis(200);
 const CALIBRATION_TIME: Duration = Duration::from_millis(1250);
 /// Calibration points are averaged at a low rate, which has less noise per conversion.
 const CALIBRATION_SAMPLE_RATE: SampleRate = SampleRate::Sps90;
-const DEFAULT_CALIBRATION_FACTOR: f32 = 0.08;
+const DEFAULT_CALIBRATION_FACTOR: f32 = 0.109;
 
 /// Location and validation constants of one stored setting.
 struct StorageRecord {
