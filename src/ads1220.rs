@@ -350,9 +350,16 @@ impl<'d> Ads1220<'d> {
     }
 }
 
-/// Check whether a calibration factor can safely be used.
+/// How many times above or below DEFAULT_CALIBRATION_FACTOR a factor can be before it is rejected
+/// as implausible for the hardware, such as a fit of points whose load did not change.
+const CALIBRATION_FACTOR_TOLERANCE: f32 = 10.0;
+
+/// Check whether a calibration factor is plausible for the hardware. Either sign is accepted, so a
+/// load cell wired in reverse can still be calibrated.
 pub fn is_valid_calibration_factor(factor: f32) -> bool {
-    factor.is_finite() && factor != 0.0
+    (DEFAULT_CALIBRATION_FACTOR / CALIBRATION_FACTOR_TOLERANCE
+        ..=DEFAULT_CALIBRATION_FACTOR * CALIBRATION_FACTOR_TOLERANCE)
+        .contains(&factor.abs())
 }
 
 /// Returns the best-fit factor for raw-code/weight calibration points, or `None` when the points
