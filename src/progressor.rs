@@ -62,6 +62,34 @@ pub const fn measurement_batch_size_for_att_mtu(att_mtu: u16) -> usize {
 
 /// Number of bytes in the device ID
 const DEVICE_ID_SIZE: usize = 6;
+/// Progressor ID from the `DEVICE_ID` build variable, 12 hex digits with the most significant
+/// byte first. A malformed ID fails the build.
+const DEVICE_ID: [u8; DEVICE_ID_SIZE] = parse_device_id(env!("DEVICE_ID"));
+
+const fn parse_device_id(id: &str) -> [u8; DEVICE_ID_SIZE] {
+    let digits = id.as_bytes();
+    assert!(
+        digits.len() == 2 * DEVICE_ID_SIZE,
+        "DEVICE_ID must be 12 hex digits"
+    );
+    let mut bytes = [0; DEVICE_ID_SIZE];
+    let mut i = 0;
+    while i < DEVICE_ID_SIZE {
+        bytes[i] = (hex_digit(digits[2 * i]) << 4) | hex_digit(digits[2 * i + 1]);
+        i += 1;
+    }
+    bytes
+}
+
+const fn hex_digit(digit: u8) -> u8 {
+    match digit {
+        b'0'..=b'9' => digit - b'0',
+        b'a'..=b'f' => digit - b'a' + 10,
+        b'A'..=b'F' => digit - b'A' + 10,
+        _ => panic!("DEVICE_ID must be 12 hex digits"),
+    }
+}
+
 /// Maximum number of calibration points to store
 pub const MAX_CALIBRATION_POINTS: usize = 20;
 
@@ -433,9 +461,15 @@ pub enum ControlOpCode {
 }
 
 impl ControlOpCode {
-    /// Returns whether this command should reset the idle timer.
+    /// Returns whether this command should reset the idle timer. Status polls do not, so an open
+    /// client still lets the device sleep.
     pub fn counts_as_activity(self) -> bool {
-        !matches!(self, ControlOpCode::SampleBattery)
+        !matches!(
+            self,
+            ControlOpCode::SampleBattery
+                | ControlOpCode::GetBatteryStatus
+                | ControlOpCode::GetSampleRate
+        )
     }
 
     /// Process the control operation.
@@ -461,24 +495,7 @@ impl ControlOpCode {
                 Some(DataPoint::from(response))
             }
             ControlOpCode::GetProgressorId => {
-                /// Number of hex characters needed per byte (2 hex chars = 1 byte)
-                const HEX_CHARS_PER_BYTE: usize = 2;
-                /// Hex radix for parsing hex strings
-                const HEX_RADIX: u32 = 16;
-
-                let device_id = env!("DEVICE_ID");
-                let mut bytes = [0u8; DEVICE_ID_SIZE];
-                for (i, byte) in bytes.iter_mut().enumerate() {
-                    let char_pos = i * HEX_CHARS_PER_BYTE;
-                    let next_char_pos = char_pos + HEX_CHARS_PER_BYTE;
-                    if next_char_pos <= device_id.len()
-                        && let Ok(parsed_byte) =
-                            u8::from_str_radix(&device_id[char_pos..next_char_pos], HEX_RADIX)
-                    {
-                        *byte = parsed_byte;
-                    }
-                }
-                let response = ResponseCode::ProgressorId(bytes);
+                let response = ResponseCode::ProgressorId(DEVICE_ID);
                 info!("ProgressorId: {:?}", response);
                 Some(DataPoint::from(response))
             }
