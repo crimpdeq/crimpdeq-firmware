@@ -5,16 +5,14 @@
 //! connected, so the ADC also signals data ready on DOUT/DRDY, which the
 //! driver watches while chip select is low (datasheet section 8.5.6).
 
-use defmt::{Format, debug, error, info, warn};
+use defmt::{Format, debug, error, info};
 use embassy_time::{Duration, Instant, Timer, with_timeout};
 use embedded_hal_async::spi::SpiBus;
-use esp_bootloader_esp_idf::partitions::{PARTITION_TABLE_MAX_LEN, read_partition_table};
 use esp_hal::{
     Async,
     gpio::{Input, Output},
     spi::master::Spi,
 };
-use esp_storage::FlashStorage;
 
 const COMMAND_POWERDOWN: u8 = 0x02;
 const COMMAND_RESET: u8 = 0x06;
@@ -44,42 +42,11 @@ const START_DELAY_CLOCKS: u32 = 210;
 /// Extra wait for a conversion beyond its nominal conversion time.
 const DATA_READY_TIMEOUT_MARGIN: Duration = Duration::from_millis(8);
 
-/// Label of the data partition that stores the calibration and the sample rate.
-const CALIBRATION_PARTITION_LABEL: &str = "calib";
-/// Size of a stored setting: magic, version, value and checksum, as little-endian u32 words.
-const STORAGE_RECORD_SIZE: usize = 16;
-/// The calibration record stays at the partition start, where earlier firmware stored it.
-const CALIBRATION_RECORD: StorageRecord = StorageRecord {
-    offset: 0,
-    magic: 0x4344_5146,
-    // Version 2 invalidates calibration factors saved for the old HX711 front end.
-    version: 2,
-};
-const SAMPLE_RATE_RECORD: StorageRecord = StorageRecord {
-    offset: STORAGE_RECORD_SIZE as u32,
-    magic: 0x4344_5352,
-    version: 1,
-};
-const STORAGE_SIZE: usize = 2 * STORAGE_RECORD_SIZE;
 const TARING_TIME: Duration = Duration::from_millis(200);
 const CALIBRATION_TIME: Duration = Duration::from_millis(1250);
 /// Calibration points are averaged at a low rate, which has less noise per conversion.
 const CALIBRATION_SAMPLE_RATE: SampleRate = SampleRate::Sps90;
-const DEFAULT_CALIBRATION_FACTOR: f32 = 0.109;
-
-/// Location and validation constants of one stored setting.
-struct StorageRecord {
-    /// Offset within the storage partition.
-    offset: u32,
-    magic: u32,
-    version: u32,
-}
-
-impl StorageRecord {
-    fn checksum(&self, value: u32) -> u32 {
-        self.magic ^ self.version ^ value ^ 0xA5A5_5A5A
-    }
-}
+pub const DEFAULT_CALIBRATION_FACTOR: f32 = 0.109;
 
 /// Normal-mode data rates (datasheet table 8-12). The discriminant is the DR[2:0] value.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Format)]
@@ -165,10 +132,6 @@ fn clocks_to_duration(clocks: u32) -> Duration {
 /// Errors produced by the ADS1220 load-cell driver.
 #[derive(Format)]
 pub enum Ads1220Error {
-    /// Flash storage access failed.
-    FlashError,
-    /// A calibration value is absent or invalid.
-    InvalidCalibration,
     /// SPI communication failed.
     Spi,
     /// No conversion became ready on DOUT/DRDY.
@@ -186,9 +149,7 @@ pub struct Ads1220<'d> {
     chip_select: Output<'d>,
     /// DOUT/DRDY, which is also the SPI MISO input.
     data_ready: Input<'d>,
-    flash: FlashStorage<'d>,
     tare_value: i32,
-    calibration_factor: f32,
     first_conversion_at: Instant,
     powered_down: bool,
     sample_rate: SampleRate,
@@ -196,37 +157,26 @@ pub struct Ads1220<'d> {
 
 impl<'d> Ads1220<'d> {
     /// Create a driver. Call [`Self::initialize`] before taking measurements.
-    pub fn new(
-        spi: Spi<'d, Async>,
-        mut chip_select: Output<'d>,
-        data_ready: Input<'d>,
-        flash: FlashStorage<'d>,
-    ) -> Self {
+    pub fn new(spi: Spi<'d, Async>, mut chip_select: Output<'d>, data_ready: Input<'d>) -> Self {
         chip_select.set_high();
 
-        let mut ads1220 = Self {
+        Self {
             spi,
             chip_select,
             data_ready,
-            flash,
             tare_value: 0,
-            calibration_factor: 0.0,
             first_conversion_at: Instant::now(),
             powered_down: false,
             sample_rate: SampleRate::DEFAULT,
-        };
-
-        ads1220.calibration_factor = ads1220.stored_calibration_factor();
-        ads1220.sample_rate = ads1220.stored_sample_rate();
-        ads1220
+        }
     }
 
     /// Reset and configure the ADC for the revision-3 ratiometric load cell.
-    pub async fn initialize(&mut self) -> Result<(), Ads1220Error> {
+    pub async fn initialize(&mut self, sample_rate: SampleRate) -> Result<(), Ads1220Error> {
         self.send_command(COMMAND_RESET).await?;
         Timer::after(RESET_DELAY).await;
 
-        self.configure(self.sample_rate).await?;
+        self.configure(sample_rate).await?;
         self.start_conversions().await?;
         info!("ADS1220 initialized at {} SPS", self.sample_rate.sps());
         Ok(())
@@ -237,45 +187,14 @@ impl<'d> Ads1220<'d> {
         self.sample_rate
     }
 
-    /// Persist the data rate, so it also applies after a reboot, then switch to it. The rate in use
-    /// only changes once both steps succeed, so the caller retries until it does.
+    /// Change the data rate. Restarts conversions unless the ADC is powered down, which keeps the
+    /// registers until the next START/SYNC.
     pub async fn set_sample_rate(&mut self, sample_rate: SampleRate) -> Result<(), Ads1220Error> {
-        let sps = u32::from(sample_rate.sps());
-        // Skip the write when an earlier attempt stored the rate, to spare the flash while the ADC
-        // keeps failing.
-        if self.read_record(&SAMPLE_RATE_RECORD)? != Some(sps) {
-            self.write_record(&SAMPLE_RATE_RECORD, sps)?;
-        }
-        self.switch_sample_rate(sample_rate).await?;
-        info!("ADS1220 sample rate set to {} SPS", sample_rate.sps());
-        Ok(())
-    }
-
-    /// Change the data rate without persisting it. Restarts conversions unless the ADC is powered
-    /// down, which keeps the registers until the next START/SYNC.
-    async fn switch_sample_rate(&mut self, sample_rate: SampleRate) -> Result<(), Ads1220Error> {
         self.configure(sample_rate).await?;
         if !self.powered_down {
             self.start_conversions().await?;
         }
         Ok(())
-    }
-
-    fn stored_sample_rate(&mut self) -> SampleRate {
-        let stored = match self.read_record(&SAMPLE_RATE_RECORD) {
-            Ok(stored) => stored,
-            Err(error) => {
-                error!("Failed to read the stored sample rate: {:?}", error);
-                None
-            }
-        };
-        match stored.and_then(|sps| SampleRate::from_sps(u16::try_from(sps).ok()?)) {
-            Some(sample_rate) => sample_rate,
-            None => {
-                info!("Using default sample rate");
-                SampleRate::DEFAULT
-            }
-        }
     }
 
     async fn configure(&mut self, sample_rate: SampleRate) -> Result<(), Ads1220Error> {
@@ -412,230 +331,79 @@ impl<'d> Ads1220<'d> {
     }
 
     /// Read a calibrated load-cell value in kilograms.
-    pub async fn read_calibrated(&mut self) -> Result<f32, Ads1220Error> {
+    pub async fn read_calibrated(&mut self, calibration_factor: f32) -> Result<f32, Ads1220Error> {
         let raw_tared = self.read_tared().await?;
-        Ok((raw_tared as f32) * self.calibration_factor / 1000.0)
+        Ok((raw_tared as f32) * calibration_factor / 1000.0)
     }
 
     /// Collect an averaged raw calibration point at the calibration sample rate.
     pub async fn perform_calibration(&mut self) -> Result<f32, Ads1220Error> {
         let sample_rate = self.sample_rate;
-        self.switch_sample_rate(CALIBRATION_SAMPLE_RATE).await?;
+        self.set_sample_rate(CALIBRATION_SAMPLE_RATE).await?;
         let average = self
             .take_samples(CALIBRATION_SAMPLE_RATE.samples_in(CALIBRATION_TIME))
             .await;
-        self.switch_sample_rate(sample_rate).await?;
+        self.set_sample_rate(sample_rate).await?;
         let average = average?;
         debug!("Calibration point collected: {}", average);
         Ok(average)
     }
+}
 
-    fn storage_offset(&mut self) -> Result<u32, Ads1220Error> {
-        let mut table_buffer = [0u8; PARTITION_TABLE_MAX_LEN];
-        match read_partition_table(&mut self.flash, &mut table_buffer) {
-            Ok(table) => {
-                if let Some(partition) = table
-                    .iter()
-                    .find(|partition| partition.label_as_str() == CALIBRATION_PARTITION_LABEL)
-                {
-                    if (partition.len() as usize) < STORAGE_SIZE {
-                        error!("Calibration partition too small");
-                        return Err(Ads1220Error::FlashError);
-                    }
-                    return Ok(partition.offset());
-                }
-            }
-            Err(e) => warn!("Failed to read partition table: {:?}", e),
-        }
+/// Check whether a calibration factor can safely be used.
+pub fn is_valid_calibration_factor(factor: f32) -> bool {
+    factor.is_finite() && factor != 0.0
+}
 
-        // Updates that only flash the app keep the previous partition table, which has no
-        // calibration partition. Fall back to the last flash sector: the calibration was stored
-        // there before the partition existed, and the partition starts at the same offset.
-        warn!("Calibration partition not found, using the last flash sector");
-        let capacity = self.flash.capacity();
-        let sector_size = FlashStorage::SECTOR_SIZE as usize;
-
-        if capacity < sector_size {
-            error!("Flash capacity too small for calibration storage");
-            return Err(Ads1220Error::FlashError);
-        }
-
-        Ok((capacity - sector_size) as u32)
+/// Returns the best-fit factor for raw-code/weight calibration points, or `None` when the points
+/// do not define one. The raw codes are averages of ADC codes and the weights were validated when
+/// received, so every point is finite.
+///
+/// Measurements are tared with no load, so the applied line passes through the no-load
+/// reading. To match, the fit passes through the average of the zero-weight points, or through
+/// the mean point, the least-squares estimate of that reading, when there is none.
+pub fn fit_calibration_factor(calibration_points: &[(f32, f32)]) -> Option<f32> {
+    if calibration_points.len() < 2 {
+        error!("Calibration requires at least two points");
+        return None;
     }
 
-    fn read_from_flash(&mut self) -> Result<f32, Ads1220Error> {
-        let Some(factor_bits) = self.read_record(&CALIBRATION_RECORD)? else {
-            return Err(Ads1220Error::InvalidCalibration);
+    // Incoming calibration weights are expressed in kg, while calibration_factor operates on
+    // grams before read_calibrated() converts back to kg.
+    let points = || {
+        calibration_points
+            .iter()
+            .map(|(raw_value, weight)| (f64::from(*raw_value), f64::from(*weight) * 1000.0))
+    };
+    let (anchor_raw, anchor_weight) =
+        match mean_point(points().filter(|&(_, weight)| weight == 0.0)) {
+            Some(zero_point) => zero_point,
+            None => mean_point(points()).expect("checked that there are at least two points"),
         };
 
-        let factor = f32::from_bits(factor_bits);
-        if !Self::is_valid_calibration_factor(factor) {
-            info!("Invalid calibration factor read from flash");
-            return Err(Ads1220Error::InvalidCalibration);
-        }
-        Ok(factor)
+    // Least-squares slope of a line through the anchor.
+    let (sum_delta_raw_weight, sum_delta_raw_sq) = points().fold(
+        (0.0, 0.0),
+        |(sum_delta_raw_weight, sum_delta_raw_sq), (raw, weight)| {
+            let delta_raw = raw - anchor_raw;
+            (
+                sum_delta_raw_weight + delta_raw * (weight - anchor_weight),
+                sum_delta_raw_sq + delta_raw * delta_raw,
+            )
+        },
+    );
+
+    if sum_delta_raw_sq < f64::EPSILON {
+        error!("Invalid calibration - points are too close together");
+        return None;
     }
 
-    /// Check whether a calibration factor can safely be used.
-    pub fn is_valid_calibration_factor(factor: f32) -> bool {
-        factor.is_finite() && factor != 0.0
+    let factor = (sum_delta_raw_weight / sum_delta_raw_sq) as f32;
+    if !is_valid_calibration_factor(factor) {
+        error!("Invalid calibration factor: {}", factor);
+        return None;
     }
-
-    fn write_to_flash(&mut self, calibration_factor: f32) -> Result<(), Ads1220Error> {
-        if !Self::is_valid_calibration_factor(calibration_factor) {
-            return Err(Ads1220Error::InvalidCalibration);
-        }
-        self.write_record(&CALIBRATION_RECORD, calibration_factor.to_bits())
-    }
-
-    /// Read a stored value, or `None` when the record is missing or corrupt.
-    fn read_record(&mut self, record: &StorageRecord) -> Result<Option<u32>, Ads1220Error> {
-        let mut bytes = [0; STORAGE_RECORD_SIZE];
-        let offset = self.storage_offset()? + record.offset;
-        self.flash.read(offset, &mut bytes).map_err(|_| {
-            error!(
-                "Failed to read storage record {:#x} from flash",
-                record.magic
-            );
-            Ads1220Error::FlashError
-        })?;
-
-        let words = bytes.as_chunks::<4>().0;
-        let [magic, version, value, checksum] =
-            core::array::from_fn(|i| u32::from_le_bytes(words[i]));
-        if magic != record.magic || version != record.version {
-            info!(
-                "Storage record {:#x} missing or version mismatch",
-                record.magic
-            );
-            return Ok(None);
-        }
-        if checksum != record.checksum(value) {
-            error!("Storage record {:#x} checksum mismatch", record.magic);
-            return Ok(None);
-        }
-        Ok(Some(value))
-    }
-
-    fn write_record(&mut self, record: &StorageRecord, value: u32) -> Result<(), Ads1220Error> {
-        let words = [record.magic, record.version, value, record.checksum(value)];
-        let mut bytes = [0; STORAGE_RECORD_SIZE];
-        for (chunk, word) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(words) {
-            *chunk = word.to_le_bytes();
-        }
-
-        // FlashStorage::write preserves the rest of the sector, including the other records.
-        let offset = self.storage_offset()? + record.offset;
-        self.flash.write(offset, &bytes).map_err(|_| {
-            error!(
-                "Failed to write storage record {:#x} to flash",
-                record.magic
-            );
-            Ads1220Error::FlashError
-        })
-    }
-
-    /// Update the calibration factor in memory and flash.
-    pub fn update_calibration_factor(&mut self, factor: f32) -> Result<(), Ads1220Error> {
-        if !Self::is_valid_calibration_factor(factor) {
-            error!("Invalid calibration factor: {}", factor);
-            return Err(Ads1220Error::InvalidCalibration);
-        }
-
-        info!("Updating calibration factor: {}", factor);
-        self.write_to_flash(factor)?;
-        self.calibration_factor = factor;
-        Ok(())
-    }
-
-    /// Load the persisted calibration factor, or the default if none is valid.
-    fn stored_calibration_factor(&mut self) -> f32 {
-        match self.read_from_flash() {
-            Ok(factor) => {
-                info!("Calibration factor read from flash: {:?}", factor);
-                factor
-            }
-            Err(Ads1220Error::InvalidCalibration) => {
-                info!("Using default calibration factor");
-                DEFAULT_CALIBRATION_FACTOR
-            }
-            Err(error) => {
-                error!("Failed to read the stored calibration factor: {:?}", error);
-                DEFAULT_CALIBRATION_FACTOR
-            }
-        }
-    }
-
-    /// Return the active calibration factor.
-    pub fn current_calibration_factor(&self) -> f32 {
-        self.calibration_factor
-    }
-
-    /// Restore and persist the default calibration factor.
-    pub fn default_calibration_factor(&mut self) -> Result<(), Ads1220Error> {
-        debug!("Restoring default calibration factor");
-        self.write_to_flash(DEFAULT_CALIBRATION_FACTOR)?;
-        self.calibration_factor = DEFAULT_CALIBRATION_FACTOR;
-        Ok(())
-    }
-
-    /// Apply a best-fit factor to raw-code/weight calibration points. The raw codes are averages
-    /// of ADC codes and the weights were validated when received, so every point is finite.
-    ///
-    /// Measurements are tared with no load, so the applied line passes through the no-load
-    /// reading. To match, the fit passes through the average of the zero-weight points, or through
-    /// the mean point, the least-squares estimate of that reading, when there is none.
-    pub fn apply_multi_point_calibration(&mut self, calibration_points: &[(f32, f32)]) -> bool {
-        if calibration_points.len() < 2 {
-            error!("Calibration requires at least two points");
-            return false;
-        }
-
-        // Incoming calibration weights are expressed in kg, while calibration_factor operates on
-        // grams before read_calibrated() converts back to kg.
-        let points = || {
-            calibration_points
-                .iter()
-                .map(|(raw_value, weight)| (f64::from(*raw_value), f64::from(*weight) * 1000.0))
-        };
-        let (anchor_raw, anchor_weight) =
-            match mean_point(points().filter(|&(_, weight)| weight == 0.0)) {
-                Some(zero_point) => zero_point,
-                None => mean_point(points()).expect("checked that there are at least two points"),
-            };
-
-        // Least-squares slope of a line through the anchor.
-        let (sum_delta_raw_weight, sum_delta_raw_sq) = points().fold(
-            (0.0, 0.0),
-            |(sum_delta_raw_weight, sum_delta_raw_sq), (raw, weight)| {
-                let delta_raw = raw - anchor_raw;
-                (
-                    sum_delta_raw_weight + delta_raw * (weight - anchor_weight),
-                    sum_delta_raw_sq + delta_raw * delta_raw,
-                )
-            },
-        );
-
-        if sum_delta_raw_sq < f64::EPSILON {
-            error!("Invalid calibration - points are too close together");
-            return false;
-        }
-
-        let scale_factor = (sum_delta_raw_weight / sum_delta_raw_sq) as f32;
-        match self.update_calibration_factor(scale_factor) {
-            Ok(()) => {
-                info!(
-                    "Calibration factor successfully applied: {:?}",
-                    scale_factor
-                );
-                true
-            }
-            Err(error) => {
-                error!("Failed to apply calibration factor: {:?}", error);
-                false
-            }
-        }
-    }
+    Some(factor)
 }
 
 /// Average of (raw code, weight) points, or `None` without points.
