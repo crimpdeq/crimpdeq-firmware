@@ -3,6 +3,7 @@
 
 use core::cell::RefCell;
 
+use arrayvec::ArrayVec;
 use bt_hci::{
     cmd::le::{LeConnUpdate, LeReadLocalSupportedFeatures},
     controller::{ControllerCmdAsync, ControllerCmdSync, ExternalController},
@@ -48,6 +49,7 @@ use crate::{
     ble::{CONNECTIONS_MAX, DEVICE_NAME, L2CAP_CHANNELS_MAX, L2CAP_MTU, Server, advertise},
     progressor::{
         BatteryStatus,
+        CONTROL_POINT_MAX_PAYLOAD_SIZE,
         CalibrationPoint,
         ControlOpCode,
         ControlResponseChannel,
@@ -1294,48 +1296,74 @@ async fn gatt_events_task<P: PacketPool>(
                 }
             }
             GattConnectionEvent::Gatt { event } => {
-                let mut disconnect_after_response = false;
-                let immediate_response = if let GattEvent::Write(write_event) = &event
-                    && write_event.handle() == control_point.handle
-                {
-                    write_event.with_data(|_, cmd_data| match cmd_data.first().copied() {
-                        Some(op_code_byte) => match ControlOpCode::try_from(op_code_byte) {
-                            Ok(op_code) => {
-                                info!("Control Point Received: {:?}", op_code);
-                                disconnect_after_response =
-                                    matches!(op_code, ControlOpCode::Shutdown);
-                                update_device_state(|device_state| {
-                                    if op_code.counts_as_activity() {
-                                        device_state.record_activity();
-                                    }
-                                    op_code.process(cmd_data, device_state)
-                                })
+                // Copy the command so it runs only once the write is accepted. Accepting a write
+                // that does not fit the characteristic still succeeds, as the error goes in the
+                // reply, so such writes are not commands.
+                let command = match &event {
+                    GattEvent::Write(write_event)
+                        if write_event.handle() == control_point.handle =>
+                    {
+                        write_event.with_data(|offset, data| {
+                            let command =
+                                ArrayVec::<u8, CONTROL_POINT_MAX_PAYLOAD_SIZE>::try_from(data)
+                                    .ok()
+                                    .filter(|_| offset == 0);
+                            if command.is_none() {
+                                warn!(
+                                    "Ignoring Control Point write of {} bytes at offset {}",
+                                    data.len(),
+                                    offset
+                                );
                             }
-                            Err(()) => {
-                                update_device_state(|state| state.record_activity());
-                                warn!("Ignoring unsupported OpCode: {:#x}", op_code_byte);
-                                None
-                            }
-                        },
-                        None => {
-                            update_device_state(|state| state.record_activity());
-                            warn!("Control Point write with empty payload");
-                            None
-                        }
-                    })
-                } else {
-                    None
+                            command
+                        })
+                    }
+                    _ => None,
                 };
 
-                // Ensure reply is sent
-                if let Ok(reply) = event.accept() {
-                    reply.send().await;
-                } else {
-                    warn!("Error sending response");
+                match event.accept() {
+                    Ok(reply) => reply.send().await,
+                    Err(e) => {
+                        warn!("Failed to accept GATT event: {:?}", defmt::Debug2Format(&e));
+                        continue;
+                    }
                 }
 
-                if let Some(response) = immediate_response {
-                    control_channel.send(response).await;
+                let Some(command) = command else {
+                    continue;
+                };
+                let mut disconnect_after_response = false;
+                let immediate_response = match command.first().copied() {
+                    Some(op_code_byte) => match ControlOpCode::try_from(op_code_byte) {
+                        Ok(op_code) => {
+                            info!("Control Point Received: {:?}", op_code);
+                            disconnect_after_response = matches!(op_code, ControlOpCode::Shutdown);
+                            update_device_state(|device_state| {
+                                if op_code.counts_as_activity() {
+                                    device_state.record_activity();
+                                }
+                                op_code.process(&command, device_state)
+                            })
+                        }
+                        Err(()) => {
+                            update_device_state(|state| state.record_activity());
+                            warn!("Ignoring unsupported OpCode: {:#x}", op_code_byte);
+                            None
+                        }
+                    },
+                    None => {
+                        update_device_state(|state| state.record_activity());
+                        warn!("Control Point write with empty payload");
+                        None
+                    }
+                };
+
+                // Waiting for queue space would stall this loop and leave incoming packets
+                // holding the shared packet pool.
+                if let Some(response) = immediate_response
+                    && control_channel.try_send(response).is_err()
+                {
+                    warn!("Control response queue full, dropping reply");
                 }
 
                 if disconnect_after_response {
@@ -1359,26 +1387,36 @@ async fn data_processing_task<P: PacketPool>(
     measurement_channel: &'static MeasurementDataChannel,
 ) {
     let data_point_handle = &server.progressor.data_point;
+    let mut control_first = true;
 
     loop {
         // The peer may negotiate a larger MTU after the connection starts.
         update_measurement_batch_size(conn.raw().att_mtu());
 
-        // Always drain an already-queued control response before measurements.
-        let data_point = if let Ok(control_response) = control_channel.try_receive() {
-            control_response
-        } else {
+        // Alternate priority when both queues have packets, so neither starves the other.
+        let (data_point, is_control_response) = if control_first {
             match select(control_channel.receive(), measurement_channel.receive()).await {
-                Either::First(control_response) => control_response,
-                Either::Second(measurement) => measurement,
+                Either::First(control_response) => (control_response, true),
+                Either::Second(measurement) => (measurement, false),
+            }
+        } else {
+            match select(measurement_channel.receive(), control_channel.receive()).await {
+                Either::First(measurement) => (measurement, false),
+                Either::Second(control_response) => (control_response, true),
             }
         };
+        control_first = !is_control_response;
         debug!("Sending Data Point: {:?}", data_point);
 
-        // Send notification with the data packet
-        if let Err(e) = data_point_handle.notify(conn, &data_point, false).await {
-            info!("Error sending Data Point: {:?}", defmt::Debug2Format(&e));
-            break;
+        // Send notification with the data packet. An exhausted packet pool drops this packet
+        // instead of the connection.
+        match data_point_handle.notify(conn, &data_point, false).await {
+            Ok(()) => {}
+            Err(Error::OutOfMemory) => warn!("No packet buffer, dropping Data Point"),
+            Err(e) => {
+                info!("Error sending Data Point: {:?}", defmt::Debug2Format(&e));
+                break;
+            }
         }
     }
 }
