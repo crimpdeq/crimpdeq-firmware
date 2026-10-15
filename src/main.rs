@@ -1089,9 +1089,14 @@ async fn run_load_cell_command(
             }
 
             // A point is stored only with an accepted fit, so a rejected one does not skew later
-            // fits.
+            // fits. A stored first point was never validated and may be the wrong one, so it is
+            // dropped too, letting the calibration restart instead of rejecting every new point.
             let Some(factor) = fit_calibration_factor(points) else {
                 error!("Rejected calibration point {:?}", (raw_value, weight));
+                if stored_points == 1 {
+                    warn!("Dropping the unvalidated first calibration point");
+                    update_device_state(|state| state.calibration_point_count = 0);
+                }
                 return;
             };
             info!("Calibration factor applied: {}", factor);
