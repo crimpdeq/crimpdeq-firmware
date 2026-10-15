@@ -115,6 +115,11 @@ const STATUS_LED_CONNECTED: RGB8 = RGB8 { r: 0, g: 255, b: 0 };
 const STATUS_LED_LOW_BATTERY: RGB8 = RGB8 { r: 255, g: 0, b: 0 };
 /// Delay before retrying failed BLE advertising.
 const BLE_RETRY_DELAY: Duration = Duration::from_secs(1);
+/// Attempts to store a settings change before giving up, so a flash that keeps failing cannot
+/// hold off deep sleep.
+const SETTINGS_WRITE_ATTEMPTS: u32 = 3;
+/// Delay before retrying a failed settings write.
+const SETTINGS_WRITE_RETRY_DELAY: Duration = Duration::from_secs(1);
 type StatusLed = RmtSmartLeds<'static, STATUS_LED_RMT_BUFFER_SIZE, Async, RGB8, color_order::Grb>;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -637,6 +642,7 @@ async fn storage_task(mut storage: Storage, mut stored: Settings) {
     let mut state_changes = STATE_CHANGED
         .receiver()
         .expect("Missing state change receiver for the storage task");
+    let mut failed_attempts = 0;
 
     loop {
         let (write_pending, measuring, settings) = critical_section::with(|cs| {
@@ -649,7 +655,7 @@ async fn storage_task(mut storage: Storage, mut stored: Settings) {
         });
 
         if write_pending && !measuring {
-            // A failed write keeps `stored`, so the next change retries it.
+            // A failed write keeps `stored`, so the next attempt retries it.
             if settings.sample_rate != stored.sample_rate {
                 match storage.write_sample_rate(settings.sample_rate) {
                     Ok(()) => {
@@ -668,6 +674,19 @@ async fn storage_task(mut storage: Storage, mut stored: Settings) {
                     Err(e) => error!("Failed to store the calibration factor: {:?}", e),
                 }
             }
+            if settings != stored {
+                failed_attempts += 1;
+                if failed_attempts < SETTINGS_WRITE_ATTEMPTS {
+                    select(
+                        Timer::after(SETTINGS_WRITE_RETRY_DELAY),
+                        state_changes.changed(),
+                    )
+                    .await;
+                    continue;
+                }
+                error!("Settings not stored after {} attempts", failed_attempts);
+            }
+            failed_attempts = 0;
             update_device_state(|state| state.end_settings_write(settings));
         }
 
