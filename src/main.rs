@@ -876,8 +876,9 @@ async fn measurement_task(
     let mut initialized = false;
     let mut measurement_buffer = WeightMeasurementBatch::new();
     let mut dropped_measurement_batches = 0u32;
-    // Whether the current measurement has started sampling.
-    let mut streaming = false;
+    // Start time of the measurement being sampled. A Start updates the state's start time, so a
+    // mismatch is a new measurement, also when Stop and Start both arrive before this task runs.
+    let mut streaming_start_time = None;
     let mut state_changes = STATE_CHANGED
         .receiver()
         .expect("Missing state change receiver for the measurement task");
@@ -906,7 +907,7 @@ async fn measurement_task(
                 }
                 measurement_buffer.clear();
                 measurement_channel.clear();
-                streaming = false;
+                streaming_start_time = None;
                 LOAD_CELL_COMMANDS.clear();
                 update_device_state(|state| state.mark_sleep_ready(SleepReadySource::Measurement));
                 state_changes.changed().await;
@@ -973,7 +974,7 @@ async fn measurement_task(
 
         match status {
             MeasurementTaskStatus::Disabled => {
-                streaming = false;
+                streaming_start_time = None;
                 if !measurement_buffer.is_empty() {
                     enqueue_measurement_batch(
                         measurement_channel,
@@ -994,7 +995,11 @@ async fn measurement_task(
                 .await;
             }
             MeasurementTaskStatus::Enabled => {
-                if !streaming {
+                if streaming_start_time != Some(start_time) {
+                    // Samples of the previous measurement would join the new one with timestamps
+                    // from its timeline.
+                    measurement_buffer.clear();
+                    measurement_channel.clear();
                     if load_cell.is_powered_down() {
                         info!("Waking ADS1220");
                     }
@@ -1005,14 +1010,14 @@ async fn measurement_task(
                     }
                     // Start the timestamps once the ADS1220 converts, also when a queued tare or
                     // calibration woke it before the measurement started.
-                    update_device_state(|state| {
-                        if state.measurement_status == MeasurementTaskStatus::Enabled {
+                    streaming_start_time = update_device_state(|state| {
+                        (state.measurement_status == MeasurementTaskStatus::Enabled).then(|| {
                             state.start_time = (esp_hal::time::Instant::now()
                                 .duration_since_epoch())
                             .as_micros() as u32;
-                        }
+                            state.start_time
+                        })
                     });
-                    streaming = true;
                     // The state may have changed while the ADS1220 woke.
                     continue;
                 }
