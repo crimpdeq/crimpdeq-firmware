@@ -120,6 +120,8 @@ pub enum LoadCellCommand {
     Tare,
     /// Adds a calibration point with the known weight in kg
     Calibrate(f32),
+    /// Deletes the stored calibration point equal to this one
+    DeleteCalibrationPoint(CalibrationPoint),
     /// Restores default calibration values
     DefaultCalibration,
     /// Get the calibration values
@@ -277,6 +279,11 @@ impl DeviceState {
     /// Add a calibration point with the given weight
     pub fn calibrate(&mut self, weight: f32) {
         self.queue_load_cell_command(LoadCellCommand::Calibrate(weight));
+    }
+
+    /// Delete a stored calibration point
+    pub fn delete_calibration_point(&mut self, point: CalibrationPoint) {
+        self.queue_load_cell_command(LoadCellCommand::DeleteCalibrationPoint(point));
     }
 
     pub fn get_calibration(&mut self) {
@@ -458,6 +465,11 @@ pub enum ControlOpCode {
     /// Reply with the fuel gauge state of charge and whether the battery is charging
     // Custom command, no part of Tindeq API
     GetBatteryStatus = 0x77,
+    /// Delete the calibration point (f32 LE raw value, f32 LE weight) as GetCalibration reports
+    /// it, then refit the factor to the remaining points. A point that is not stored is ignored,
+    /// so repeating the command deletes nothing else
+    // Custom command, no part of Tindeq API
+    DeleteCalibrationPoint = 0x78,
 }
 
 impl ControlOpCode {
@@ -530,6 +542,19 @@ impl ControlOpCode {
                 );
                 None
             }
+            ControlOpCode::DeleteCalibrationPoint => {
+                let Some(&[raw_value, weight]) =
+                    data.get(1..9).map(|bytes| bytes.as_chunks::<4>().0)
+                else {
+                    error!("DeleteCalibrationPoint: Invalid data length");
+                    return None;
+                };
+                device_state.delete_calibration_point((
+                    f32::from_le_bytes(raw_value),
+                    f32::from_le_bytes(weight),
+                ));
+                None
+            }
             ControlOpCode::DefaultCalibration => {
                 device_state.reset_calibration();
                 None
@@ -597,6 +622,7 @@ impl TryFrom<u8> for ControlOpCode {
             0x75 => Ok(ControlOpCode::SetSampleRate),
             0x76 => Ok(ControlOpCode::GetSampleRate),
             0x77 => Ok(ControlOpCode::GetBatteryStatus),
+            0x78 => Ok(ControlOpCode::DeleteCalibrationPoint),
             0x6C => Ok(ControlOpCode::GetErrorInformation),
             0x6D => Ok(ControlOpCode::ClearErrorInformation),
             0x67 => Ok(ControlOpCode::StartPeakRFDMeasurement),

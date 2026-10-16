@@ -1096,8 +1096,8 @@ async fn run_load_cell_command(
             }
 
             // A point is stored only with an accepted fit, so a rejected one does not skew later
-            // fits. A stored first point was never validated and may be the wrong one, so it is
-            // dropped too, letting the calibration restart instead of rejecting every new point.
+            // fits. A lone stored point may be the wrong one, so it is dropped too, letting the
+            // calibration restart instead of rejecting every new point.
             let Some(factor) = fit_calibration_factor(points) else {
                 error!("Rejected calibration point {:?}", (raw_value, weight));
                 if stored_points == 1 {
@@ -1107,6 +1107,50 @@ async fn run_load_cell_command(
                 return;
             };
             info!("Calibration factor applied: {}", factor);
+            update_device_state(|state| {
+                state.calibration_points = calibration_points;
+                state.calibration_point_count = calibration_point_count;
+                state.set_calibration_factor(factor);
+            });
+            notify_calibration_factor(channel, factor).await;
+            notify_calibration_points(channel, points).await;
+        }
+        LoadCellCommand::DeleteCalibrationPoint(point) => {
+            // Like a rejected point, a rejected deletion sends no reply, as the points the client
+            // holds are unchanged.
+            let (mut calibration_points, stored_points, mut factor) =
+                critical_section::with(|cs| {
+                    let state = DEVICE_STATE.borrow_ref(cs);
+                    (
+                        state.calibration_points,
+                        state.calibration_point_count,
+                        state.settings.calibration_factor,
+                    )
+                });
+            let Some(index) = calibration_points[..stored_points]
+                .iter()
+                .position(|stored| *stored == point)
+            else {
+                warn!("Calibration point {:?} to delete is not stored", point);
+                return;
+            };
+
+            calibration_points.copy_within(index + 1..stored_points, index);
+            let calibration_point_count = stored_points - 1;
+            let points = &calibration_points[..calibration_point_count];
+            // Stored points keep matching the applied factor, so the remaining ones must define
+            // a calibration. Fewer than two keep the factor, as after the first point.
+            if calibration_point_count >= 2 {
+                let Some(fitted) = fit_calibration_factor(points) else {
+                    error!("Rejected deleting calibration point {:?}", point);
+                    return;
+                };
+                factor = fitted;
+            }
+            info!(
+                "Calibration point {:?} deleted, factor applied: {}",
+                point, factor
+            );
             update_device_state(|state| {
                 state.calibration_points = calibration_points;
                 state.calibration_point_count = calibration_point_count;
