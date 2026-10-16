@@ -1082,6 +1082,11 @@ async fn run_load_cell_command(
                 }
             };
 
+            // Unique points let a repeated deletion match no stored point.
+            if calibration_points[..stored_points].contains(&(raw_value, weight)) {
+                warn!("Calibration point {:?} already stored", (raw_value, weight));
+                return;
+            }
             calibration_points[stored_points] = (raw_value, weight);
             let calibration_point_count = stored_points + 1;
             let points = &calibration_points[..calibration_point_count];

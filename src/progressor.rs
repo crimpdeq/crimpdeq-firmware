@@ -466,8 +466,8 @@ pub enum ControlOpCode {
     // Custom command, no part of Tindeq API
     GetBatteryStatus = 0x77,
     /// Delete the calibration point (f32 LE raw value, f32 LE weight) as GetCalibration reports
-    /// it, then refit the factor to the remaining points. A point that is not stored is ignored,
-    /// so repeating the command deletes nothing else
+    /// it, then refit the factor to the remaining points. Stored points are unique and a point
+    /// that is not stored is ignored, so repeating the command deletes nothing else
     // Custom command, no part of Tindeq API
     DeleteCalibrationPoint = 0x78,
 }
