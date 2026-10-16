@@ -237,7 +237,7 @@ dependencies = [
 
 [[package]]
 name = "crimpdeq"
-version = "2.1.0"
+version = "3.0.0"
 dependencies = [
  "arrayvec",
  "bt-hci 0.10.1",
@@ -247,7 +247,7 @@ dependencies = [
  "embassy-futures",
  "embassy-sync 0.8.0",
  "embassy-time",
- "embedded-hal 1.0.0",
+ "embedded-hal-async",
  "esp-alloc",
  "esp-bootloader-esp-idf",
  "esp-hal",

@@ -6,7 +6,7 @@
 
 Meet [Crimpdeq](https://crimpdeq.com), a portable digital force sensor designed for climbers, coaches, and therapists to measure and train finger strength, pulling power, and endurance.
 
-Crimpdeq is a fully open-source project based on an [ESP32-C3](https://github.com/esp-rs/esp-rust-board) and a WH-C100 crane scale, with firmware fully written in Rust!
+Crimpdeq is a fully open-source project based on an [ESP32-C3](https://github.com/esp-rs/esp-rust-board), an ADS1220 ratiometric load-cell front end, and a WH-C100 crane scale, with firmware fully written in Rust!
 
 
 > [!NOTE]
@@ -22,7 +22,7 @@ Crimpdeq is a fully open-source project based on an [ESP32-C3](https://github.co
 - Automatic sleep when inactive
 - Compatible with Tindeq Progressor app ([Android](https://play.google.com/store/apps/details?id=com.progressor&hl=es_419) | [iOS](https://apps.apple.com/es/app/tindeq-progressor/id1380412428))
 - Compatible with Frez app (formerly ClimbHarder) ([Android](https://play.google.com/store/apps/details?id=com.holdtight.climbharder&pcampaignid=web_share) | [iOS](https://apps.apple.com/us/app/climbharder-no-hang-training/id6730120024))
-- Sampling frequency: 80 Hz
+- Sampling frequency: 175 Hz by default, selectable from 20 to 1000 Hz with the Crimpdeq app and kept across reboots
 - Design load: 1500 N (≈150 kg), full scale
 - Precision:
     - 0.05 kg between 0 and 99 kg
@@ -34,6 +34,26 @@ Crimpdeq is a fully open-source project based on an [ESP32-C3](https://github.co
 ## Building and Running the Firmware
 
 The [Crimpdeq Book](https://book.crimpdeq.com/) covers assembly, calibration, charging, and general usage. For repository-specific instructions, see the [Firmware](https://book.crimpdeq.com/firmware.html) chapter for prerequisites, how to build, flash, and run the firmware, how to enable logs, and troubleshooting.
+
+### MAX17048 I²C wiring
+
+MAX17048 I²C uses GPIO7=SDA and GPIO6=SCL, matching the TDFN pad functions
+and the PCB net labels:
+
+| Signal | ESP32 GPIO | U5 pad | PCB net | 10 kΩ pull-up |
+| --- | --- | --- | --- | --- |
+| SDA | 7 | 8 | `IO7_SDA` | R21 |
+| SCL | 6 | 7 | `IO6_SCL` | R20 |
+| ALERT | 10 | 5 | `IO10_ALRT` | R22 |
+
+Keep `.with_sda(peripherals.GPIO7)` and `.with_scl(peripherals.GPIO6)` in
+`src/main.rs`. Coordinate any future pin-map change with the PCB.
+
+To validate on hardware, build with `DEFMT_LOG=info`, flash, and confirm the
+`Battery:` log reports voltage, state of charge, and charge rate without
+`Failed to read MAX17048 battery gauge` warnings. Readings occur every 45 seconds;
+a reading at or below 3.3 V while not charging is confirmed by a second one with
+the gauge's hibernate disabled, normally within a few seconds, before deep sleep.
 
 ## Contributing
 Contributions are welcome! Feel free to:

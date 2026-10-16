@@ -1,20 +1,26 @@
-/// Progressor data types
-///
-/// See [Tindeq API documentation] for more information
-///
-/// [Tindeq API documentation]: https://tindeq.com/progressor_api/
+//! Progressor data types
+//!
+//! See [Tindeq API documentation] for more information
+//!
+//! [Tindeq API documentation]: https://tindeq.com/progressor_api/
+use arrayvec::ArrayVec;
 use defmt::{Format, error, info, warn};
-use embassy_sync::{
-    blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex},
-    channel::Channel,
-};
+use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
 use esp_hal::time;
-use trouble_host::types::gatt_traits::{AsGatt, FromGatt, FromGattError};
+use trouble_host::types::gatt_traits::AsGatt;
 
-/// Size of the channel used to send data points
-const DATA_POINT_COMMAND_CHANNEL_SIZE: usize = 80;
-/// Channel used to send data points
-pub type DataPointChannel = Channel<NoopRawMutex, DataPoint, DATA_POINT_COMMAND_CHANNEL_SIZE>;
+use crate::{ads1220::SampleRate, storage::Settings};
+
+/// Number of high-priority control responses that can be queued.
+const CONTROL_RESPONSE_CHANNEL_SIZE: usize = 16;
+/// Number of measurement packets retained by the BLE transport ring buffer.
+const MEASUREMENT_CHANNEL_SIZE: usize = 80;
+/// Channel reserved for calibration, status, and other control responses.
+pub type ControlResponseChannel =
+    Channel<CriticalSectionRawMutex, DataPoint, CONTROL_RESPONSE_CHANNEL_SIZE>;
+/// Ring buffer used to decouple measurement acquisition from BLE transmission.
+pub type MeasurementDataChannel =
+    Channel<CriticalSectionRawMutex, DataPoint, MEASUREMENT_CHANNEL_SIZE>;
 /// Number of load cell commands that can wait for the measurement task.
 const LOAD_CELL_COMMAND_QUEUE_SIZE: usize = 4;
 /// Queue of one-shot commands for the measurement task.
@@ -24,24 +30,79 @@ pub static LOAD_CELL_COMMANDS: Channel<
     LOAD_CELL_COMMAND_QUEUE_SIZE,
 > = Channel::new();
 
-/// Number of samples packed into each BLE measurement packet.
-pub const SAMPLES_PER_PACKET: usize = 5;
+/// Maximum number of samples packed into one BLE measurement packet.
+pub const MAX_SAMPLES_PER_PACKET: usize = 10;
+/// Longest time a batch collects samples, so low sample rates still update the client often.
+pub const MAX_BATCH_DURATION: embassy_time::Duration = embassy_time::Duration::from_millis(50);
 /// Size in bytes of one packed weight measurement (f32 weight + u32 timestamp).
 const WEIGHT_MEASUREMENT_SIZE: usize = 8;
+/// ATT notification opcode/handle plus the Progressor response code/length.
+const MEASUREMENT_PACKET_OVERHEAD: usize = 5;
 /// Maximum size of the payload written to the Control Point characteristic.
 pub const CONTROL_POINT_MAX_PAYLOAD_SIZE: usize = 10;
 /// Batch of weight measurements sent in a single BLE packet.
-pub type WeightMeasurementBatch = arrayvec::ArrayVec<(f32, u32), SAMPLES_PER_PACKET>;
+pub type WeightMeasurementBatch = ArrayVec<(f32, u32), MAX_SAMPLES_PER_PACKET>;
+/// Size of the Data Point response code and payload length.
+const DATA_POINT_HEADER_SIZE: usize = 2;
 /// Maximum size of the payload sent in a Data Point notification.
-pub const DATA_POINT_MAX_PAYLOAD_SIZE: usize = SAMPLES_PER_PACKET * WEIGHT_MEASUREMENT_SIZE;
+pub const DATA_POINT_MAX_PAYLOAD_SIZE: usize = MAX_SAMPLES_PER_PACKET * WEIGHT_MEASUREMENT_SIZE;
+
+/// Choose the largest batch that fits the negotiated ATT MTU.
+pub const fn measurement_batch_size_for_att_mtu(att_mtu: u16) -> usize {
+    let available = (att_mtu as usize).saturating_sub(MEASUREMENT_PACKET_OVERHEAD);
+    let batch_size = available / WEIGHT_MEASUREMENT_SIZE;
+    if batch_size == 0 {
+        1
+    } else if batch_size > MAX_SAMPLES_PER_PACKET {
+        MAX_SAMPLES_PER_PACKET
+    } else {
+        batch_size
+    }
+}
 
 /// Number of bytes in the device ID
 const DEVICE_ID_SIZE: usize = 6;
+/// Progressor ID from the `DEVICE_ID` build variable, 12 hex digits with the most significant
+/// byte first. A malformed ID fails the build.
+const DEVICE_ID: [u8; DEVICE_ID_SIZE] = parse_device_id(env!("DEVICE_ID"));
+
+const fn parse_device_id(id: &str) -> [u8; DEVICE_ID_SIZE] {
+    let digits = id.as_bytes();
+    assert!(
+        digits.len() == 2 * DEVICE_ID_SIZE,
+        "DEVICE_ID must be 12 hex digits"
+    );
+    let mut bytes = [0; DEVICE_ID_SIZE];
+    let mut i = 0;
+    while i < DEVICE_ID_SIZE {
+        bytes[i] = (hex_digit(digits[2 * i]) << 4) | hex_digit(digits[2 * i + 1]);
+        i += 1;
+    }
+    bytes
+}
+
+const fn hex_digit(digit: u8) -> u8 {
+    match digit {
+        b'0'..=b'9' => digit - b'0',
+        b'a'..=b'f' => digit - b'a' + 10,
+        b'A'..=b'F' => digit - b'A' + 10,
+        _ => panic!("DEVICE_ID must be 12 hex digits"),
+    }
+}
+
 /// Maximum number of calibration points to store
 pub const MAX_CALIBRATION_POINTS: usize = 20;
 
 /// Calibration point storing raw value and known weight
 pub type CalibrationPoint = (f32, f32);
+
+/// Fuel gauge reading reported to clients.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct BatteryStatus {
+    /// State of charge from the MAX17048 model, 0-100 %.
+    pub soc_percent: u8,
+    pub charging: bool,
+}
 
 /// Status of the weight measurement task
 #[derive(Copy, Debug, Clone, PartialEq)]
@@ -77,8 +138,6 @@ impl LoadCellCommand {
 pub enum SleepReason {
     /// No user or BLE activity has been observed for too long.
     IdleTimeout,
-    /// The client sent the Shutdown command.
-    Shutdown,
     /// The battery is too low to keep the 3V3 rail regulated.
     LowBattery,
 }
@@ -114,18 +173,28 @@ pub struct DeviceState {
     pub calibration_point_count: usize,
     /// Battery voltage in millivolts
     pub battery_voltage: u32,
+    /// Fuel gauge reading, `None` until the first successful read.
+    pub battery_status: Option<BatteryStatus>,
     /// Timestamp of the last user-visible activity.
     pub last_activity_time_ms: u32,
     /// Whether BLE is currently connected.
     pub ble_connected: bool,
+    /// Number of measurements to pack according to the negotiated ATT MTU.
+    pub measurement_batch_size: usize,
     /// Current sleep transition state.
     pub sleep_state: SleepState,
     /// Whether the measurement task has powered down its peripherals for sleep.
     pub sleep_measurement_ready: bool,
     /// Whether the status LED has been explicitly turned off for sleep.
     pub sleep_status_led_ready: bool,
-    /// Whether the client asked to turn the device off once it disconnects.
-    pub shutdown_requested: bool,
+    /// Whether a low battery check has disabled the battery gauge's hibernate. The gauge stays
+    /// powered from the battery, so deep sleep waits for the check to restore it.
+    pub battery_gauge_check: bool,
+    /// Settings in use. They apply to every client and the storage task persists them.
+    pub settings: Settings,
+    /// Whether the settings changed since the storage task last persisted them. Deep sleep waits
+    /// for the write.
+    pub settings_write_pending: bool,
 }
 
 impl Default for DeviceState {
@@ -143,12 +212,16 @@ impl DeviceState {
             calibration_points: [(0.0, 0.0); MAX_CALIBRATION_POINTS],
             calibration_point_count: 0,
             battery_voltage: 4300,
+            battery_status: None,
             last_activity_time_ms: 0,
             ble_connected: false,
+            measurement_batch_size: measurement_batch_size_for_att_mtu(23),
             sleep_state: SleepState::Awake,
             sleep_measurement_ready: false,
             sleep_status_led_ready: false,
-            shutdown_requested: false,
+            battery_gauge_check: false,
+            settings: Settings::DEFAULT,
+            settings_write_pending: false,
         }
     }
 
@@ -164,7 +237,7 @@ impl DeviceState {
                 self.sleep_measurement_ready = false;
                 self.sleep_status_led_ready = false;
             }
-            // Activity does not cancel a shutdown or a low battery sleep.
+            // Activity does not cancel a low battery sleep.
             SleepState::Requested(_) | SleepState::Ready(_) | SleepState::Awake => {}
         }
     }
@@ -219,16 +292,21 @@ impl DeviceState {
     pub fn on_ble_connected(&mut self) {
         self.ble_connected = true;
         self.record_activity();
+        // A connection that arrives while a low battery sleep is ready must close before the
+        // device sleeps. Activity already cancelled an idle sleep.
+        if let SleepState::Ready(reason) = self.sleep_state {
+            self.sleep_state = SleepState::Requested(reason);
+        }
     }
 
-    /// Mark BLE as disconnected and drop the commands of the closed connection.
+    /// Mark BLE as disconnected and drop the measurement and commands of the closed connection.
     pub fn on_ble_disconnected(&mut self) {
         LOAD_CELL_COMMANDS.clear();
         self.ble_connected = false;
-        self.record_activity();
-        if self.shutdown_requested {
-            self.request_sleep(SleepReason::Shutdown);
-        }
+        self.measurement_status = MeasurementTaskStatus::Disabled;
+        // Restart the idle timeout without cancelling a sleep request, which disconnects BLE.
+        self.last_activity_time_ms = Self::now_ms();
+        self.enter_sleep_when_ready();
     }
 
     /// Returns true when BLE is currently connected.
@@ -241,7 +319,8 @@ impl DeviceState {
         Self::now_ms().wrapping_sub(self.last_activity_time_ms)
     }
 
-    /// Request deep sleep. The measurement and LED tasks will power down peripherals first.
+    /// Request deep sleep. The measurement and LED tasks power down peripherals and the connection
+    /// task disconnects BLE first.
     pub fn request_sleep(&mut self, reason: SleepReason) {
         if self.sleep_state == SleepState::Awake {
             LOAD_CELL_COMMANDS.clear();
@@ -252,39 +331,88 @@ impl DeviceState {
         }
     }
 
-    /// Reset runtime state to the same awake/disconnected state used after boot.
-    pub fn reset_to_initial_state(&mut self) {
-        let battery_voltage = self.battery_voltage;
-        *self = Self {
-            battery_voltage,
-            ..Self::default()
-        };
-        self.on_ble_disconnected();
-    }
-
     /// Mark that one peripheral is powered down and deep sleep can start when all are ready.
     pub fn mark_sleep_ready(&mut self, source: SleepReadySource) {
-        if let SleepState::Requested(reason) = self.sleep_state {
+        if let SleepState::Requested(_) = self.sleep_state {
             match source {
                 SleepReadySource::Measurement => self.sleep_measurement_ready = true,
                 SleepReadySource::StatusLed => self.sleep_status_led_ready = true,
             }
+            self.enter_sleep_when_ready();
+        }
+    }
 
-            if self.sleep_measurement_ready && self.sleep_status_led_ready {
-                self.sleep_state = SleepState::Ready(reason);
-            }
+    /// Start a low battery check, which holds off deep sleep until it ends. Returns false once
+    /// sleep is requested, as the device then sleeps without the check.
+    pub fn begin_battery_gauge_check(&mut self) -> bool {
+        if self.sleep_state != SleepState::Awake {
+            return false;
+        }
+        self.battery_gauge_check = true;
+        true
+    }
+
+    /// End the low battery check and allow a pending deep sleep.
+    pub fn end_battery_gauge_check(&mut self) {
+        self.battery_gauge_check = false;
+        self.enter_sleep_when_ready();
+    }
+
+    /// Apply a sample rate now and persist it later.
+    pub fn set_sample_rate(&mut self, sample_rate: SampleRate) {
+        self.update_settings(Settings {
+            sample_rate,
+            ..self.settings
+        });
+    }
+
+    /// Apply a calibration factor now and persist it later.
+    pub fn set_calibration_factor(&mut self, calibration_factor: f32) {
+        self.update_settings(Settings {
+            calibration_factor,
+            ..self.settings
+        });
+    }
+
+    fn update_settings(&mut self, settings: Settings) {
+        if settings != self.settings {
+            self.settings = settings;
+            self.settings_write_pending = true;
+        }
+    }
+
+    /// End a settings write and allow a pending deep sleep, unless the settings changed during
+    /// the write.
+    pub fn end_settings_write(&mut self, written: Settings) {
+        if written == self.settings {
+            self.settings_write_pending = false;
+            self.enter_sleep_when_ready();
+        }
+    }
+
+    /// Allow deep sleep once the peripherals are powered down, BLE is disconnected and no low
+    /// battery check or settings write is pending.
+    fn enter_sleep_when_ready(&mut self) {
+        if let SleepState::Requested(reason) = self.sleep_state
+            && self.sleep_measurement_ready
+            && self.sleep_status_led_ready
+            && !self.ble_connected
+            && !self.battery_gauge_check
+            && !self.settings_write_pending
+        {
+            self.sleep_state = SleepState::Ready(reason);
         }
     }
 }
 
 /// Progressor Commands
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Format)]
 /// Commands that Tindeq app can send to the device
 // Source: Tindeq API documentation and https://github.com/blims/Tindeq-Progressor-API/blob/78a0bd244303589d0c773ee15ede53e0299712ee/progressor_client.py#L21-L33
 pub enum ControlOpCode {
     /// Command used to zero weight when no load is applied
     TareScale = 0x64,
-    /// Start continuous measurement. Sample rate is 80Hz
+    /// Start continuous measurement at the configured firmware sample rate.
     StartMeasurement = 0x65,
     /// Stop weight measurement. This should be done before sampling the battery voltage
     StopMeasurement = 0x66,
@@ -305,7 +433,8 @@ pub enum ControlOpCode {
     /// Clear the error information
     // TODO: Implement it
     ClearErrorInformation = 0x6D,
-    /// Turn the Progressor off (enter sleep mode)
+    /// Close the BLE link. The device keeps advertising so another client can connect, and
+    /// sleeps after the disconnected idle timeout.
     Shutdown = 0x6E,
     /// Measures the battery voltage in millivolts
     SampleBattery = 0x6F,
@@ -319,12 +448,28 @@ pub enum ControlOpCode {
     /// Default calibration
     // Custom command, no part of Tindeq API
     DefaultCalibration = 0x74,
+    /// Set the ADS1220 sample rate (u16 LE samples per second), persisted once measurement stops,
+    /// and reply with the rate in use, which stays unchanged for unsupported rates
+    // Custom command, no part of Tindeq API
+    SetSampleRate = 0x75,
+    /// Reply with the ADS1220 sample rate in use
+    // Custom command, no part of Tindeq API
+    GetSampleRate = 0x76,
+    /// Reply with the fuel gauge state of charge and whether the battery is charging
+    // Custom command, no part of Tindeq API
+    GetBatteryStatus = 0x77,
 }
 
 impl ControlOpCode {
-    /// Returns whether this command should reset the idle timer.
+    /// Returns whether this command should reset the idle timer. Status polls do not, so an open
+    /// client still lets the device sleep.
     pub fn counts_as_activity(self) -> bool {
-        !matches!(self, ControlOpCode::SampleBattery)
+        !matches!(
+            self,
+            ControlOpCode::SampleBattery
+                | ControlOpCode::GetBatteryStatus
+                | ControlOpCode::GetSampleRate
+        )
     }
 
     /// Process the control operation.
@@ -350,24 +495,7 @@ impl ControlOpCode {
                 Some(DataPoint::from(response))
             }
             ControlOpCode::GetProgressorId => {
-                /// Number of hex characters needed per byte (2 hex chars = 1 byte)
-                const HEX_CHARS_PER_BYTE: usize = 2;
-                /// Hex radix for parsing hex strings
-                const HEX_RADIX: u32 = 16;
-
-                let device_id = env!("DEVICE_ID");
-                let mut bytes = [0u8; DEVICE_ID_SIZE];
-                for (i, byte) in bytes.iter_mut().enumerate() {
-                    let char_pos = i * HEX_CHARS_PER_BYTE;
-                    let next_char_pos = char_pos + HEX_CHARS_PER_BYTE;
-                    if next_char_pos <= device_id.len()
-                        && let Ok(parsed_byte) =
-                            u8::from_str_radix(&device_id[char_pos..next_char_pos], HEX_RADIX)
-                    {
-                        *byte = parsed_byte;
-                    }
-                }
-                let response = ResponseCode::ProgressorId(bytes);
+                let response = ResponseCode::ProgressorId(DEVICE_ID);
                 info!("ProgressorId: {:?}", response);
                 Some(DataPoint::from(response))
             }
@@ -413,11 +541,34 @@ impl ControlOpCode {
                 Some(DataPoint::from(response))
             }
             ControlOpCode::Shutdown => {
-                info!("Shutdown command received, entering deep sleep after disconnect");
-                device_state.reset_to_initial_state();
-                device_state.shutdown_requested = true;
+                info!("Shutdown command received, disconnecting");
                 None
             }
+            ControlOpCode::SetSampleRate => {
+                if data.len() < 3 {
+                    error!("SetSampleRate: Invalid data length");
+                    return None;
+                }
+
+                let sps = u16::from_le_bytes([data[1], data[2]]);
+                match SampleRate::from_sps(sps) {
+                    Some(sample_rate) => device_state.set_sample_rate(sample_rate),
+                    None => warn!("SetSampleRate: Unsupported rate {} SPS", sps),
+                }
+                Some(DataPoint::from(ResponseCode::SampleRate(
+                    device_state.settings.sample_rate,
+                )))
+            }
+            ControlOpCode::GetSampleRate => Some(DataPoint::from(ResponseCode::SampleRate(
+                device_state.settings.sample_rate,
+            ))),
+            ControlOpCode::GetBatteryStatus => match device_state.battery_status {
+                Some(status) => Some(DataPoint::from(ResponseCode::BatteryStatus(status))),
+                None => {
+                    warn!("GetBatteryStatus: no fuel gauge reading yet");
+                    None
+                }
+            },
             // Currently unimplemented operations
             ControlOpCode::StartPeakRFDMeasurement
             | ControlOpCode::StartPeakRFDMeasurementSeries
@@ -443,6 +594,9 @@ impl TryFrom<u8> for ControlOpCode {
             0x6B => Ok(ControlOpCode::GetAppVersion),
             0x72 => Ok(ControlOpCode::GetCalibration),
             0x74 => Ok(ControlOpCode::DefaultCalibration),
+            0x75 => Ok(ControlOpCode::SetSampleRate),
+            0x76 => Ok(ControlOpCode::GetSampleRate),
+            0x77 => Ok(ControlOpCode::GetBatteryStatus),
             0x6C => Ok(ControlOpCode::GetErrorInformation),
             0x6D => Ok(ControlOpCode::ClearErrorInformation),
             0x67 => Ok(ControlOpCode::StartPeakRFDMeasurement),
@@ -453,100 +607,27 @@ impl TryFrom<u8> for ControlOpCode {
     }
 }
 
-impl Format for ControlOpCode {
-    fn format(&self, fmt: defmt::Formatter) {
-        match self {
-            ControlOpCode::TareScale => defmt::write!(fmt, "TareScale"),
-            ControlOpCode::StartMeasurement => defmt::write!(fmt, "StartMeasurement"),
-            ControlOpCode::StopMeasurement => defmt::write!(fmt, "StopMeasurement"),
-            ControlOpCode::GetAppVersion => defmt::write!(fmt, "GetAppVersion"),
-            ControlOpCode::Shutdown => defmt::write!(fmt, "Shutdown"),
-            ControlOpCode::SampleBattery => defmt::write!(fmt, "SampleBattery"),
-            ControlOpCode::GetProgressorId => defmt::write!(fmt, "GetProgressorId"),
-            ControlOpCode::GetCalibration => defmt::write!(fmt, "GetCalibration"),
-            ControlOpCode::AddCalibrationPoint => defmt::write!(fmt, "AddCalibrationPoint"),
-            ControlOpCode::DefaultCalibration => defmt::write!(fmt, "DefaultCalibration"),
-            ControlOpCode::StartPeakRFDMeasurement => defmt::write!(fmt, "StartPeakRFDMeasurement"),
-            ControlOpCode::StartPeakRFDMeasurementSeries => {
-                defmt::write!(fmt, "StartPeakRFDMeasurementSeries")
-            }
-            ControlOpCode::SaveCalibration => defmt::write!(fmt, "SaveCalibration"),
-            ControlOpCode::GetErrorInformation => defmt::write!(fmt, "GetErrorInformation"),
-            ControlOpCode::ClearErrorInformation => defmt::write!(fmt, "ClearErrorInformation"),
-        }
-    }
-}
-
-/// Data point characteristic is where we receive data from the Progressor
+/// Notification on the Data Point characteristic: response code, payload length and payload.
 #[derive(Debug, Clone)]
-#[repr(C, packed)]
-pub struct DataPoint {
-    /// Response code
-    pub(crate) response_code: u8,
-    /// Length of the data
-    pub(crate) length: u8,
-    /// Data
-    pub(crate) value: [u8; DATA_POINT_MAX_PAYLOAD_SIZE],
-}
+pub struct DataPoint(ArrayVec<u8, { DATA_POINT_HEADER_SIZE + DATA_POINT_MAX_PAYLOAD_SIZE }>);
 
 impl AsGatt for DataPoint {
-    const MIN_SIZE: usize = 2;
-    const MAX_SIZE: usize = DATA_POINT_MAX_PAYLOAD_SIZE + 2; // +2 for response_code and length
+    const MIN_SIZE: usize = DATA_POINT_HEADER_SIZE;
+    const MAX_SIZE: usize = DATA_POINT_HEADER_SIZE + DATA_POINT_MAX_PAYLOAD_SIZE;
 
     fn as_gatt(&self) -> &[u8] {
-        let len = (self.length as usize).min(DATA_POINT_MAX_PAYLOAD_SIZE);
-        unsafe { core::slice::from_raw_parts(self as *const DataPoint as *const u8, 2 + len) }
+        &self.0
     }
 }
 
-impl FromGatt for DataPoint {
-    fn from_gatt(data: &[u8]) -> Result<Self, FromGattError> {
-        if data.len() < 2 || data.len() > Self::MAX_SIZE {
-            return Err(FromGattError::InvalidLength);
-        }
-
-        let response_code = data[0];
-        let length = data[1] as usize;
-        if length > DATA_POINT_MAX_PAYLOAD_SIZE || data.len() != 2 + length {
-            return Err(FromGattError::InvalidLength);
-        }
-
-        Ok(DataPoint::new(response_code, data[1], &data[2..]))
-    }
-}
-
+/// Initial characteristic value: response code 0 with an empty payload.
 impl Default for DataPoint {
     fn default() -> Self {
-        Self {
-            response_code: 0,
-            length: 0,
-            value: [0; DATA_POINT_MAX_PAYLOAD_SIZE],
-        }
+        Self(ArrayVec::from_iter([0; DATA_POINT_HEADER_SIZE]))
     }
 }
 
 impl DataPoint {
-    /// Create a new data point with specified response code, length and data
-    pub fn new(response_code: u8, length: u8, data: &[u8]) -> Self {
-        let mut value = [0; DATA_POINT_MAX_PAYLOAD_SIZE];
-        let max_len = length.min(DATA_POINT_MAX_PAYLOAD_SIZE as u8) as usize;
-        let copy_len = max_len.min(data.len());
-        if copy_len > 0 {
-            value[..copy_len].copy_from_slice(&data[..copy_len]);
-        }
-
-        Self {
-            response_code,
-            length: copy_len as u8,
-            value,
-        }
-    }
-
-    /// Send data point to the channel.
-    pub async fn send(self, channel: &'static DataPointChannel) {
-        channel.send(self).await;
-    }
-
     /// Create a weight measurement data point
     pub fn weight_measurement(measurements: WeightMeasurementBatch) -> Self {
         Self::from(ResponseCode::WeightMeasurement(measurements))
@@ -555,24 +636,24 @@ impl DataPoint {
 
 impl Format for DataPoint {
     fn format(&self, fmt: defmt::Formatter) {
-        let len = (self.length as usize).min(DATA_POINT_MAX_PAYLOAD_SIZE);
         defmt::write!(
             fmt,
             "Code: {}, Length: {}, Data: {:x}",
-            self.response_code,
-            self.length,
-            &self.value[0..len]
+            self.0[0],
+            self.0[1],
+            &self.0[DATA_POINT_HEADER_SIZE..]
         );
     }
 }
 
 impl From<ResponseCode> for DataPoint {
     fn from(response_code: ResponseCode) -> Self {
-        Self {
-            response_code: response_code.op_code(),
-            length: response_code.length(),
-            value: response_code.value(),
-        }
+        let payload = response_code.payload();
+        let mut bytes = ArrayVec::new();
+        bytes.push(response_code.op_code());
+        bytes.push(payload.len() as u8);
+        bytes.extend(payload);
+        Self(bytes)
     }
 }
 
@@ -590,18 +671,16 @@ pub enum ResponseCode {
     CalibrationFactor(f32),
     /// Calibration point response (raw value, weight)
     CalibrationPoint(f32, f32),
+    /// Sample rate in use, in samples per second
+    SampleRate(SampleRate),
+    /// Fuel gauge state of charge (u8 %) and charging flag (u8)
+    BatteryStatus(BatteryStatus),
     /// Low power warning indicating that the battery is empty. The Progressor will turn itself off after sending this warning
     LowPowerWarning,
     /// Response to app version request command
     AppVersion(&'static [u8]),
     /// Response to progressor ID request command
     ProgressorId([u8; DEVICE_ID_SIZE]),
-    /// RFD peak response.
-    // TODO: Implement it
-    RfdPeak,
-    /// RFD peak series response.
-    // TODO: Implement it
-    RfdPeakSeries,
 }
 
 impl Format for ResponseCode {
@@ -619,11 +698,16 @@ impl Format for ResponseCode {
             ResponseCode::CalibrationPoint(raw, weight) => {
                 defmt::write!(fmt, "CalibrationPoint: Raw: {}, Weight: {}", raw, weight)
             }
+            ResponseCode::SampleRate(rate) => defmt::write!(fmt, "SampleRate: {}", rate.sps()),
+            ResponseCode::BatteryStatus(status) => defmt::write!(
+                fmt,
+                "BatteryStatus: {}%, charging: {}",
+                status.soc_percent,
+                status.charging
+            ),
             ResponseCode::LowPowerWarning => defmt::write!(fmt, "LowPowerWarning"),
             ResponseCode::AppVersion(version) => defmt::write!(fmt, "AppVersion: {:x}", version),
             ResponseCode::ProgressorId(id) => defmt::write!(fmt, "ProgressorId: {:x}", id),
-            ResponseCode::RfdPeak => defmt::write!(fmt, "RfdPeak"),
-            ResponseCode::RfdPeakSeries => defmt::write!(fmt, "RfdPeakSeries"),
         }
     }
 }
@@ -636,73 +720,42 @@ impl ResponseCode {
             | ResponseCode::AppVersion(..)
             | ResponseCode::ProgressorId(..) => 0x00,
             ResponseCode::WeightMeasurement(..) => 0x01,
-            ResponseCode::RfdPeak => 0x02,
-            ResponseCode::RfdPeakSeries => 0x03,
             ResponseCode::LowPowerWarning => 0x04,
             ResponseCode::CalibrationFactor(..) => 0x05,
             ResponseCode::CalibrationPoint(..) => 0x06,
+            ResponseCode::SampleRate(..) => 0x07,
+            ResponseCode::BatteryStatus(..) => 0x08,
         }
     }
 
-    /// Get the length of the data for this response
-    fn length(&self) -> u8 {
+    /// Get the payload bytes for this response. Every payload fits the data point: a batch holds
+    /// at most `MAX_SAMPLES_PER_PACKET` measurements and the app version is truncated.
+    fn payload(&self) -> ArrayVec<u8, DATA_POINT_MAX_PAYLOAD_SIZE> {
+        let mut payload = ArrayVec::new();
         match self {
-            ResponseCode::SampleBatteryVoltage(..) => 4,
+            ResponseCode::SampleBatteryVoltage(voltage) => payload.extend(voltage.to_le_bytes()),
             ResponseCode::WeightMeasurement(measurements) => {
-                (measurements.len() * WEIGHT_MEASUREMENT_SIZE) as u8
-            }
-            ResponseCode::CalibrationFactor(..) => 4,
-            ResponseCode::CalibrationPoint(..) => 8,
-            ResponseCode::LowPowerWarning => 0,
-            ResponseCode::AppVersion(version) => {
-                version.len().min(DATA_POINT_MAX_PAYLOAD_SIZE) as u8
-            }
-            ResponseCode::ProgressorId(..) => DEVICE_ID_SIZE as u8,
-            ResponseCode::RfdPeak => 0,
-            ResponseCode::RfdPeakSeries => 0,
-        }
-    }
-
-    /// Get the value bytes for this response
-    fn value(&self) -> [u8; DATA_POINT_MAX_PAYLOAD_SIZE] {
-        let mut value = [0; DATA_POINT_MAX_PAYLOAD_SIZE];
-        match self {
-            ResponseCode::SampleBatteryVoltage(voltage) => {
-                value[0..4].copy_from_slice(&voltage.to_le_bytes());
-            }
-            ResponseCode::WeightMeasurement(measurements) => {
-                for (i, (weight, timestamp)) in measurements.iter().enumerate() {
-                    let offset = i * WEIGHT_MEASUREMENT_SIZE;
-                    value[offset..offset + 4].copy_from_slice(&weight.to_le_bytes());
-                    value[offset + 4..offset + WEIGHT_MEASUREMENT_SIZE]
-                        .copy_from_slice(&timestamp.to_le_bytes());
+                for (weight, timestamp) in measurements {
+                    payload.extend(weight.to_le_bytes());
+                    payload.extend(timestamp.to_le_bytes());
                 }
             }
-            ResponseCode::CalibrationFactor(factor) => {
-                value[0..4].copy_from_slice(&factor.to_le_bytes());
-            }
+            ResponseCode::CalibrationFactor(factor) => payload.extend(factor.to_le_bytes()),
             ResponseCode::CalibrationPoint(raw_value, weight) => {
-                value[0..4].copy_from_slice(&raw_value.to_le_bytes());
-                value[4..8].copy_from_slice(&weight.to_le_bytes());
+                payload.extend(raw_value.to_le_bytes());
+                payload.extend(weight.to_le_bytes());
+            }
+            ResponseCode::SampleRate(rate) => payload.extend(rate.sps().to_le_bytes()),
+            ResponseCode::BatteryStatus(status) => {
+                payload.extend([status.soc_percent, u8::from(status.charging)]);
             }
             ResponseCode::LowPowerWarning => (),
-            ResponseCode::ProgressorId(id) => {
-                // Reverse the bytes as they are LE
-                let mut reversed = *id;
-                reversed.reverse();
-                value[..DEVICE_ID_SIZE].copy_from_slice(&reversed);
-            }
+            // Reverse the bytes as they are LE
+            ResponseCode::ProgressorId(id) => payload.extend(id.iter().rev().copied()),
             ResponseCode::AppVersion(version) => {
-                let len = version.len().min(DATA_POINT_MAX_PAYLOAD_SIZE);
-                value[0..len].copy_from_slice(&version[0..len]);
+                payload.extend(version.iter().copied().take(DATA_POINT_MAX_PAYLOAD_SIZE));
             }
-            ResponseCode::RfdPeak => {
-                warn!("RfdPeak response not implemented");
-            }
-            ResponseCode::RfdPeakSeries => {
-                warn!("RfdPeakSeries response not implemented");
-            }
-        };
-        value
+        }
+        payload
     }
 }
