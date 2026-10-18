@@ -1107,13 +1107,48 @@ async fn run_load_cell_command(
                 return;
             };
             info!("Calibration factor applied: {}", factor);
-            update_device_state(|state| {
-                state.calibration_points = calibration_points;
-                state.calibration_point_count = calibration_point_count;
-                state.set_calibration_factor(factor);
+            store_calibration(channel, calibration_points, calibration_point_count, factor).await;
+        }
+        LoadCellCommand::RemoveCalibrationPoint(index) => {
+            // Like a rejected point, a failed removal sends no reply, so the client keeps the
+            // points it has.
+            let (mut calibration_points, stored_points, factor) = critical_section::with(|cs| {
+                let state = DEVICE_STATE.borrow_ref(cs);
+                (
+                    state.calibration_points,
+                    state.calibration_point_count,
+                    state.settings.calibration_factor,
+                )
             });
-            notify_calibration_factor(channel, factor).await;
-            notify_calibration_points(channel, points).await;
+            let index = usize::from(index);
+            if index >= stored_points {
+                warn!(
+                    "No calibration point {} to remove ({} stored)",
+                    index, stored_points
+                );
+                return;
+            }
+
+            calibration_points.copy_within(index + 1..stored_points, index);
+            let calibration_point_count = stored_points - 1;
+            // Fewer than two points do not define a factor, so the current one stays until the
+            // next point is added.
+            let factor = if calibration_point_count < 2 {
+                factor
+            } else {
+                match fit_calibration_factor(&calibration_points[..calibration_point_count]) {
+                    Some(factor) => factor,
+                    None => {
+                        error!(
+                            "Keeping calibration point {}: the remaining points do not fit",
+                            index
+                        );
+                        return;
+                    }
+                }
+            };
+            info!("Removed calibration point {}, factor: {}", index, factor);
+            store_calibration(channel, calibration_points, calibration_point_count, factor).await;
         }
         LoadCellCommand::DefaultCalibration => {
             debug!("Restoring default calibration factor");
@@ -1147,6 +1182,22 @@ async fn run_load_cell_command(
             }
         }
     }
+}
+
+/// Stores the calibration points with their factor and notifies the client of both.
+async fn store_calibration(
+    channel: &'static ControlResponseChannel,
+    calibration_points: [CalibrationPoint; MAX_CALIBRATION_POINTS],
+    calibration_point_count: usize,
+    factor: f32,
+) {
+    update_device_state(|state| {
+        state.calibration_points = calibration_points;
+        state.calibration_point_count = calibration_point_count;
+        state.set_calibration_factor(factor);
+    });
+    notify_calibration_factor(channel, factor).await;
+    notify_calibration_points(channel, &calibration_points[..calibration_point_count]).await;
 }
 
 async fn notify_calibration_points(

@@ -120,6 +120,8 @@ pub enum LoadCellCommand {
     Tare,
     /// Adds a calibration point with the known weight in kg
     Calibrate(f32),
+    /// Removes the stored calibration point at the index
+    RemoveCalibrationPoint(u8),
     /// Restores default calibration values
     DefaultCalibration,
     /// Get the calibration values
@@ -277,6 +279,11 @@ impl DeviceState {
     /// Add a calibration point with the given weight
     pub fn calibrate(&mut self, weight: f32) {
         self.queue_load_cell_command(LoadCellCommand::Calibrate(weight));
+    }
+
+    /// Remove the calibration point at the given index
+    pub fn remove_calibration_point(&mut self, index: u8) {
+        self.queue_load_cell_command(LoadCellCommand::RemoveCalibrationPoint(index));
     }
 
     pub fn get_calibration(&mut self) {
@@ -458,6 +465,9 @@ pub enum ControlOpCode {
     /// Reply with the fuel gauge state of charge and whether the battery is charging
     // Custom command, no part of Tindeq API
     GetBatteryStatus = 0x77,
+    /// Remove the calibration point at an index (u8) and refit the factor to the remaining points
+    // Custom command, no part of Tindeq API
+    RemoveCalibrationPoint = 0x78,
 }
 
 impl ControlOpCode {
@@ -534,6 +544,18 @@ impl ControlOpCode {
                 device_state.reset_calibration();
                 None
             }
+            ControlOpCode::RemoveCalibrationPoint => {
+                let Some(&index) = data.get(1) else {
+                    error!("RemoveCalibrationPoint: Invalid data length");
+                    return None;
+                };
+                info!(
+                    "Received RemoveCalibrationPoint command for index {}",
+                    index
+                );
+                device_state.remove_calibration_point(index);
+                None
+            }
             ControlOpCode::SampleBattery => {
                 let voltage = device_state.battery_voltage;
                 let response = ResponseCode::SampleBatteryVoltage(voltage);
@@ -597,6 +619,7 @@ impl TryFrom<u8> for ControlOpCode {
             0x75 => Ok(ControlOpCode::SetSampleRate),
             0x76 => Ok(ControlOpCode::GetSampleRate),
             0x77 => Ok(ControlOpCode::GetBatteryStatus),
+            0x78 => Ok(ControlOpCode::RemoveCalibrationPoint),
             0x6C => Ok(ControlOpCode::GetErrorInformation),
             0x6D => Ok(ControlOpCode::ClearErrorInformation),
             0x67 => Ok(ControlOpCode::StartPeakRFDMeasurement),
