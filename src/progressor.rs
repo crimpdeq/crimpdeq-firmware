@@ -465,7 +465,8 @@ pub enum ControlOpCode {
     /// Reply with the fuel gauge state of charge and whether the battery is charging
     // Custom command, no part of Tindeq API
     GetBatteryStatus = 0x77,
-    /// Remove the calibration point at an index (u8) and refit the factor to the remaining points
+    /// Remove the calibration point at an index (u8), refit the factor to the remaining points,
+    /// and reply whether the point was removed
     // Custom command, no part of Tindeq API
     RemoveCalibrationPoint = 0x78,
 }
@@ -698,6 +699,8 @@ pub enum ResponseCode {
     SampleRate(SampleRate),
     /// Fuel gauge state of charge (u8 %) and charging flag (u8)
     BatteryStatus(BatteryStatus),
+    /// Whether a calibration point was removed (u8), sent after the new calibration
+    CalibrationPointRemoved(bool),
     /// Low power warning indicating that the battery is empty. The Progressor will turn itself off after sending this warning
     LowPowerWarning,
     /// Response to app version request command
@@ -728,6 +731,9 @@ impl Format for ResponseCode {
                 status.soc_percent,
                 status.charging
             ),
+            ResponseCode::CalibrationPointRemoved(removed) => {
+                defmt::write!(fmt, "CalibrationPointRemoved: {}", removed)
+            }
             ResponseCode::LowPowerWarning => defmt::write!(fmt, "LowPowerWarning"),
             ResponseCode::AppVersion(version) => defmt::write!(fmt, "AppVersion: {:x}", version),
             ResponseCode::ProgressorId(id) => defmt::write!(fmt, "ProgressorId: {:x}", id),
@@ -748,6 +754,7 @@ impl ResponseCode {
             ResponseCode::CalibrationPoint(..) => 0x06,
             ResponseCode::SampleRate(..) => 0x07,
             ResponseCode::BatteryStatus(..) => 0x08,
+            ResponseCode::CalibrationPointRemoved(..) => 0x09,
         }
     }
 
@@ -772,6 +779,7 @@ impl ResponseCode {
             ResponseCode::BatteryStatus(status) => {
                 payload.extend([status.soc_percent, u8::from(status.charging)]);
             }
+            ResponseCode::CalibrationPointRemoved(removed) => payload.push(u8::from(*removed)),
             ResponseCode::LowPowerWarning => (),
             // Reverse the bytes as they are LE
             ResponseCode::ProgressorId(id) => payload.extend(id.iter().rev().copied()),
