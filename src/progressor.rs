@@ -120,6 +120,8 @@ pub enum LoadCellCommand {
     Tare,
     /// Adds a calibration point with the known weight in kg
     Calibrate(f32),
+    /// Removes the stored calibration point at the index
+    RemoveCalibrationPoint(u8),
     /// Restores default calibration values
     DefaultCalibration,
     /// Get the calibration values
@@ -261,12 +263,14 @@ impl DeviceState {
         self.measurement_status = MeasurementTaskStatus::Disabled;
     }
 
-    /// Queue a command for the measurement task.
-    fn queue_load_cell_command(&mut self, command: LoadCellCommand) {
+    /// Queue a command for the measurement task. Returns false when the full queue drops it.
+    fn queue_load_cell_command(&mut self, command: LoadCellCommand) -> bool {
         self.record_activity();
-        if LOAD_CELL_COMMANDS.try_send(command).is_err() {
+        let queued = LOAD_CELL_COMMANDS.try_send(command).is_ok();
+        if !queued {
             warn!("Load cell command queue full, dropping {:?}", command);
         }
+        queued
     }
 
     /// Start taring process
@@ -277,6 +281,11 @@ impl DeviceState {
     /// Add a calibration point with the given weight
     pub fn calibrate(&mut self, weight: f32) {
         self.queue_load_cell_command(LoadCellCommand::Calibrate(weight));
+    }
+
+    /// Remove the calibration point at the given index. Returns false when the command is dropped.
+    pub fn remove_calibration_point(&mut self, index: u8) -> bool {
+        self.queue_load_cell_command(LoadCellCommand::RemoveCalibrationPoint(index))
     }
 
     pub fn get_calibration(&mut self) {
@@ -458,6 +467,10 @@ pub enum ControlOpCode {
     /// Reply with the fuel gauge state of charge and whether the battery is charging
     // Custom command, no part of Tindeq API
     GetBatteryStatus = 0x77,
+    /// Remove the calibration point at an index (u8), refit the factor to the remaining points,
+    /// and reply whether the point was removed
+    // Custom command, no part of Tindeq API
+    RemoveCalibrationPoint = 0x78,
 }
 
 impl ControlOpCode {
@@ -534,6 +547,20 @@ impl ControlOpCode {
                 device_state.reset_calibration();
                 None
             }
+            ControlOpCode::RemoveCalibrationPoint => {
+                // The client waits for an answer to every removal, so a removal that does not
+                // reach the measurement task is answered here.
+                let kept = DataPoint::from(ResponseCode::CalibrationPointRemoved(false));
+                let Some(&index) = data.get(1) else {
+                    error!("RemoveCalibrationPoint: Invalid data length");
+                    return Some(kept);
+                };
+                info!(
+                    "Received RemoveCalibrationPoint command for index {}",
+                    index
+                );
+                (!device_state.remove_calibration_point(index)).then_some(kept)
+            }
             ControlOpCode::SampleBattery => {
                 let voltage = device_state.battery_voltage;
                 let response = ResponseCode::SampleBatteryVoltage(voltage);
@@ -597,6 +624,7 @@ impl TryFrom<u8> for ControlOpCode {
             0x75 => Ok(ControlOpCode::SetSampleRate),
             0x76 => Ok(ControlOpCode::GetSampleRate),
             0x77 => Ok(ControlOpCode::GetBatteryStatus),
+            0x78 => Ok(ControlOpCode::RemoveCalibrationPoint),
             0x6C => Ok(ControlOpCode::GetErrorInformation),
             0x6D => Ok(ControlOpCode::ClearErrorInformation),
             0x67 => Ok(ControlOpCode::StartPeakRFDMeasurement),
@@ -675,6 +703,8 @@ pub enum ResponseCode {
     SampleRate(SampleRate),
     /// Fuel gauge state of charge (u8 %) and charging flag (u8)
     BatteryStatus(BatteryStatus),
+    /// Whether a calibration point was removed (u8), sent after the new calibration
+    CalibrationPointRemoved(bool),
     /// Low power warning indicating that the battery is empty. The Progressor will turn itself off after sending this warning
     LowPowerWarning,
     /// Response to app version request command
@@ -705,6 +735,9 @@ impl Format for ResponseCode {
                 status.soc_percent,
                 status.charging
             ),
+            ResponseCode::CalibrationPointRemoved(removed) => {
+                defmt::write!(fmt, "CalibrationPointRemoved: {}", removed)
+            }
             ResponseCode::LowPowerWarning => defmt::write!(fmt, "LowPowerWarning"),
             ResponseCode::AppVersion(version) => defmt::write!(fmt, "AppVersion: {:x}", version),
             ResponseCode::ProgressorId(id) => defmt::write!(fmt, "ProgressorId: {:x}", id),
@@ -725,6 +758,7 @@ impl ResponseCode {
             ResponseCode::CalibrationPoint(..) => 0x06,
             ResponseCode::SampleRate(..) => 0x07,
             ResponseCode::BatteryStatus(..) => 0x08,
+            ResponseCode::CalibrationPointRemoved(..) => 0x09,
         }
     }
 
@@ -749,6 +783,7 @@ impl ResponseCode {
             ResponseCode::BatteryStatus(status) => {
                 payload.extend([status.soc_percent, u8::from(status.charging)]);
             }
+            ResponseCode::CalibrationPointRemoved(removed) => payload.push(u8::from(*removed)),
             ResponseCode::LowPowerWarning => (),
             // Reverse the bytes as they are LE
             ResponseCode::ProgressorId(id) => payload.extend(id.iter().rev().copied()),
