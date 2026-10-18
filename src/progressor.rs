@@ -263,12 +263,14 @@ impl DeviceState {
         self.measurement_status = MeasurementTaskStatus::Disabled;
     }
 
-    /// Queue a command for the measurement task.
-    fn queue_load_cell_command(&mut self, command: LoadCellCommand) {
+    /// Queue a command for the measurement task. Returns false when the full queue drops it.
+    fn queue_load_cell_command(&mut self, command: LoadCellCommand) -> bool {
         self.record_activity();
-        if LOAD_CELL_COMMANDS.try_send(command).is_err() {
+        let queued = LOAD_CELL_COMMANDS.try_send(command).is_ok();
+        if !queued {
             warn!("Load cell command queue full, dropping {:?}", command);
         }
+        queued
     }
 
     /// Start taring process
@@ -281,9 +283,9 @@ impl DeviceState {
         self.queue_load_cell_command(LoadCellCommand::Calibrate(weight));
     }
 
-    /// Remove the calibration point at the given index
-    pub fn remove_calibration_point(&mut self, index: u8) {
-        self.queue_load_cell_command(LoadCellCommand::RemoveCalibrationPoint(index));
+    /// Remove the calibration point at the given index. Returns false when the command is dropped.
+    pub fn remove_calibration_point(&mut self, index: u8) -> bool {
+        self.queue_load_cell_command(LoadCellCommand::RemoveCalibrationPoint(index))
     }
 
     pub fn get_calibration(&mut self) {
@@ -546,16 +548,18 @@ impl ControlOpCode {
                 None
             }
             ControlOpCode::RemoveCalibrationPoint => {
+                // The client waits for an answer to every removal, so a removal that does not
+                // reach the measurement task is answered here.
+                let kept = DataPoint::from(ResponseCode::CalibrationPointRemoved(false));
                 let Some(&index) = data.get(1) else {
                     error!("RemoveCalibrationPoint: Invalid data length");
-                    return None;
+                    return Some(kept);
                 };
                 info!(
                     "Received RemoveCalibrationPoint command for index {}",
                     index
                 );
-                device_state.remove_calibration_point(index);
-                None
+                (!device_state.remove_calibration_point(index)).then_some(kept)
             }
             ControlOpCode::SampleBattery => {
                 let voltage = device_state.battery_voltage;
