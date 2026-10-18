@@ -39,7 +39,6 @@ use esp_hal::{
 };
 use esp_hal_smartled::{RmtSmartLeds, Timing, buffer_size, color_order};
 use esp_radio::ble::controller::BleConnector;
-use esp_storage::FlashStorage;
 use max170xx::Max17048;
 use smart_leds::{RGB8, SmartLedsWriteAsync as _, brightness};
 use trouble_host::prelude::*;
@@ -97,6 +96,8 @@ const CHARGING_RATE_THRESHOLD: f32 = 0.1;
 const LOW_BATTERY_SHUTDOWN_MV: u32 = 3300;
 /// Matches the MAX17048 VCELL update period in hibernate.
 const BATTERY_READ_PERIOD: Duration = Duration::from_secs(45);
+/// Stack of the measurement executor. Its overflow canary panics, which resets the chip.
+const MEASUREMENT_STACK_SIZE: usize = 8 * 1024;
 /// Registers that the max170xx driver does not expose.
 const MAX17048_ADDRESS: u8 = 0x36;
 const MAX17048_MODE: u8 = 0x06;
@@ -214,10 +215,12 @@ async fn main(spawner: Spawner) -> ! {
 
     // Initialize RTOS
     let timg0 = TimerGroup::new(peripherals.TIMG0);
-    esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
+    esp_rtos::start(timg0.timer0);
 
     // Read the persisted settings before BLE starts and before any task uses them.
-    let mut storage = Storage::new(FlashStorage::new(peripherals.FLASH));
+    let flash = esp_hal::flash::Flash::new(peripherals.FLASH, Default::default())
+        .expect("Failed to initialize flash");
+    let mut storage = Storage::new(flash);
     let stored_settings = storage.read();
     update_device_state(|state| state.settings = stored_settings);
 
@@ -322,12 +325,20 @@ async fn main(spawner: Spawner) -> ! {
     update_device_state(|state| state.on_ble_disconnected());
 
     // Run the measurement task above the BLE host, so packet transmission does not delay ADC
-    // reads past the next conversion at high sample rates.
+    // reads past the next conversion at high sample rates. Its own stack keeps it off the stack of
+    // the task it interrupts: the esp-radio tasks have 8 KiB stacks, and a flash write from this
+    // executor overflowed one into the heap, which crashed the BLE controller interrupt (#83).
     let measurement_executor = mk_static!(
         esp_rtos::embassy::InterruptExecutor<2>,
         esp_rtos::embassy::InterruptExecutor::new(peripherals.FROM_CPU_INTR2)
     );
-    let measurement_spawner = measurement_executor.start(esp_hal::interrupt::Priority::Priority2);
+    let measurement_spawner = measurement_executor.start_with_stack(
+        esp_hal::interrupt::Priority::Priority2,
+        mk_static!(
+            esp_rtos::embassy::InterruptExecutorStack<MEASUREMENT_STACK_SIZE>,
+            esp_rtos::embassy::InterruptExecutorStack::new()
+        ),
+    );
 
     // Spawn tasks
     measurement_spawner.spawn(

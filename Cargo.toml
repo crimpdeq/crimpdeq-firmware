@@ -17,9 +17,9 @@ embassy-time = { version = "0.5.1", features = ["defmt"] }
 embedded-hal-async = "1.0.0"
 esp-alloc = { version = "0.11.0", features = ["defmt"] }
 esp-bootloader-esp-idf = { version = "0.6.0", features = ["defmt", "esp32c3"] }
-esp-hal = { version = "1.2.2", features = ["defmt", "esp32c3", "unstable"] }
+esp-hal = { version = "1.2.0", features = ["defmt", "esp32c3", "unstable"] }
 esp-hal-smartled = { version = "0.18.0", features = ["defmt"] }
-esp-radio = { version = "1.0.0-beta.1", features = [
+esp-radio = { version = "1.0.0-beta.2", features = [
     "ble",
     "defmt",
     "esp-alloc",
@@ -33,12 +33,22 @@ esp-rtos = { version = "0.4.0", features = [
     "esp-radio",
     "esp32c3",
 ] }
-esp-storage = { version = "0.10.0", features = ["defmt", "esp32c3"] }
 max170xx = { version = "1.1.0", features = ["async"] }
 rtt-target = { version = "0.6.2", features = ["defmt"] }
 smart-leds = "0.4.0"
 static_cell = "2.1.1"
 trouble-host = { version = "0.8.0", features = ["defmt"] }
+
+# InterruptExecutor::start_with_stack is not released yet.
+[patch.crates-io]
+esp-alloc = { git = "https://github.com/SergioGasquez/esp-hal", branch = "fix/radio-lock-reentrancy" }
+esp-bootloader-esp-idf = { git = "https://github.com/SergioGasquez/esp-hal", branch = "fix/radio-lock-reentrancy" }
+esp-hal = { git = "https://github.com/SergioGasquez/esp-hal", branch = "fix/radio-lock-reentrancy" }
+esp-radio = { git = "https://github.com/SergioGasquez/esp-hal", branch = "fix/radio-lock-reentrancy" }
+esp-radio-rtos-driver = { git = "https://github.com/SergioGasquez/esp-hal", branch = "fix/radio-lock-reentrancy" }
+esp-rom-sys = { git = "https://github.com/SergioGasquez/esp-hal", branch = "fix/radio-lock-reentrancy" }
+esp-rtos = { git = "https://github.com/SergioGasquez/esp-hal", branch = "fix/radio-lock-reentrancy" }
+esp-sync = { git = "https://github.com/SergioGasquez/esp-hal", branch = "fix/radio-lock-reentrancy" }
 
 [profile.dev]
 # Rust debug is too slow.
