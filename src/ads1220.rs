@@ -4,7 +4,12 @@
 //! excitation voltage as the ADC reference. The dedicated DRDY pin is not
 //! connected, so the ADC also signals data ready on DOUT/DRDY, which the
 //! driver watches while chip select is low (datasheet section 8.5.6).
+//!
+//! BLE transmissions add positive spikes to the conversions they overlap
+//! (crimpdeq-firmware#86), so every reading is the median of the latest
+//! conversions.
 
+use arrayvec::ArrayVec;
 use defmt::{Format, debug, error, info};
 use embassy_time::{Duration, Instant, Timer, with_timeout};
 use embedded_hal_async::spi::SpiBus;
@@ -41,6 +46,9 @@ const OSCILLATOR_WAKE_UP_TIME: Duration = Duration::from_micros(50);
 const START_DELAY_CLOCKS: u32 = 210;
 /// Extra wait for a conversion beyond its nominal conversion time.
 const DATA_READY_TIMEOUT_MARGIN: Duration = Duration::from_millis(8);
+
+/// Largest [`SampleRate::median_window`].
+const MAX_MEDIAN_WINDOW: usize = 7;
 
 const TARING_TIME: Duration = Duration::from_millis(200);
 const CALIBRATION_TIME: Duration = Duration::from_millis(1250);
@@ -106,6 +114,17 @@ impl SampleRate {
         }
     }
 
+    /// Number of consecutive conversions in each median, 2k + 1. It removes spikes up to k
+    /// conversions long and keeps steps in the force, and delays each reading by k conversions.
+    /// A spike covers one conversion at 175 SPS and averages 2.3 conversions at 1000 SPS.
+    const fn median_window(self) -> usize {
+        match self {
+            Self::Sps20 | Self::Sps45 | Self::Sps90 | Self::Sps175 => 3,
+            Self::Sps330 | Self::Sps600 => 5,
+            Self::Sps1000 => MAX_MEDIAN_WINDOW,
+        }
+    }
+
     /// Longest wait for a conversion while converting continuously.
     fn data_ready_timeout(self) -> Duration {
         clocks_to_duration(self.conversion_clocks().0) + DATA_READY_TIMEOUT_MARGIN
@@ -153,6 +172,8 @@ pub struct Ads1220<'d> {
     first_conversion_at: Instant,
     powered_down: bool,
     sample_rate: SampleRate,
+    /// Latest conversions since START/SYNC, oldest first.
+    recent_codes: ArrayVec<i32, MAX_MEDIAN_WINDOW>,
 }
 
 impl<'d> Ads1220<'d> {
@@ -168,6 +189,7 @@ impl<'d> Ads1220<'d> {
             first_conversion_at: Instant::now(),
             powered_down: false,
             sample_rate: SampleRate::DEFAULT,
+            recent_codes: ArrayVec::new(),
         }
     }
 
@@ -211,6 +233,7 @@ impl<'d> Ads1220<'d> {
     async fn start_conversions(&mut self) -> Result<(), Ads1220Error> {
         self.send_command(COMMAND_START_SYNC).await?;
         self.first_conversion_at = Instant::now() + self.sample_rate.first_conversion_time();
+        self.recent_codes.clear();
         Ok(())
     }
 
@@ -283,10 +306,27 @@ impl<'d> Ads1220<'d> {
         Ok(i32::from_be_bytes([transaction[0], transaction[1], transaction[2], 0]) >> 8)
     }
 
+    /// Wait for the next conversion and return the median of the latest conversions. The first
+    /// reading after START/SYNC waits for a full window.
+    async fn read_median(&mut self) -> Result<i32, Ads1220Error> {
+        let window = self.sample_rate.median_window();
+        while self.recent_codes.len() >= window {
+            self.recent_codes.remove(0);
+        }
+        while self.recent_codes.len() < window {
+            let code = self.read_raw().await?;
+            self.recent_codes.push(code);
+        }
+
+        let mut sorted = self.recent_codes.clone();
+        sorted.sort_unstable();
+        Ok(sorted[window / 2])
+    }
+
     async fn take_samples(&mut self, num_samples: usize) -> Result<f32, Ads1220Error> {
         let mut total = 0i64;
         for _ in 0..num_samples {
-            total += i64::from(self.read_raw().await?);
+            total += i64::from(self.read_median().await?);
         }
         Ok((total as f64 / num_samples as f64) as f32)
     }
@@ -327,7 +367,7 @@ impl<'d> Ads1220<'d> {
 
     /// Read an ADC code with the tare offset removed.
     pub async fn read_tared(&mut self) -> Result<i32, Ads1220Error> {
-        Ok(self.read_raw().await? - self.tare_value)
+        Ok(self.read_median().await? - self.tare_value)
     }
 
     /// Read a calibrated load-cell value in kilograms.

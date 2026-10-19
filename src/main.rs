@@ -223,10 +223,10 @@ async fn main(spawner: Spawner) -> ! {
 
     // Initialize BLE
     let bluetooth = peripherals.BT;
-    // Each transmission couples into the ADS1220 input and offsets the conversion it overlaps:
-    // with no load and the default calibration, +20 dBm gave single-sample spikes up to 1.4 kg,
-    // +9 dBm up to 0.12 kg, and 0 dBm stayed within the ADC noise. +9 dBm trades those smaller
-    // spikes for BLE range.
+    // Each transmission couples into the ADS1220 input and offsets the conversions it overlaps:
+    // with no load, +20 dBm gave spikes up to 1.4 kg, +9 dBm up to 0.9 kg, and 0 dBm stayed
+    // within the ADC noise. At 0 dBm, iPhones sometimes dropped the connection in crowded gyms,
+    // so the ADS1220 driver removes the spikes with a median filter instead.
     let ble_config =
         esp_radio::ble::Config::default().with_default_tx_power(esp_radio::ble::TxPower::P9);
     let connector = BleConnector::new(bluetooth, ble_config).unwrap();
