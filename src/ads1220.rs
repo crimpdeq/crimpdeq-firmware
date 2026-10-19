@@ -4,6 +4,10 @@
 //! excitation voltage as the ADC reference. The dedicated DRDY pin is not
 //! connected, so the ADC also signals data ready on DOUT/DRDY, which the
 //! driver watches while chip select is low (datasheet section 8.5.6).
+//!
+//! The async SPI driver does not keep the chip out of automatic light sleep, so every SPI
+//! transaction holds a [`WakeLock`]. Continuous conversions hold one as well: waking from light
+//! sleep for each conversion at 1000 SPS could miss the next one.
 
 use defmt::{Format, debug, error, info};
 use embassy_time::{Duration, Instant, Timer, with_timeout};
@@ -11,6 +15,7 @@ use embedded_hal_async::spi::SpiBus;
 use esp_hal::{
     Async,
     gpio::{Input, Output},
+    rtc_cntl::WakeLock,
     spi::master::Spi,
 };
 
@@ -151,7 +156,8 @@ pub struct Ads1220<'d> {
     data_ready: Input<'d>,
     tare_value: i32,
     first_conversion_at: Instant,
-    powered_down: bool,
+    /// Held while the ADC converts, `None` in power-down mode.
+    converting: Option<WakeLock>,
     sample_rate: SampleRate,
 }
 
@@ -166,7 +172,7 @@ impl<'d> Ads1220<'d> {
             data_ready,
             tare_value: 0,
             first_conversion_at: Instant::now(),
-            powered_down: false,
+            converting: Some(WakeLock::new()),
             sample_rate: SampleRate::DEFAULT,
         }
     }
@@ -191,7 +197,7 @@ impl<'d> Ads1220<'d> {
     /// registers until the next START/SYNC.
     pub async fn set_sample_rate(&mut self, sample_rate: SampleRate) -> Result<(), Ads1220Error> {
         self.configure(sample_rate).await?;
-        if !self.powered_down {
+        if !self.is_powered_down() {
             self.start_conversions().await?;
         }
         Ok(())
@@ -215,6 +221,7 @@ impl<'d> Ads1220<'d> {
     }
 
     async fn send_command(&mut self, command: u8) -> Result<(), Ads1220Error> {
+        let _awake = WakeLock::new();
         self.chip_select.set_low();
         let result = SpiBus::write(&mut self.spi, &[command]).await;
         self.chip_select.set_high();
@@ -234,6 +241,7 @@ impl<'d> Ads1220<'d> {
             registers[3],
         ];
 
+        let _awake = WakeLock::new();
         self.chip_select.set_low();
         let result = SpiBus::write(&mut self.spi, &bytes).await;
         self.chip_select.set_high();
@@ -244,6 +252,7 @@ impl<'d> Ads1220<'d> {
         let command = COMMAND_RREG | (REGISTER_COUNT as u8 - 1);
         let mut registers = [0; REGISTER_COUNT];
 
+        let _awake = WakeLock::new();
         self.chip_select.set_low();
         let result = async {
             SpiBus::write(&mut self.spi, &[command])
@@ -295,21 +304,21 @@ impl<'d> Ads1220<'d> {
     pub async fn power_down(&mut self) -> Result<(), Ads1220Error> {
         debug!("Powering down ADS1220");
         self.send_command(COMMAND_POWERDOWN).await?;
-        self.powered_down = true;
+        self.converting = None;
         Ok(())
     }
 
     /// Returns whether the ADC is in power-down mode.
     pub fn is_powered_down(&self) -> bool {
-        self.powered_down
+        self.converting.is_none()
     }
 
     /// Restart continuous conversions if the ADC is powered down.
     pub async fn wake(&mut self) -> Result<(), Ads1220Error> {
-        if self.powered_down {
+        if self.is_powered_down() {
             debug!("Powering up ADS1220");
             self.start_conversions().await?;
-            self.powered_down = false;
+            self.converting = Some(WakeLock::new());
         }
         Ok(())
     }

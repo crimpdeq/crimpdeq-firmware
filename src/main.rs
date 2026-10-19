@@ -28,8 +28,9 @@ use esp_hal::{
     clock::CpuClock,
     gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull},
     i2c::master::{Config as I2cConfig, I2c},
+    peripherals::{GPIO2, RMT, USB_DEVICE},
     rmt::Rmt,
-    rtc_cntl::sleep::{LowPower, RtcSleepConfig},
+    rtc_cntl::{CpuRetentionStorage, WakeLock, sleep::LowPower},
     spi::{
         Mode as SpiMode,
         master::{Config as SpiConfig, Spi},
@@ -39,7 +40,7 @@ use esp_hal::{
 };
 use esp_hal_smartled::{RmtSmartLeds, Timing, buffer_size, color_order};
 use esp_radio::ble::controller::BleConnector;
-use esp_storage::FlashStorage;
+use esp_rtos::sleep::DeepSleep;
 use max170xx::Max17048;
 use smart_leds::{RGB8, SmartLedsWriteAsync as _, brightness};
 use trouble_host::prelude::*;
@@ -123,7 +124,15 @@ const BLE_RETRY_DELAY: Duration = Duration::from_secs(1);
 const SETTINGS_WRITE_ATTEMPTS: u32 = 3;
 /// Delay before retrying a failed settings write.
 const SETTINGS_WRITE_RETRY_DELAY: Duration = Duration::from_secs(1);
-type StatusLed = RmtSmartLeds<'static, STATUS_LED_RMT_BUFFER_SIZE, Async, RGB8, color_order::Grb>;
+const STATUS_LED_RMT_RATE: Rate = Rate::from_mhz(80);
+type StatusLedDriver<'a> =
+    RmtSmartLeds<'a, STATUS_LED_RMT_BUFFER_SIZE, Async, RGB8, color_order::Grb>;
+
+/// WS2812B-V6 status LED on GPIO2 (U1.5, IO2_LED, R13 0R to D4 DIN), driven by the RMT.
+struct StatusLed {
+    rmt: RMT<'static>,
+    pin: GPIO2<'static>,
+}
 
 #[derive(Clone, Copy, PartialEq)]
 enum StatusLedMode {
@@ -199,12 +208,22 @@ async fn main(spawner: Spawner) -> ! {
     // Allocate 72KB of heap memory
     esp_alloc::heap_allocator!(size: 72 * 1024);
 
-    // Initialize RTOS
+    // Initialize RTOS. The chip enters light sleep whenever every task waits and no driver holds a
+    // `WakeLock`, which powers the CPU down and keeps its state in RAM.
+    let mut sleep = esp_rtos::sleep::configure(peripherals.LPWR);
+    // The memory that the bootloader used is otherwise unused after boot.
+    #[esp_hal::ram(reclaimed, unstable(zeroed))]
+    static CPU_RETENTION_MEMORY: CpuRetentionStorage = CpuRetentionStorage::new();
+    sleep
+        .enable_cpu_powerdown(CPU_RETENTION_MEMORY.take())
+        .expect("Failed to install the CPU retention memory");
     let timg0 = TimerGroup::new(peripherals.TIMG0);
-    esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
+    esp_rtos::start_with_idle_hook(timg0.timer0, sleep.light_sleep_hook);
 
     // Read the persisted settings before BLE starts and before any task uses them.
-    let mut storage = Storage::new(FlashStorage::new(peripherals.FLASH));
+    let flash = esp_hal::flash::Flash::new(peripherals.FLASH, Default::default())
+        .expect("Failed to initialize the flash");
+    let mut storage = Storage::new(flash);
     let stored_settings = storage.read();
     update_device_state(|state| state.settings = stored_settings);
 
@@ -214,8 +233,11 @@ async fn main(spawner: Spawner) -> ! {
     // with no load and the default calibration, +20 dBm gave single-sample spikes up to 1.4 kg,
     // +9 dBm up to 0.12 kg, and 0 dBm stayed within the ADC noise. +9 dBm trades those smaller
     // spikes for BLE range.
-    let ble_config =
-        esp_radio::ble::Config::default().with_default_tx_power(esp_radio::ble::TxPower::P9);
+    // Modem sleep turns the radio off between connection events and lets the chip light sleep
+    // while BLE is connected or advertising.
+    let ble_config = esp_radio::ble::Config::default()
+        .with_default_tx_power(esp_radio::ble::TxPower::P9)
+        .with_modem_sleep(true);
     let connector = BleConnector::new(bluetooth, ble_config).unwrap();
     let controller: ExternalController<_, 1> = ExternalController::new(connector);
 
@@ -240,9 +262,6 @@ async fn main(spawner: Spawner) -> ! {
     let load_cell_chip_select =
         Output::new(peripherals.GPIO3, Level::High, OutputConfig::default());
 
-    // Initialize low-power control.
-    let low_power = LowPower::new(peripherals.LPWR);
-
     // Initialize MAX17048 fuel gauge over I2C.
     // GPIO7=SDA (U5.8, IO7_SDA, R21), GPIO6=SCL (U5.7, IO6_SCL, R20),
     // GPIO10=/ALRT (U5.5, IO10_ALRT, R22). CELL/VDD=+BATT, QSTRT=GND.
@@ -258,18 +277,10 @@ async fn main(spawner: Spawner) -> ! {
         .with_scl(peripherals.GPIO6)
         .into_async();
 
-    // Initialize WS2812B-V6 status LED on GPIO2 (U1.5, IO2_LED, R13 0R to D4 DIN) using RMT.
-    let status_led_rmt_rate = Rate::from_mhz(80);
-    let rmt = Rmt::new(peripherals.RMT, status_led_rmt_rate)
-        .expect("Failed to initialize RMT")
-        .into_async();
-    let status_led = StatusLed::new(
-        STATUS_LED_TIMING,
-        rmt.channel0,
-        peripherals.GPIO2,
-        status_led_rmt_rate,
-    )
-    .expect("Failed to initialize status LED");
+    let status_led = StatusLed {
+        rmt: peripherals.RMT,
+        pin: peripherals.GPIO2,
+    };
 
     // Use the last 6 bytes of the DEVICE_NAME for the address
     let name_bytes = DEVICE_NAME.as_bytes();
@@ -330,7 +341,8 @@ async fn main(spawner: Spawner) -> ! {
     spawner.spawn(storage_task(storage, stored_settings).unwrap());
     spawner.spawn(battery_gauge_task(battery_i2c, control_channel).unwrap());
     spawner.spawn(status_led_task(status_led).unwrap());
-    spawner.spawn(deep_sleep_task(low_power).unwrap());
+    spawner.spawn(deep_sleep_task(sleep.deep_sleep).unwrap());
+    spawner.spawn(usb_host_task(peripherals.USB_DEVICE).unwrap());
 
     join(ble_task(runner), async {
         loop {
@@ -405,8 +417,39 @@ fn status_led_mode() -> StatusLedMode {
     })
 }
 
+/// Writes the status LED color. The RMT driver keeps a clock that blocks light sleep for as long as
+/// the driver exists, so the driver exists only during the write.
 async fn set_status_led(led: &mut StatusLed, color: RGB8) {
-    if let Err(e) = led
+    write_status_led(led, color).await;
+    // Dropping the driver releases the data line, so drive it low or the LED could latch noise.
+    // The pin keeps the level after the `Output` drops.
+    let _ = Output::new(led.pin.reborrow(), Level::Low, OutputConfig::default());
+}
+
+async fn write_status_led(led: &mut StatusLed, color: RGB8) {
+    let rmt = match Rmt::new(led.rmt.reborrow(), STATUS_LED_RMT_RATE) {
+        Ok(rmt) => rmt.into_async(),
+        Err(e) => {
+            warn!("Failed to initialize RMT: {:?}", defmt::Debug2Format(&e));
+            return;
+        }
+    };
+    let mut driver = match StatusLedDriver::new(
+        STATUS_LED_TIMING,
+        rmt.channel0,
+        led.pin.reborrow(),
+        STATUS_LED_RMT_RATE,
+    ) {
+        Ok(driver) => driver,
+        Err(e) => {
+            warn!(
+                "Failed to initialize WS2812B status LED: {:?}",
+                defmt::Debug2Format(&e)
+            );
+            return;
+        }
+    };
+    if let Err(e) = driver
         .write(brightness([color].into_iter(), STATUS_LED_BRIGHTNESS))
         .await
     {
@@ -486,8 +529,79 @@ async fn status_led_task(mut led: StatusLed) {
     }
 }
 
+/// Keeps the chip out of light sleep while a USB host is connected, like ESP-IDF's
+/// `CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION`. Light sleep stops the USB-Serial-JTAG, so the host could
+/// not flash the firmware, debug it or read the RTT logs, and the board runs from USB power then.
+///
+/// A host cannot enumerate the device while the chip light-sleeps, and gives up after a few
+/// attempts. So while no host is connected, the task wakes the chip every `PROBE_PERIOD` and
+/// connects the device again, which makes a host that was plugged in meanwhile enumerate it.
 #[embassy_executor::task]
-async fn deep_sleep_task(mut low_power: LowPower<'static>) {
+async fn usb_host_task(usb: USB_DEVICE<'static>) {
+    /// Longest wait for the first frame after the device connects. The hub reports the connection
+    /// within its polling interval of up to 256 ms, debounces it for 100 ms and resets the port.
+    const ENUMERATION_TIMEOUT: Duration = Duration::from_secs(1);
+    /// A connected host sends a start-of-frame packet every millisecond.
+    const FRAME_TIMEOUT: Duration = Duration::from_millis(3);
+    const PROBE_PERIOD: Duration = Duration::from_secs(30);
+    const CHECK_PERIOD: Duration = Duration::from_secs(1);
+
+    loop {
+        let awake = WakeLock::new();
+        // A host that is connected already keeps its session, such as a debugger attached at boot.
+        let mut connected = usb_host_connected(&usb, FRAME_TIMEOUT).await;
+        if !connected {
+            reconnect_usb_device(&usb).await;
+            connected = usb_host_connected(&usb, ENUMERATION_TIMEOUT).await;
+        }
+        if connected {
+            info!("USB host connected, light sleep disabled");
+            while usb_host_connected(&usb, FRAME_TIMEOUT).await {
+                Timer::after(CHECK_PERIOD).await;
+            }
+            info!("USB host disconnected");
+        }
+        drop(awake);
+        Timer::after(PROBE_PERIOD).await;
+    }
+}
+
+/// Disconnects the device from the USB bus and connects it again, so a host enumerates it anew.
+async fn reconnect_usb_device(usb: &USB_DEVICE<'_>) {
+    usb.register_block().conf0().modify(|_, w| {
+        w.pad_pull_override().set_bit();
+        w.dp_pullup().clear_bit()
+    });
+    Timer::after(Duration::from_millis(10)).await;
+    // The pull-up bit applies also without the override, so restore its reset value.
+    usb.register_block().conf0().modify(|_, w| {
+        w.dp_pullup().set_bit();
+        w.pad_pull_override().clear_bit()
+    });
+}
+
+/// Waits up to `timeout` for a start-of-frame packet from a USB host.
+async fn usb_host_connected(usb: &USB_DEVICE<'_>, timeout: Duration) -> bool {
+    let frame = || {
+        usb.register_block()
+            .fram_num()
+            .read()
+            .sof_frame_index()
+            .bits()
+    };
+    let first = frame();
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        Timer::after(Duration::from_millis(1)).await;
+        if frame() != first {
+            return true;
+        }
+    }
+    false
+}
+
+#[embassy_executor::task]
+async fn deep_sleep_task(mut deep_sleep: DeepSleep) {
     const DISCONNECTED_IDLE_TIMEOUT_MS: u32 = 4 * 60 * 1000;
     /// Covers long rests between sets, while a client left connected cannot keep the device awake
     /// indefinitely. Only power cycling wakes the device from deep sleep.
@@ -576,11 +690,16 @@ async fn deep_sleep_task(mut low_power: LowPower<'static>) {
                     OutputConfig::default(),
                 );
                 load_cell_chip_select.set_pad_hold(true);
-                low_power.set_wakeup_deadline(
+                // Deep sleep needs a wakeup source, and the light sleep hook leaves the deadline of
+                // the next task wakeup armed, which would end the deep sleep at once. A far
+                // deadline replaces it.
+                // SAFETY: besides `deep_sleep`, only the light sleep hook uses LPWR, and it cannot
+                // run before the sleep as no await follows.
+                LowPower::new(unsafe { esp_hal::peripherals::LPWR::steal() }).set_wakeup_deadline(
                     esp_hal::time::Instant::now()
                         + esp_hal::time::Duration::from_secs(DEEP_SLEEP_FAILSAFE_SECS),
                 );
-                low_power.sleep_deep(RtcSleepConfig::deep());
+                deep_sleep.deep_sleep();
             }
         }
     }

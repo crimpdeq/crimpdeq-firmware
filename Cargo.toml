@@ -17,9 +17,9 @@ embassy-time = { version = "0.5.1", features = ["defmt"] }
 embedded-hal-async = "1.0.0"
 esp-alloc = { version = "0.11.0", features = ["defmt"] }
 esp-bootloader-esp-idf = { version = "0.6.0", features = ["defmt", "esp32c3"] }
-esp-hal = { version = "1.2.2", features = ["defmt", "esp32c3", "unstable"] }
+esp-hal = { version = "1.2.0", features = ["defmt", "esp32c3", "unstable"] }
 esp-hal-smartled = { version = "0.18.0", features = ["defmt"] }
-esp-radio = { version = "1.0.0-beta.1", features = [
+esp-radio = { version = "1.0.0-beta.2", features = [
     "ble",
     "defmt",
     "esp-alloc",
@@ -33,12 +33,27 @@ esp-rtos = { version = "0.4.0", features = [
     "esp-radio",
     "esp32c3",
 ] }
-esp-storage = { version = "0.10.0", features = ["defmt", "esp32c3"] }
 max170xx = { version = "1.1.0", features = ["async"] }
 rtt-target = { version = "0.6.2", features = ["defmt"] }
 smart-leds = "0.4.0"
 static_cell = "2.1.1"
 trouble-host = { version = "0.8.0", features = ["defmt"] }
+
+# BLE modem sleep and automatic light sleep (#63) are on esp-hal main but not released yet.
+[patch.crates-io]
+esp-alloc              = { git = "https://github.com/esp-rs/esp-hal", rev = "c21d5741a8fdecb9e01b196e55b7c7859360bf1b" }
+esp-bootloader-esp-idf = { git = "https://github.com/esp-rs/esp-hal", rev = "c21d5741a8fdecb9e01b196e55b7c7859360bf1b" }
+esp-config             = { git = "https://github.com/esp-rs/esp-hal", rev = "c21d5741a8fdecb9e01b196e55b7c7859360bf1b" }
+esp-hal                = { git = "https://github.com/esp-rs/esp-hal", rev = "c21d5741a8fdecb9e01b196e55b7c7859360bf1b" }
+esp-hal-procmacros     = { git = "https://github.com/esp-rs/esp-hal", rev = "c21d5741a8fdecb9e01b196e55b7c7859360bf1b" }
+esp-metadata-generated = { git = "https://github.com/esp-rs/esp-hal", rev = "c21d5741a8fdecb9e01b196e55b7c7859360bf1b" }
+esp-phy                = { git = "https://github.com/esp-rs/esp-hal", rev = "c21d5741a8fdecb9e01b196e55b7c7859360bf1b" }
+esp-radio              = { git = "https://github.com/esp-rs/esp-hal", rev = "c21d5741a8fdecb9e01b196e55b7c7859360bf1b" }
+esp-radio-rtos-driver  = { git = "https://github.com/esp-rs/esp-hal", rev = "c21d5741a8fdecb9e01b196e55b7c7859360bf1b" }
+esp-riscv-rt           = { git = "https://github.com/esp-rs/esp-hal", rev = "c21d5741a8fdecb9e01b196e55b7c7859360bf1b" }
+esp-rom-sys            = { git = "https://github.com/esp-rs/esp-hal", rev = "c21d5741a8fdecb9e01b196e55b7c7859360bf1b" }
+esp-rtos               = { git = "https://github.com/esp-rs/esp-hal", rev = "c21d5741a8fdecb9e01b196e55b7c7859360bf1b" }
+esp-sync               = { git = "https://github.com/esp-rs/esp-hal", rev = "c21d5741a8fdecb9e01b196e55b7c7859360bf1b" }
 
 [profile.dev]
 # Rust debug is too slow.
