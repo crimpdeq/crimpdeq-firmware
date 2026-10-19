@@ -13,14 +13,16 @@ use crate::{ads1220::SampleRate, storage::Settings};
 
 /// Number of high-priority control responses that can be queued.
 const CONTROL_RESPONSE_CHANNEL_SIZE: usize = 16;
-/// Number of measurement packets retained by the BLE transport ring buffer.
+/// Number of measurement batches retained by the BLE transport ring buffer. Batches hold up to
+/// `MAX_SAMPLES_PER_PACKET` samples at any ATT MTU, so the ring covers the slow idle connection
+/// interval at the start of a measurement also when a packet carries only 2 samples.
 const MEASUREMENT_CHANNEL_SIZE: usize = 80;
 /// Channel reserved for calibration, status, and other control responses.
 pub type ControlResponseChannel =
     Channel<CriticalSectionRawMutex, DataPoint, CONTROL_RESPONSE_CHANNEL_SIZE>;
 /// Ring buffer used to decouple measurement acquisition from BLE transmission.
 pub type MeasurementDataChannel =
-    Channel<CriticalSectionRawMutex, DataPoint, MEASUREMENT_CHANNEL_SIZE>;
+    Channel<CriticalSectionRawMutex, WeightMeasurementBatch, MEASUREMENT_CHANNEL_SIZE>;
 /// Number of load cell commands that can wait for the measurement task.
 const LOAD_CELL_COMMAND_QUEUE_SIZE: usize = 4;
 /// Queue of one-shot commands for the measurement task.
@@ -40,15 +42,15 @@ const WEIGHT_MEASUREMENT_SIZE: usize = 8;
 const MEASUREMENT_PACKET_OVERHEAD: usize = 5;
 /// Maximum size of the payload written to the Control Point characteristic.
 pub const CONTROL_POINT_MAX_PAYLOAD_SIZE: usize = 10;
-/// Batch of weight measurements sent in a single BLE packet.
+/// Batch of weight measurements, sent in one or more BLE packets.
 pub type WeightMeasurementBatch = ArrayVec<(f32, u32), MAX_SAMPLES_PER_PACKET>;
 /// Size of the Data Point response code and payload length.
 const DATA_POINT_HEADER_SIZE: usize = 2;
 /// Maximum size of the payload sent in a Data Point notification.
 pub const DATA_POINT_MAX_PAYLOAD_SIZE: usize = MAX_SAMPLES_PER_PACKET * WEIGHT_MEASUREMENT_SIZE;
 
-/// Choose the largest batch that fits the negotiated ATT MTU.
-pub const fn measurement_batch_size_for_att_mtu(att_mtu: u16) -> usize {
+/// Choose the largest number of measurements per packet that fits the negotiated ATT MTU.
+pub const fn measurements_per_packet(att_mtu: u16) -> usize {
     let available = (att_mtu as usize).saturating_sub(MEASUREMENT_PACKET_OVERHEAD);
     let batch_size = available / WEIGHT_MEASUREMENT_SIZE;
     if batch_size == 0 {
@@ -181,8 +183,6 @@ pub struct DeviceState {
     pub last_activity_time_ms: u32,
     /// Whether BLE is currently connected.
     pub ble_connected: bool,
-    /// Number of measurements to pack according to the negotiated ATT MTU.
-    pub measurement_batch_size: usize,
     /// Current sleep transition state.
     pub sleep_state: SleepState,
     /// Whether the measurement task has powered down its peripherals for sleep.
@@ -217,7 +217,6 @@ impl DeviceState {
             battery_status: None,
             last_activity_time_ms: 0,
             ble_connected: false,
-            measurement_batch_size: measurement_batch_size_for_att_mtu(23),
             sleep_state: SleepState::Awake,
             sleep_measurement_ready: false,
             sleep_status_led_ready: false,
@@ -656,9 +655,12 @@ impl Default for DataPoint {
 }
 
 impl DataPoint {
-    /// Create a weight measurement data point
-    pub fn weight_measurement(measurements: WeightMeasurementBatch) -> Self {
-        Self::from(ResponseCode::WeightMeasurement(measurements))
+    /// Create a weight measurement data point. Panics with more than `MAX_SAMPLES_PER_PACKET`
+    /// measurements.
+    pub fn weight_measurement(measurements: &[(f32, u32)]) -> Self {
+        Self::from(ResponseCode::WeightMeasurement(
+            measurements.iter().copied().collect(),
+        ))
     }
 }
 

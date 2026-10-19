@@ -59,6 +59,7 @@ use crate::{
         LoadCellCommand,
         MAX_BATCH_DURATION,
         MAX_CALIBRATION_POINTS,
+        MAX_SAMPLES_PER_PACKET,
         MeasurementDataChannel,
         MeasurementTaskStatus,
         ResponseCode,
@@ -66,7 +67,7 @@ use crate::{
         SleepReason,
         SleepState,
         WeightMeasurementBatch,
-        measurement_batch_size_for_att_mtu,
+        measurements_per_packet,
     },
     storage::{Settings, Storage},
 };
@@ -181,20 +182,6 @@ fn update_device_state<R>(update: impl FnOnce(&mut DeviceState) -> R) -> R {
         STATE_CHANGED.sender().send(());
     }
     result
-}
-
-fn update_measurement_batch_size(att_mtu: u16) {
-    let batch_size = measurement_batch_size_for_att_mtu(att_mtu);
-    let previous = update_device_state(|state| {
-        core::mem::replace(&mut state.measurement_batch_size, batch_size)
-    });
-
-    if previous != batch_size {
-        info!(
-            "ATT MTU {} selects {} measurements per packet",
-            att_mtu, batch_size
-        );
-    }
 }
 
 // ESP-IDF App Descriptor
@@ -349,9 +336,7 @@ async fn main(spawner: Spawner) -> ! {
         loop {
             match advertise(&mut peripheral, &server).await {
                 Ok(conn) => {
-                    let initial_att_mtu = conn.raw().att_mtu();
-                    update_measurement_batch_size(initial_att_mtu);
-                    info!("Initial ATT MTU: {}", initial_att_mtu);
+                    info!("Initial ATT MTU: {}", conn.raw().att_mtu());
 
                     let initial_params = conn.raw().params();
                     info!(
@@ -843,8 +828,7 @@ fn enqueue_measurement_batch(
     measurements: WeightMeasurementBatch,
     dropped_batches: &mut u32,
 ) {
-    let data_point = DataPoint::weight_measurement(measurements);
-    let Err(TrySendError::Full(data_point)) = channel.try_send(data_point) else {
+    let Err(TrySendError::Full(measurements)) = channel.try_send(measurements) else {
         return;
     };
 
@@ -859,7 +843,7 @@ fn enqueue_measurement_batch(
         }
     }
 
-    if let Err(TrySendError::Full(_)) = channel.try_send(data_point) {
+    if let Err(TrySendError::Full(_)) = channel.try_send(measurements) {
         error!("Failed to enqueue measurement after dropping oldest batch");
     }
 }
@@ -885,17 +869,15 @@ async fn measurement_task(
 
     loop {
         // Get current device state
-        let (sleep_state, status, start_time, measurement_batch_size, settings) =
-            critical_section::with(|cs| {
-                let state = DEVICE_STATE.borrow_ref(cs);
-                (
-                    state.sleep_state,
-                    state.measurement_status,
-                    state.start_time,
-                    state.measurement_batch_size,
-                    state.settings,
-                )
-            });
+        let (sleep_state, status, start_time, settings) = critical_section::with(|cs| {
+            let state = DEVICE_STATE.borrow_ref(cs);
+            (
+                state.sleep_state,
+                state.measurement_status,
+                state.start_time,
+                state.settings,
+            )
+        });
 
         match sleep_state {
             SleepState::Requested(reason) => {
@@ -1032,8 +1014,10 @@ async fn measurement_task(
                 let now = (esp_hal::time::Instant::now().duration_since_epoch()).as_micros() as u32;
                 let timestamp = now.wrapping_sub(start_time);
                 measurement_buffer.push((weight, timestamp));
+                // Full batches regardless of the ATT MTU, so the ring holds the same samples at
+                // any MTU; data_processing_task splits them into packets.
                 let batch_size =
-                    measurement_batch_size.min(settings.sample_rate.samples_in(MAX_BATCH_DURATION));
+                    MAX_SAMPLES_PER_PACKET.min(settings.sample_rate.samples_in(MAX_BATCH_DURATION));
                 if measurement_buffer.len() >= batch_size {
                     enqueue_measurement_batch(
                         measurement_channel,
@@ -1455,37 +1439,83 @@ async fn data_processing_task<P: PacketPool>(
     control_channel: &'static ControlResponseChannel,
     measurement_channel: &'static MeasurementDataChannel,
 ) {
-    let data_point_handle = &server.progressor.data_point;
     let mut control_first = true;
+    let mut att_mtu = 0;
 
     loop {
-        // The peer may negotiate a larger MTU after the connection starts.
-        update_measurement_batch_size(conn.raw().att_mtu());
-
-        // Alternate priority when both queues have packets, so neither starves the other.
-        let (data_point, is_control_response) = if control_first {
-            match select(control_channel.receive(), measurement_channel.receive()).await {
-                Either::First(control_response) => (control_response, true),
-                Either::Second(measurement) => (measurement, false),
-            }
+        // Alternate priority when both queues have data, so neither starves the other.
+        let next = if control_first {
+            select(control_channel.receive(), measurement_channel.receive()).await
         } else {
             match select(measurement_channel.receive(), control_channel.receive()).await {
-                Either::First(measurement) => (measurement, false),
-                Either::Second(control_response) => (control_response, true),
+                Either::First(measurements) => Either::Second(measurements),
+                Either::Second(control_response) => Either::First(control_response),
             }
         };
-        control_first = !is_control_response;
-        debug!("Sending Data Point: {:?}", data_point);
+        control_first = matches!(next, Either::Second(_));
 
-        // Send notification with the data packet. An exhausted packet pool drops this packet
-        // instead of the connection.
-        match data_point_handle.notify(conn, &data_point, false).await {
-            Ok(()) => {}
-            Err(Error::OutOfMemory) => warn!("No packet buffer, dropping Data Point"),
-            Err(e) => {
-                info!("Error sending Data Point: {:?}", defmt::Debug2Format(&e));
-                break;
+        let sent = match next {
+            Either::First(control_response) => {
+                notify_data_point(server, conn, &control_response).await
             }
+            Either::Second(measurements) => {
+                // The peer may negotiate a larger MTU after the connection starts.
+                let current_att_mtu = conn.raw().att_mtu();
+                if current_att_mtu != att_mtu {
+                    att_mtu = current_att_mtu;
+                    info!(
+                        "ATT MTU {} selects {} measurements per packet",
+                        att_mtu,
+                        measurements_per_packet(att_mtu)
+                    );
+                }
+                notify_measurements(
+                    server,
+                    conn,
+                    &measurements,
+                    measurements_per_packet(att_mtu),
+                )
+                .await
+            }
+        };
+        if let Err(e) = sent {
+            info!("Error sending Data Point: {:?}", defmt::Debug2Format(&e));
+            break;
         }
+    }
+}
+
+/// Sends a measurement batch in packets of up to `packet_size` measurements.
+async fn notify_measurements<P: PacketPool>(
+    server: &Server<'_>,
+    conn: &GattConnection<'_, '_, P>,
+    measurements: &WeightMeasurementBatch,
+    packet_size: usize,
+) -> Result<(), Error> {
+    for packet in measurements.chunks(packet_size) {
+        notify_data_point(server, conn, &DataPoint::weight_measurement(packet)).await?;
+    }
+    Ok(())
+}
+
+/// Sends a Data Point notification. An exhausted packet pool drops this packet instead of the
+/// connection.
+async fn notify_data_point<P: PacketPool>(
+    server: &Server<'_>,
+    conn: &GattConnection<'_, '_, P>,
+    data_point: &DataPoint,
+) -> Result<(), Error> {
+    debug!("Sending Data Point: {:?}", data_point);
+    match server
+        .progressor
+        .data_point
+        .notify(conn, data_point, false)
+        .await
+    {
+        Err(Error::OutOfMemory) => {
+            warn!("No packet buffer, dropping Data Point");
+            Ok(())
+        }
+        result => result,
     }
 }
