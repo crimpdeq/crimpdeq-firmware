@@ -4,8 +4,12 @@
 //! while one setting is written cannot lose the other.
 
 use defmt::{Format, error, info};
-use esp_bootloader_esp_idf::partitions::{PARTITION_TABLE_MAX_LEN, read_partition_table};
-use esp_storage::FlashStorage;
+use esp_bootloader_esp_idf::partitions::{
+    PARTITION_TABLE_MAX_LEN,
+    PartitionEntry,
+    read_partition_table,
+};
+use esp_hal::{Blocking, flash::Flash};
 
 use crate::ads1220::{DEFAULT_CALIBRATION_FACTOR, SampleRate, is_valid_calibration_factor};
 
@@ -60,28 +64,26 @@ impl Record {
 }
 
 pub struct Storage {
-    flash: FlashStorage<'static>,
-    /// Flash offsets of the records, `None` when the partition table lacks their partition.
-    calibration_offset: Option<u32>,
-    sample_rate_offset: Option<u32>,
+    flash: Flash<'static, Blocking>,
+    /// Partitions of the records, `None` when the partition table lacks them.
+    calibration_partition: Option<PartitionEntry>,
+    sample_rate_partition: Option<PartitionEntry>,
 }
 
 impl Storage {
     /// Looks up the record partitions in the partition table.
-    pub fn new(mut flash: FlashStorage<'static>) -> Self {
+    pub fn new(mut flash: Flash<'static, Blocking>) -> Self {
         let mut table_buffer = [0u8; PARTITION_TABLE_MAX_LEN];
         let table = read_partition_table(&mut flash, &mut table_buffer)
             .inspect_err(|e| error!("Failed to read the partition table: {:?}", e))
             .ok();
-        let offset = |record: &Record| {
+        let partition = |record: &Record| {
             let partition = table
                 .as_ref()?
                 .iter()
                 .find(|partition| partition.label_as_str() == record.partition);
             match partition {
-                Some(partition) if partition.len() as usize >= RECORD_SIZE => {
-                    Some(partition.offset())
-                }
+                Some(partition) if partition.len() >= Flash::SECTOR_SIZE => Some(partition),
                 Some(_) => {
                     error!("Partition {} is too small", record.partition);
                     None
@@ -95,20 +97,20 @@ impl Storage {
                 }
             }
         };
-        let calibration_offset = offset(&CALIBRATION_RECORD);
-        let sample_rate_offset = offset(&SAMPLE_RATE_RECORD);
+        let calibration_partition = partition(&CALIBRATION_RECORD);
+        let sample_rate_partition = partition(&SAMPLE_RATE_RECORD);
 
         Self {
             flash,
-            calibration_offset,
-            sample_rate_offset,
+            calibration_partition,
+            sample_rate_partition,
         }
     }
 
     /// Reads the stored settings, with the default for each one that is missing or invalid.
     pub fn read(&mut self) -> Settings {
         let calibration_factor = match self
-            .read_record(self.calibration_offset, &CALIBRATION_RECORD)
+            .read_record(self.calibration_partition, &CALIBRATION_RECORD)
             .map(f32::from_bits)
         {
             Some(factor) if is_valid_calibration_factor(factor) => {
@@ -121,7 +123,7 @@ impl Storage {
             }
         };
         let sample_rate = match self
-            .read_record(self.sample_rate_offset, &SAMPLE_RATE_RECORD)
+            .read_record(self.sample_rate_partition, &SAMPLE_RATE_RECORD)
             .and_then(|sps| SampleRate::from_sps(u16::try_from(sps).ok()?))
         {
             Some(sample_rate) => sample_rate,
@@ -139,7 +141,7 @@ impl Storage {
 
     pub fn write_calibration_factor(&mut self, factor: f32) -> Result<(), StorageError> {
         self.write_record(
-            self.calibration_offset,
+            self.calibration_partition,
             &CALIBRATION_RECORD,
             factor.to_bits(),
         )
@@ -147,13 +149,16 @@ impl Storage {
 
     pub fn write_sample_rate(&mut self, sample_rate: SampleRate) -> Result<(), StorageError> {
         let sps = u32::from(sample_rate.sps());
-        self.write_record(self.sample_rate_offset, &SAMPLE_RATE_RECORD, sps)
+        self.write_record(self.sample_rate_partition, &SAMPLE_RATE_RECORD, sps)
     }
 
     /// Reads a stored value, or `None` when the record is missing or corrupt.
-    fn read_record(&mut self, offset: Option<u32>, record: &Record) -> Option<u32> {
+    fn read_record(&mut self, partition: Option<PartitionEntry>, record: &Record) -> Option<u32> {
         let mut bytes = [0; RECORD_SIZE];
-        if let Err(e) = self.flash.read(offset?, &mut bytes) {
+        if let Err(e) = partition?
+            .as_flash_region(&mut self.flash)
+            .and_then(|mut region| region.read(0, &mut bytes))
+        {
             error!(
                 "Failed to read record {:#x} from flash: {:?}",
                 record.magic, e
@@ -177,23 +182,29 @@ impl Storage {
 
     fn write_record(
         &mut self,
-        offset: Option<u32>,
+        partition: Option<PartitionEntry>,
         record: &Record,
         value: u32,
     ) -> Result<(), StorageError> {
-        let offset = offset.ok_or(StorageError::MissingPartition)?;
+        let partition = partition.ok_or(StorageError::MissingPartition)?;
         let words = [record.magic, record.version, value, record.checksum(value)];
         let mut bytes = [0; RECORD_SIZE];
         for (chunk, word) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(words) {
             *chunk = word.to_le_bytes();
         }
 
-        self.flash.write(offset, &bytes).map_err(|e| {
-            error!(
-                "Failed to write record {:#x} to flash: {:?}",
-                record.magic, e
-            );
-            StorageError::Flash
-        })
+        partition
+            .as_flash_region(&mut self.flash)
+            .and_then(|mut region| {
+                region.erase(0, Flash::SECTOR_SIZE)?;
+                region.write(0, &bytes)
+            })
+            .map_err(|e| {
+                error!(
+                    "Failed to write record {:#x} to flash: {:?}",
+                    record.magic, e
+                );
+                StorageError::Flash
+            })
     }
 }
