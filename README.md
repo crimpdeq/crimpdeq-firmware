@@ -50,7 +50,7 @@ The `main` branch targets PCB V3.
 
 ## Building and Flashing
 
-The [Crimpdeq Book](https://book.crimpdeq.com/) covers assembly, calibration, charging, and general usage. See [Flash with Web Tools](https://book.crimpdeq.com/firmware/web_tools) to flash a release binary and [Flash with Local Setup](https://book.crimpdeq.com/firmware/local) for prerequisites, flashing, logs, and troubleshooting.
+The [Crimpdeq Book](https://book.crimpdeq.com/) covers assembly, calibration, charging, and general usage. See [Flash with Web Tools](https://book.crimpdeq.com/firmware/web_tools) to flash a release binary and [Flash with Local Setup](https://book.crimpdeq.com/firmware/local) for prerequisites, flashing, and logs.
 
 With the stable Rust toolchain, the `riscv32imc-unknown-none-elf` target, and [`probe-rs`](https://probe.rs/) installed:
 
