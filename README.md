@@ -6,7 +6,7 @@
 
 Meet [Crimpdeq](https://crimpdeq.com), a portable digital force sensor designed for climbers, coaches, and therapists to measure and train finger strength, pulling power, and endurance.
 
-Crimpdeq is a fully open-source project based on an [ESP32-C3](https://github.com/esp-rs/esp-rust-board), an ADS1220 ratiometric load-cell front end, and a WH-C100 crane scale, with firmware fully written in Rust!
+Crimpdeq is a fully open-source project: an ESP32-C3 [PCB](https://github.com/crimpdeq/crimpdeq-pcb) with an ADS1220 ratiometric load-cell front end and a MAX17048 fuel gauge, a WH-C100 crane scale, a 3D-printable [case](https://github.com/crimpdeq/crimpdeq-case), and firmware fully written in Rust!
 
 
 > [!NOTE]
@@ -14,13 +14,18 @@ Crimpdeq is a fully open-source project based on an [ESP32-C3](https://github.co
 
 ## Specs
 
-- Rechargeable battery with USB‑C charging
+These specs describe PCB V3 with its matching case and firmware.
+
+- Rechargeable battery with USB‑C charging, also while switched off
+- Battery level reporting with a MAX17048 fuel gauge
+- RGB status LED for connection and low-battery status
+- ADS1220 24-bit load-cell ADC
 - Communicates via Bluetooth Low Energy (BLE)
 - Open-source firmware written in Rust
 - Open-source PCB design
 - Open-source 3D case design
 - Automatic sleep when inactive
-- Compatible with Tindeq Progressor app ([Android](https://play.google.com/store/apps/details?id=com.progressor&hl=es_419) | [iOS](https://apps.apple.com/es/app/tindeq-progressor/id1380412428))
+- Compatible with Tindeq Progressor app ([Android](https://play.google.com/store/apps/details?id=com.progressor&hl=es_419) | [iOS](https://apps.apple.com/es/app/tindeq-progressor/id1380412428))
 - Compatible with Frez app (formerly ClimbHarder) ([Android](https://play.google.com/store/apps/details?id=com.holdtight.climbharder&pcampaignid=web_share) | [iOS](https://apps.apple.com/us/app/climbharder-no-hang-training/id6730120024))
 - Sampling frequency: 175 Hz by default, selectable from 20 to 1000 Hz with the Crimpdeq app and kept across reboots
 - Design load: 1500 N (≈150 kg), full scale
@@ -28,32 +33,34 @@ Crimpdeq is a fully open-source project based on an [ESP32-C3](https://github.co
     - 0.05 kg between 0 and 99 kg
     - 0.1 kg between 100 and 150 kg
 - Operating temperature: 0–40 °C
-- Dimensions: 80 × 90 × 35 mm
+- Dimensions: 97 × 77 × 31 mm
 - Uses the [Tindeq Progressor API](https://tindeq.com/progressor_api/)
 
-## Building and Running the Firmware
+## Firmware Versions
 
-The [Crimpdeq Book](https://book.crimpdeq.com/) covers assembly, calibration, charging, and general usage. For repository-specific instructions, see the [Firmware](https://book.crimpdeq.com/firmware.html) chapter for prerequisites, how to build, flash, and run the firmware, how to enable logs, and troubleshooting.
+Each PCB revision needs its own firmware; use the latest release for your revision:
 
-### MAX17048 I²C wiring
+| PCB revision | Firmware                                                                      |
+| ------------ | ----------------------------------------------------------------------------- |
+| V1           | [`v0.4.0`](https://github.com/crimpdeq/crimpdeq-firmware/releases/tag/v0.4.0) |
+| V2           | [`v2.1.0`](https://github.com/crimpdeq/crimpdeq-firmware/releases/tag/v2.1.0) |
+| V3           | [`v3.0.0`](https://github.com/crimpdeq/crimpdeq-firmware/releases/tag/v3.0.0) |
 
-MAX17048 I²C uses GPIO7=SDA and GPIO6=SCL, matching the TDFN pad functions
-and the PCB net labels:
+The `main` branch targets PCB V3.
 
-| Signal | ESP32 GPIO | U5 pad | PCB net | 10 kΩ pull-up |
-| --- | --- | --- | --- | --- |
-| SDA | 7 | 8 | `IO7_SDA` | R21 |
-| SCL | 6 | 7 | `IO6_SCL` | R20 |
-| ALERT | 10 | 5 | `IO10_ALRT` | R22 |
+## Building and Flashing
 
-Keep `.with_sda(peripherals.GPIO7)` and `.with_scl(peripherals.GPIO6)` in
-`src/main.rs`. Coordinate any future pin-map change with the PCB.
+The [Crimpdeq Book](https://book.crimpdeq.com/) covers assembly, calibration, charging, and general usage. See [Flash with Web Tools](https://book.crimpdeq.com/firmware/web_tools) to flash a release binary and [Flash with Local Setup](https://book.crimpdeq.com/firmware/local) for prerequisites, flashing, logs, and troubleshooting.
 
-To validate on hardware, build with `DEFMT_LOG=info`, flash, and confirm the
-`Battery:` log reports voltage, state of charge, and charge rate without
-`Failed to read MAX17048 battery gauge` warnings. Readings occur every 45 seconds;
-a reading at or below 3.3 V while not charging is confirmed by a second one with
-the gauge's hibernate disabled, normally within a few seconds, before deep sleep.
+With the stable Rust toolchain, the `riscv32imc-unknown-none-elf` target, and [`probe-rs`](https://probe.rs/) installed:
+
+```bash
+cargo build --release                  # Build only
+cargo run --release                    # Build, flash, and open the log monitor
+DEFMT_LOG=info cargo run --release     # Same, with logs enabled
+```
+
+The advertised name, the Progressor ID, and the reported app version come from `DEVICE_NAME`, `DEVICE_ID`, and `DEVICE_VERSION_NUMBER` in [`.cargo/config.toml`](.cargo/config.toml). The calibration factor and sampling rate are stored in the `calib` and `settings` partitions of [`partitions.csv`](partitions.csv), so erasing the flash also erases the calibration.
 
 ## Contributing
 Contributions are welcome! Feel free to:
@@ -73,6 +80,7 @@ This repository is licensed under either of:
 at your option.
 
 ## Kudos
-- @bjoernQ for helping me during the development and developing the [`bleps`](https://github.com/bjoernQ/bleps) crate, which was fundamental for this project.
+- @bjoernQ for helping me during the development and developing the [`bleps`](https://github.com/bjoernQ/bleps) crate, which the first versions of this firmware were built on.
+- [`trouble`](https://github.com/embassy-rs/trouble), the BLE host stack used by this firmware.
 - [hangman](https://github.com/kesyog/hangman) for being an improved version of this project and a great source of inspiration for this project.
 - Tindeq for having its API public and allowing for projects like this to exist!
