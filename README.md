@@ -62,46 +62,6 @@ DEFMT_LOG=info cargo run --release     # Same, with logs enabled
 
 The advertised name, the Progressor ID, and the reported app version come from `DEVICE_NAME`, `DEVICE_ID`, and `DEVICE_VERSION_NUMBER` in [`.cargo/config.toml`](.cargo/config.toml). The calibration factor and sampling rate are stored in the `calib` and `settings` partitions of [`partitions.csv`](partitions.csv), so erasing the flash also erases the calibration.
 
-## Pin Map (PCB V3)
-
-| Peripheral          | Signal    | ESP32-C3 GPIO |
-| ------------------- | --------- | ------------- |
-| ADS1220 (SPI)       | SCLK      | 5             |
-|                     | DIN/MOSI  | 4             |
-|                     | /CS       | 3             |
-|                     | DOUT/DRDY | 1             |
-| MAX17048 (I²C)      | SDA       | 7             |
-|                     | SCL       | 6             |
-|                     | /ALRT     | 10            |
-| WS2812B status LED  | DIN       | 2             |
-
-These assignments match the PCB net labels in [`crimpdeq-pcb`](https://github.com/crimpdeq/crimpdeq-pcb); coordinate any pin-map change with the PCB.
-
-To check the fuel gauge on hardware, flash with `DEFMT_LOG=info` and confirm that the `Battery:` log reports voltage, state of charge, and charge rate without `Failed to read MAX17048 battery gauge` warnings.
-
-## BLE Protocol
-
-The device implements the [Tindeq Progressor API](https://tindeq.com/progressor_api/), so Tindeq-compatible apps work unchanged. The `Shutdown` command (`0x6E`) only closes the BLE link; the device keeps advertising and sleeps once the idle timeout expires.
-
-The [Crimpdeq app](https://github.com/crimpdeq/crimpdeq-app) also uses these custom Control Point commands:
-
-| Command                  | Opcode | Payload               | Response (Data Point code)                               |
-| ------------------------ | ------ | --------------------- | -------------------------------------------------------- |
-| Get calibration          | `0x72` | –                     | Calibration factor (`0x05`) and stored points (`0x06`)   |
-| Default calibration      | `0x74` | –                     | Calibration factor (`0x05`)                              |
-| Set sample rate          | `0x75` | `u16` LE samples/s    | Sample rate in use (`0x07`)                              |
-| Get sample rate          | `0x76` | –                     | Sample rate in use (`0x07`)                              |
-| Get battery status       | `0x77` | –                     | State of charge `u8` % and charging `u8` (`0x08`)        |
-| Remove calibration point | `0x78` | `u8` index            | New calibration, then whether it was removed (`0x09`)    |
-
-Supported sample rates are 20, 45, 90, 175, 330, 600, and 1000 samples/s; an unsupported rate leaves the current one unchanged.
-
-## Power Management
-
-- The device enters deep sleep after 4 minutes without a connection, or after 30 minutes without activity while connected. Measuring keeps it awake.
-- The battery is read every 45 seconds. At or below 3.5 V the status LED blinks red; at or below 3.3 V while not charging, the device enters deep sleep to protect the battery.
-- Only power cycling wakes the device from deep sleep.
-
 ## Contributing
 Contributions are welcome! Feel free to:
 - Submit PRs for bug fixes or new features
