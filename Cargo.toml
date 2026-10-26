@@ -40,6 +40,11 @@ smart-leds = "0.4.0"
 static_cell = "2.1.1"
 trouble-host = { version = "0.8.0", features = ["defmt"] }
 
+[features]
+# Run on the ESP32-C3 Rust board (https://github.com/esp-rs/esp-rust-board) with a simulated
+# load cell and battery.
+esp-rust-board = []
+
 [profile.dev]
 # Rust debug is too slow.
 # For debug builds always builds with some optimization

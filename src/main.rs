@@ -1,5 +1,8 @@
 #![no_std]
 #![no_main]
+// The Rust board build replaces the ADS1220 and MAX17048 code with mocks; the default build still
+// checks that code for dead items and imports.
+#![cfg_attr(feature = "esp-rust-board", allow(dead_code, unused_imports))]
 
 use core::cell::RefCell;
 
@@ -74,8 +77,15 @@ use crate::{
 
 mod ads1220;
 mod ble;
+#[cfg(feature = "esp-rust-board")]
+mod mock;
 mod progressor;
 mod storage;
+
+#[cfg(not(feature = "esp-rust-board"))]
+type LoadCell = Ads1220<'static>;
+#[cfg(feature = "esp-rust-board")]
+type LoadCell = mock::MockLoadCell;
 
 const STATUS_LED_COUNT: usize = 1;
 const STATUS_LED_RMT_BUFFER_SIZE: usize = buffer_size::<RGB8>(STATUS_LED_COUNT);
@@ -223,10 +233,12 @@ async fn main(spawner: Spawner) -> ! {
     // GPIO5=SCLK, GPIO4=DIN/MOSI, GPIO3=/CS, GPIO1=DOUT/DRDY.
     // GPIO1 is both the SPI MISO and the data ready input. DOUT/DRDY is high impedance while /CS
     // is high, so the pull-up keeps it from reading as data ready.
+    #[cfg(not(feature = "esp-rust-board"))]
     let load_cell_data_ready = Input::new(
         peripherals.GPIO1,
         InputConfig::default().with_pull(Pull::Up),
     );
+    #[cfg(not(feature = "esp-rust-board"))]
     let load_cell_spi = Spi::new(
         peripherals.SPI2,
         SpiConfig::default()
@@ -237,6 +249,7 @@ async fn main(spawner: Spawner) -> ! {
     .with_sck(peripherals.GPIO5)
     .with_mosi(peripherals.GPIO4)
     .with_miso(load_cell_data_ready.peripheral_input());
+    #[cfg(not(feature = "esp-rust-board"))]
     let load_cell_chip_select =
         Output::new(peripherals.GPIO3, Level::High, OutputConfig::default());
 
@@ -248,10 +261,12 @@ async fn main(spawner: Spawner) -> ! {
     // GPIO10=/ALRT (U5.5, IO10_ALRT, R22). CELL/VDD=+BATT, QSTRT=GND.
     // Revision-3 R20/R21/R22 provide 10k pull-ups on SCL/SDA/ALRT;
     // retain the internal ALRT pull-up.
+    #[cfg(not(feature = "esp-rust-board"))]
     let _battery_alert_pin = Input::new(
         peripherals.GPIO10,
         InputConfig::default().with_pull(Pull::Up),
     );
+    #[cfg(not(feature = "esp-rust-board"))]
     let battery_i2c = I2c::new(peripherals.I2C0, I2cConfig::default())
         .expect("Failed to initialize battery I2C")
         .with_sda(peripherals.GPIO7)
@@ -259,6 +274,7 @@ async fn main(spawner: Spawner) -> ! {
         .into_async();
 
     // Initialize WS2812B-V6 status LED on GPIO2 (U1.5, IO2_LED, R13 0R to D4 DIN) using RMT.
+    // The Rust board also has a WS2812 on GPIO2.
     let status_led_rmt_rate = Rate::from_mhz(80);
     let rmt = Rmt::new(peripherals.RMT, status_led_rmt_rate)
         .expect("Failed to initialize RMT")
@@ -321,14 +337,20 @@ async fn main(spawner: Spawner) -> ! {
         measurement_task(
             control_channel,
             measurement_channel,
+            #[cfg(not(feature = "esp-rust-board"))]
             load_cell_spi,
+            #[cfg(not(feature = "esp-rust-board"))]
             load_cell_chip_select,
+            #[cfg(not(feature = "esp-rust-board"))]
             load_cell_data_ready,
         )
         .unwrap(),
     );
     spawner.spawn(storage_task(storage, stored_settings).unwrap());
+    #[cfg(not(feature = "esp-rust-board"))]
     spawner.spawn(battery_gauge_task(battery_i2c, control_channel).unwrap());
+    #[cfg(feature = "esp-rust-board")]
+    spawner.spawn(mock_battery_task().unwrap());
     spawner.spawn(status_led_task(status_led).unwrap());
     spawner.spawn(deep_sleep_task(low_power).unwrap());
 
@@ -570,12 +592,13 @@ async fn deep_sleep_task(mut low_power: LowPower<'static>) {
                     OutputConfig::default(),
                 );
                 status_led_pin.set_pad_hold(true);
-                let mut load_cell_chip_select = Output::new(
+                #[cfg(not(feature = "esp-rust-board"))]
+                Output::new(
                     unsafe { esp_hal::peripherals::GPIO3::steal() },
                     Level::High,
                     OutputConfig::default(),
-                );
-                load_cell_chip_select.set_pad_hold(true);
+                )
+                .set_pad_hold(true);
                 low_power.set_wakeup_deadline(
                     esp_hal::time::Instant::now()
                         + esp_hal::time::Duration::from_secs(DEEP_SLEEP_FAILSAFE_SECS),
@@ -615,6 +638,24 @@ async fn battery_gauge_task(
             update_device_state(|state| state.request_sleep(SleepReason::LowBattery));
         }
 
+        Timer::after(BATTERY_READ_PERIOD).await;
+    }
+}
+
+#[cfg(feature = "esp-rust-board")]
+#[embassy_executor::task]
+async fn mock_battery_task() {
+    let mut battery = mock::MockBattery::new();
+    loop {
+        let (voltage_mv, status) = battery.read();
+        info!(
+            "Mock battery: {} mV, SOC: {}%, charging: {}",
+            voltage_mv, status.soc_percent, status.charging
+        );
+        update_device_state(|state| {
+            state.battery_voltage = voltage_mv;
+            state.battery_status = Some(status);
+        });
         Timer::after(BATTERY_READ_PERIOD).await;
     }
 }
@@ -852,11 +893,14 @@ fn enqueue_measurement_batch(
 async fn measurement_task(
     control_channel: &'static ControlResponseChannel,
     measurement_channel: &'static MeasurementDataChannel,
-    spi: Spi<'static, Blocking>,
-    chip_select: Output<'static>,
-    data_ready: Input<'static>,
+    #[cfg(not(feature = "esp-rust-board"))] spi: Spi<'static, Blocking>,
+    #[cfg(not(feature = "esp-rust-board"))] chip_select: Output<'static>,
+    #[cfg(not(feature = "esp-rust-board"))] data_ready: Input<'static>,
 ) {
+    #[cfg(not(feature = "esp-rust-board"))]
     let mut load_cell = Ads1220::new(spi.into_async(), chip_select, data_ready);
+    #[cfg(feature = "esp-rust-board")]
+    let mut load_cell = mock::MockLoadCell::new();
     let mut initialized = false;
     let mut measurement_buffer = WeightMeasurementBatch::new();
     let mut dropped_measurement_batches = 0u32;
@@ -1033,7 +1077,7 @@ async fn measurement_task(
 /// Runs a one-shot load cell command.
 async fn run_load_cell_command(
     command: LoadCellCommand,
-    load_cell: &mut Ads1220<'static>,
+    load_cell: &mut LoadCell,
     channel: &'static ControlResponseChannel,
 ) {
     match command {
