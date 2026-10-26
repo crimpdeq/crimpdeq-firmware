@@ -546,7 +546,18 @@ async fn deep_sleep_task(mut low_power: LowPower<'static>) {
                     );
 
                     if inactivity_ms >= idle_timeout_ms {
-                        update_device_state(|state| state.request_sleep(SleepReason::IdleTimeout));
+                        // The Rust board stays awake, so it does not need a reset after idling.
+                        if cfg!(feature = "esp-rust-board") {
+                            info!(
+                                "Idle timeout reached after {} ms, skipping deep sleep on the Rust board",
+                                inactivity_ms
+                            );
+                            state_changes.changed().await;
+                        } else {
+                            update_device_state(|state| {
+                                state.request_sleep(SleepReason::IdleTimeout)
+                            });
+                        }
                         continue;
                     }
 
