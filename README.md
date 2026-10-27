@@ -56,8 +56,8 @@ With the stable Rust toolchain, the `riscv32imc-unknown-none-elf` target, and [`
 
 ```bash
 cargo build --release                  # Build only
-cargo run --release                    # Build, flash, and open the log monitor
-DEFMT_LOG=info cargo run --release     # Same, with logs enabled
+cargo run --release                    # Build, flash, and start the firmware
+DEFMT_LOG=info cargo run --release     # Same, and open the log monitor
 ```
 
 The advertised name, the Progressor ID, and the reported app version come from `DEVICE_NAME`, `DEVICE_ID`, and `DEVICE_VERSION_NUMBER` in [`.cargo/config.toml`](.cargo/config.toml). The calibration factor and sampling rate are stored in the `calib` and `settings` partitions of [`partitions.csv`](partitions.csv), so erasing the flash also erases the calibration.
