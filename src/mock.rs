@@ -92,12 +92,12 @@ impl MockLoadCell {
         self.powered_down
     }
 
-    /// Restarts the pull cycle from rest, so every measurement starts unloaded.
+    /// Restarts the pull cycle from rest. Each measurement start wakes the load cell, so every
+    /// measurement starts unloaded and repeats the same pulls, also when a tare or calibration
+    /// woke it before.
     pub async fn wake(&mut self) -> Result<(), Infallible> {
-        if self.powered_down {
-            self.woke_at = Instant::now();
-            self.powered_down = false;
-        }
+        self.woke_at = Instant::now();
+        self.powered_down = false;
         Ok(())
     }
 
