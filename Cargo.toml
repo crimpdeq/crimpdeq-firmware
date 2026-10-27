@@ -41,9 +41,9 @@ static_cell = "2.1.1"
 trouble-host = { version = "0.8.0", features = ["defmt"] }
 
 [features]
-# Run on the ESP32-C3 Rust board (https://github.com/esp-rs/esp-rust-board) with a simulated
-# load cell and battery.
-esp-rust-board = []
+# Simulate the load cell and battery and skip idle deep sleep, to run on PCB V3 or on the ESP32-C3
+# Rust board (https://github.com/esp-rs/esp-rust-board) without a load cell or battery.
+mock = []
 
 [profile.dev]
 # Rust debug is too slow.

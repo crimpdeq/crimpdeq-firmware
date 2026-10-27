@@ -1,8 +1,8 @@
 #![no_std]
 #![no_main]
-// The Rust board build replaces the ADS1220 and MAX17048 code with mocks; the default build still
+// The mock build replaces the ADS1220 and MAX17048 code with simulations; the default build still
 // checks that code for dead items and imports.
-#![cfg_attr(feature = "esp-rust-board", allow(dead_code, unused_imports))]
+#![cfg_attr(feature = "mock", allow(dead_code, unused_imports))]
 
 use core::cell::RefCell;
 
@@ -77,14 +77,14 @@ use crate::{
 
 mod ads1220;
 mod ble;
-#[cfg(feature = "esp-rust-board")]
+#[cfg(feature = "mock")]
 mod mock;
 mod progressor;
 mod storage;
 
-#[cfg(not(feature = "esp-rust-board"))]
+#[cfg(not(feature = "mock"))]
 type LoadCell = Ads1220<'static>;
-#[cfg(feature = "esp-rust-board")]
+#[cfg(feature = "mock")]
 type LoadCell = mock::MockLoadCell;
 
 const STATUS_LED_COUNT: usize = 1;
@@ -233,12 +233,12 @@ async fn main(spawner: Spawner) -> ! {
     // GPIO5=SCLK, GPIO4=DIN/MOSI, GPIO3=/CS, GPIO1=DOUT/DRDY.
     // GPIO1 is both the SPI MISO and the data ready input. DOUT/DRDY is high impedance while /CS
     // is high, so the pull-up keeps it from reading as data ready.
-    #[cfg(not(feature = "esp-rust-board"))]
+    #[cfg(not(feature = "mock"))]
     let load_cell_data_ready = Input::new(
         peripherals.GPIO1,
         InputConfig::default().with_pull(Pull::Up),
     );
-    #[cfg(not(feature = "esp-rust-board"))]
+    #[cfg(not(feature = "mock"))]
     let load_cell_spi = Spi::new(
         peripherals.SPI2,
         SpiConfig::default()
@@ -249,7 +249,9 @@ async fn main(spawner: Spawner) -> ! {
     .with_sck(peripherals.GPIO5)
     .with_mosi(peripherals.GPIO4)
     .with_miso(load_cell_data_ready.peripheral_input());
-    #[cfg(not(feature = "esp-rust-board"))]
+    // The mock build keeps /CS high only so that, on revision 3, noise cannot clock in a command,
+    // as /CS has no pull-up. On the Rust board, GPIO3 is a free header pin.
+    #[cfg_attr(feature = "mock", allow(unused_variables))]
     let load_cell_chip_select =
         Output::new(peripherals.GPIO3, Level::High, OutputConfig::default());
 
@@ -261,12 +263,12 @@ async fn main(spawner: Spawner) -> ! {
     // GPIO10=/ALRT (U5.5, IO10_ALRT, R22). CELL/VDD=+BATT, QSTRT=GND.
     // Revision-3 R20/R21/R22 provide 10k pull-ups on SCL/SDA/ALRT;
     // retain the internal ALRT pull-up.
-    #[cfg(not(feature = "esp-rust-board"))]
+    #[cfg(not(feature = "mock"))]
     let _battery_alert_pin = Input::new(
         peripherals.GPIO10,
         InputConfig::default().with_pull(Pull::Up),
     );
-    #[cfg(not(feature = "esp-rust-board"))]
+    #[cfg(not(feature = "mock"))]
     let battery_i2c = I2c::new(peripherals.I2C0, I2cConfig::default())
         .expect("Failed to initialize battery I2C")
         .with_sda(peripherals.GPIO7)
@@ -274,7 +276,7 @@ async fn main(spawner: Spawner) -> ! {
         .into_async();
 
     // Initialize WS2812B-V6 status LED on GPIO2 (U1.5, IO2_LED, R13 0R to D4 DIN) using RMT.
-    // The Rust board also has a WS2812 on GPIO2.
+    // The ESP32-C3 Rust board, which can run the mock build, also has a WS2812 on GPIO2.
     let status_led_rmt_rate = Rate::from_mhz(80);
     let rmt = Rmt::new(peripherals.RMT, status_led_rmt_rate)
         .expect("Failed to initialize RMT")
@@ -337,19 +339,19 @@ async fn main(spawner: Spawner) -> ! {
         measurement_task(
             control_channel,
             measurement_channel,
-            #[cfg(not(feature = "esp-rust-board"))]
+            #[cfg(not(feature = "mock"))]
             load_cell_spi,
-            #[cfg(not(feature = "esp-rust-board"))]
+            #[cfg(not(feature = "mock"))]
             load_cell_chip_select,
-            #[cfg(not(feature = "esp-rust-board"))]
+            #[cfg(not(feature = "mock"))]
             load_cell_data_ready,
         )
         .unwrap(),
     );
     spawner.spawn(storage_task(storage, stored_settings).unwrap());
-    #[cfg(not(feature = "esp-rust-board"))]
+    #[cfg(not(feature = "mock"))]
     spawner.spawn(battery_gauge_task(battery_i2c, control_channel).unwrap());
-    #[cfg(feature = "esp-rust-board")]
+    #[cfg(feature = "mock")]
     spawner.spawn(mock_battery_task().unwrap());
     spawner.spawn(status_led_task(status_led).unwrap());
     spawner.spawn(deep_sleep_task(low_power).unwrap());
@@ -546,10 +548,11 @@ async fn deep_sleep_task(mut low_power: LowPower<'static>) {
                     );
 
                     if inactivity_ms >= idle_timeout_ms {
-                        // The Rust board stays awake, so it does not need a reset after idling.
-                        if cfg!(feature = "esp-rust-board") {
+                        // The mock build stays awake, so it does not need a power cycle after
+                        // idling.
+                        if cfg!(feature = "mock") {
                             info!(
-                                "Idle timeout reached after {} ms, skipping deep sleep on the Rust board",
+                                "Idle timeout reached after {} ms, skipping deep sleep in the mock build",
                                 inactivity_ms
                             );
                             state_changes.changed().await;
@@ -603,13 +606,12 @@ async fn deep_sleep_task(mut low_power: LowPower<'static>) {
                     OutputConfig::default(),
                 );
                 status_led_pin.set_pad_hold(true);
-                #[cfg(not(feature = "esp-rust-board"))]
-                Output::new(
+                let mut load_cell_chip_select = Output::new(
                     unsafe { esp_hal::peripherals::GPIO3::steal() },
                     Level::High,
                     OutputConfig::default(),
-                )
-                .set_pad_hold(true);
+                );
+                load_cell_chip_select.set_pad_hold(true);
                 low_power.set_wakeup_deadline(
                     esp_hal::time::Instant::now()
                         + esp_hal::time::Duration::from_secs(DEEP_SLEEP_FAILSAFE_SECS),
@@ -653,7 +655,7 @@ async fn battery_gauge_task(
     }
 }
 
-#[cfg(feature = "esp-rust-board")]
+#[cfg(feature = "mock")]
 #[embassy_executor::task]
 async fn mock_battery_task() {
     let mut battery = mock::MockBattery::new();
@@ -904,13 +906,13 @@ fn enqueue_measurement_batch(
 async fn measurement_task(
     control_channel: &'static ControlResponseChannel,
     measurement_channel: &'static MeasurementDataChannel,
-    #[cfg(not(feature = "esp-rust-board"))] spi: Spi<'static, Blocking>,
-    #[cfg(not(feature = "esp-rust-board"))] chip_select: Output<'static>,
-    #[cfg(not(feature = "esp-rust-board"))] data_ready: Input<'static>,
+    #[cfg(not(feature = "mock"))] spi: Spi<'static, Blocking>,
+    #[cfg(not(feature = "mock"))] chip_select: Output<'static>,
+    #[cfg(not(feature = "mock"))] data_ready: Input<'static>,
 ) {
-    #[cfg(not(feature = "esp-rust-board"))]
+    #[cfg(not(feature = "mock"))]
     let mut load_cell = Ads1220::new(spi.into_async(), chip_select, data_ready);
-    #[cfg(feature = "esp-rust-board")]
+    #[cfg(feature = "mock")]
     let mut load_cell = mock::MockLoadCell::new();
     let mut initialized = false;
     let mut measurement_buffer = WeightMeasurementBatch::new();

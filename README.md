@@ -60,10 +60,10 @@ cargo run --release                    # Build, flash, and open the log monitor
 DEFMT_LOG=info cargo run --release     # Same, with logs enabled
 ```
 
-To try the firmware without Crimpdeq hardware, run it on an [ESP32-C3 Rust board](https://github.com/esp-rs/esp-rust-board) with simulated readings. The load cell repeats pulls that rise from 0 to a peak of up to 30 kg, hold while tiring, and release; the battery discharges to 20 % and charges back:
+To try the firmware without a load cell or battery, build it with simulated readings. The mock build runs on PCB V3 or on an [ESP32-C3 Rust board](https://github.com/esp-rs/esp-rust-board). The load cell repeats pulls that rise from 0 to a peak of up to 30 kg, hold while tiring, and release; the battery discharges to 20 % and charges back; and the device logs the idle timeout instead of entering deep sleep:
 
 ```bash
-cargo run --release --features esp-rust-board
+cargo run --release --features mock
 ```
 
 The advertised name, the Progressor ID, and the reported app version come from `DEVICE_NAME`, `DEVICE_ID`, and `DEVICE_VERSION_NUMBER` in [`.cargo/config.toml`](.cargo/config.toml). The calibration factor and sampling rate are stored in the `calib` and `settings` partitions of [`partitions.csv`](partitions.csv), so erasing the flash also erases the calibration.
