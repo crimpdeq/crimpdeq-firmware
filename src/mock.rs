@@ -49,8 +49,8 @@ fn smoothstep(x: f32) -> f32 {
 }
 
 /// Load cell with the [`crate::ads1220::Ads1220`] interface that converts simulated pulls to ADC
-/// codes, so taring and calibration run as on the ADS1220. With the default calibration the
-/// readings span 0 to 30 kg.
+/// codes, so taring and the calibration factor apply as on the ADS1220. With the default
+/// calibration the readings span 0 to 30 kg.
 pub struct MockLoadCell {
     woke_at: Instant,
     next_conversion_at: Instant,
@@ -113,7 +113,7 @@ impl MockLoadCell {
         self.next_conversion_at += Duration::from_hz(self.sample_rate.sps().into());
 
         let elapsed_s = self.woke_at.elapsed().as_micros() as f32 / 1_000_000.0;
-        (pull_weight_kg(elapsed_s) * 1000.0 / DEFAULT_CALIBRATION_FACTOR) as i32
+        adc_code(pull_weight_kg(elapsed_s)) as i32
     }
 
     pub async fn tare(&mut self) -> Result<(), Infallible> {
@@ -126,9 +126,17 @@ impl MockLoadCell {
         Ok((raw_tared as f32) * calibration_factor / 1000.0)
     }
 
-    pub async fn perform_calibration(&mut self) -> Result<f32, Infallible> {
-        Ok(self.read_raw().await as f32)
+    /// Returns the ADC code of the weight that the client says hangs from the load cell, as a
+    /// calibration while not measuring would otherwise sample the rest before the first pull.
+    /// The fit of these points is the default calibration factor.
+    pub async fn perform_calibration(&mut self, weight_kg: f32) -> Result<f32, Infallible> {
+        Ok(adc_code(weight_kg))
     }
+}
+
+/// ADC code that the default calibration converts to `weight_kg`.
+fn adc_code(weight_kg: f32) -> f32 {
+    weight_kg * 1000.0 / DEFAULT_CALIBRATION_FACTOR
 }
 
 /// Lowest simulated charge, where the battery starts charging again. Stays above the low battery

@@ -1115,7 +1115,11 @@ async fn run_load_cell_command(
                 return;
             }
 
-            let raw_value = match load_cell.perform_calibration().await {
+            #[cfg(not(feature = "mock"))]
+            let raw_value = load_cell.perform_calibration().await;
+            #[cfg(feature = "mock")]
+            let raw_value = load_cell.perform_calibration(weight).await;
+            let raw_value = match raw_value {
                 Ok(raw_value) => raw_value,
                 Err(e) => {
                     error!("Calibration sampling failed: {:?}", e);

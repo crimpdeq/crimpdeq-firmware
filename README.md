@@ -60,7 +60,7 @@ cargo run --release                    # Build, flash, and open the log monitor
 DEFMT_LOG=info cargo run --release     # Same, with logs enabled
 ```
 
-To try the firmware without a load cell or battery, build it with simulated readings. The mock build runs on PCB V3 or on an [ESP32-C3 Rust board](https://github.com/esp-rs/esp-rust-board). The load cell repeats pulls that rise from 0 to a peak of up to 30 kg, hold while tiring, and release; the battery discharges to 20 % and charges back; and the device logs the idle timeout instead of entering deep sleep:
+To try the firmware without a load cell or battery, build it with simulated readings. The mock build runs on PCB V3 or on an [ESP32-C3 Rust board](https://github.com/esp-rs/esp-rust-board). The load cell repeats pulls that rise from 0 to a peak of up to 30 kg, hold while tiring, and release; calibration reads the weight entered in the app; the battery discharges to 20 % and charges back; and the device logs the idle timeout instead of entering deep sleep:
 
 ```bash
 cargo run --release --features mock
