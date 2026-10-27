@@ -8,7 +8,7 @@ use core::cell::RefCell;
 
 use arrayvec::ArrayVec;
 use bt_hci::{
-    cmd::le::{LeConnUpdate, LeReadLocalSupportedFeatures},
+    cmd::le::{LeConnUpdate, LeReadLocalSupportedFeatures, LeSetDataLength, LeSetPhy},
     controller::{ControllerCmdAsync, ControllerCmdSync, ExternalController},
 };
 use critical_section::Mutex;
@@ -1316,15 +1316,52 @@ const IDLE_CONNECTION_PARAMS: RequestedConnParams = RequestedConnParams {
     supervision_timeout: Duration::from_millis(4000),
 };
 
+/// Largest link layer payload, and the time it takes on the 1M PHY. A measurement packet then
+/// fits one link layer packet instead of four 27-byte ones, so a connection event carries more of
+/// them.
+const MAX_DATA_LENGTH_OCTETS: u16 = 251;
+const MAX_DATA_LENGTH_TIME_US: u16 = 2120;
+
+/// Asks for the longest packets and the 2M PHY, which halves their airtime. Each side keeps its
+/// own limits, and a client that supports neither keeps the defaults.
+async fn request_fast_link<C, P>(stack: &Stack<'_, C, P>, conn: &GattConnection<'_, '_, P>)
+where
+    C: Controller
+        + ControllerCmdSync<LeSetDataLength>
+        + ControllerCmdAsync<LeSetPhy>
+        + ControllerCmdSync<LeReadLocalSupportedFeatures>,
+    P: PacketPool,
+{
+    if let Err(e) = conn
+        .raw()
+        .update_data_length(stack, MAX_DATA_LENGTH_OCTETS, MAX_DATA_LENGTH_TIME_US)
+        .await
+    {
+        warn!(
+            "Failed to request the data length: {:?}",
+            defmt::Debug2Format(&e)
+        );
+    }
+    if let Err(e) = conn.raw().set_phy(stack, PhyKind::Le2M).await {
+        warn!(
+            "Failed to request the 2M PHY: {:?}",
+            defmt::Debug2Format(&e)
+        );
+    }
+}
+
 /// Requests connection parameters that match the measurement state, and disconnects once deep
 /// sleep is requested so the client sees the link close instead of a supervision timeout.
 async fn connection_state_task<C, P>(stack: &Stack<'_, C, P>, conn: &GattConnection<'_, '_, P>)
 where
     C: Controller
         + ControllerCmdAsync<LeConnUpdate>
+        + ControllerCmdSync<LeSetDataLength>
+        + ControllerCmdAsync<LeSetPhy>
         + ControllerCmdSync<LeReadLocalSupportedFeatures>,
     P: PacketPool,
 {
+    request_fast_link(stack, conn).await;
     let Some(mut state_changes) = STATE_CHANGED.receiver() else {
         error!("Missing state change receiver for the connection state task");
         return core::future::pending().await;
@@ -1378,6 +1415,17 @@ async fn gatt_events_task<P: PacketPool>(
             GattConnectionEvent::Disconnected { reason } => {
                 info!("Device disconnected: {:?}", reason);
                 break;
+            }
+            GattConnectionEvent::DataLengthUpdated {
+                max_tx_octets,
+                max_rx_octets,
+                ..
+            } => info!(
+                "BLE data length: tx={} octets, rx={} octets",
+                max_tx_octets, max_rx_octets
+            ),
+            GattConnectionEvent::PhyUpdated { tx_phy, rx_phy } => {
+                info!("BLE PHY: tx={:?}, rx={:?}", tx_phy, rx_phy)
             }
             GattConnectionEvent::ConnectionParamsUpdated {
                 conn_interval,

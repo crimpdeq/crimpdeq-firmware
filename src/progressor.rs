@@ -32,8 +32,10 @@ pub static LOAD_CELL_COMMANDS: Channel<
     LOAD_CELL_COMMAND_QUEUE_SIZE,
 > = Channel::new();
 
-/// Maximum number of samples packed into one BLE measurement packet.
-pub const MAX_SAMPLES_PER_PACKET: usize = 10;
+/// Maximum number of samples packed into one BLE measurement packet: as many as the largest ATT
+/// MTU, 247, carries. Fewer packets carry 1000 SPS also to clients that send few packets per
+/// connection event, such as Android phones.
+pub const MAX_SAMPLES_PER_PACKET: usize = 30;
 /// Longest time a batch collects samples, so low sample rates still update the client often.
 pub const MAX_BATCH_DURATION: embassy_time::Duration = embassy_time::Duration::from_millis(50);
 /// Size in bytes of one packed weight measurement (f32 weight + u32 timestamp).
@@ -692,6 +694,9 @@ impl From<ResponseCode> for DataPoint {
 #[repr(u8)]
 /// Response codes that the device can send to the Tindeq app
 // Source: Tindeq API documentation and https://github.com/blims/Tindeq-Progressor-API/blob/78a0bd244303589d0c773ee15ede53e0299712ee/progressor_client.py#L36-L40
+// Each response is converted to a DataPoint as large as the measurement variant right away, so
+// boxing that variant would not save memory.
+#[allow(clippy::large_enum_variant)]
 pub enum ResponseCode {
     /// Response to battery voltage sampling command
     SampleBatteryVoltage(u32),
