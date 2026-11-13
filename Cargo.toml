@@ -45,8 +45,9 @@ trouble-host = { version = "0.8.0", features = ["defmt"] }
 members = ["calibration"]
 
 [features]
-# Simulate the load cell and battery and skip idle deep sleep, to run on PCB V3 or on the ESP32-C3
-# Rust board (https://github.com/esp-rs/esp-rust-board) without a load cell or battery.
+# Simulate the load cell and battery and skip idle deep sleep, to run on the crimpdeq-tscircuit board
+# or on the ESP32-C3 Rust board (https://github.com/esp-rs/esp-rust-board) without a load cell or
+# battery.
 mock = []
 
 [profile.dev]
