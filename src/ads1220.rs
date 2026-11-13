@@ -14,6 +14,7 @@ use embedded_hal_async::spi::SpiBus;
 use esp_hal::{
     Async,
     gpio::{Input, Output},
+    rtc_cntl::WakeLock,
     spi::master::Spi,
 };
 
@@ -154,6 +155,9 @@ pub struct Ads1220<'d> {
     tare_value: i32,
     first_conversion_at: Instant,
     powered_down: bool,
+    /// Keeps the chip out of light sleep while the ADC converts. Light sleep stops the SPI clock,
+    /// and its wake on DRDY could miss conversions at high data rates.
+    wake_lock: Option<WakeLock>,
     sample_rate: SampleRate,
 }
 
@@ -169,6 +173,7 @@ impl<'d> Ads1220<'d> {
             tare_value: 0,
             first_conversion_at: Instant::now(),
             powered_down: false,
+            wake_lock: Some(WakeLock::new()),
             sample_rate: SampleRate::DEFAULT,
         }
     }
@@ -192,6 +197,8 @@ impl<'d> Ads1220<'d> {
     /// Change the data rate. Restarts conversions unless the ADC is powered down, which keeps the
     /// registers until the next START/SYNC.
     pub async fn set_sample_rate(&mut self, sample_rate: SampleRate) -> Result<(), Ads1220Error> {
+        // The SPI transactions need the chip awake also while the ADC is powered down.
+        let _wake_lock = WakeLock::new();
         self.configure(sample_rate).await?;
         if !self.powered_down {
             self.start_conversions().await?;
@@ -299,6 +306,7 @@ impl<'d> Ads1220<'d> {
         debug!("Powering down ADS1220");
         self.send_command(COMMAND_POWERDOWN).await?;
         self.powered_down = true;
+        self.wake_lock = None;
         Ok(())
     }
 
@@ -312,8 +320,10 @@ impl<'d> Ads1220<'d> {
     pub async fn wake(&mut self) -> Result<(), Ads1220Error> {
         if self.powered_down {
             debug!("Powering up ADS1220");
+            let wake_lock = WakeLock::new();
             self.start_conversions().await?;
             self.powered_down = false;
+            self.wake_lock = Some(wake_lock);
         }
         Ok(())
     }
