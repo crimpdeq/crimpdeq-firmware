@@ -97,15 +97,16 @@ type LoadCell = mock::MockLoadCell;
 const STATUS_LED_COUNT: usize = 1;
 const STATUS_LED_RMT_BUFFER_SIZE: usize = buffer_size::<RGB8>(STATUS_LED_COUNT);
 const STATUS_LED_BRIGHTNESS: u8 = 24;
-/// Revision-3 D4 is a Worldsemi WS2812B-V6: T0H 220-380 ns, T1H/T0L/T1L 580-1000 ns,
-/// bit period >= 1.25 us, reset > 280 us. The crate's `WS2812B_TIMING` sends a 400 ns T0H, which
-/// the V6 decodes as a one bit, so every color shows as white.
+/// D4 is a Xinglight XL-2121RGBC-2812B (LCSC C5349957), sent its typical timing: T0H 250 ns
+/// (at most 300 ns), T1H 850 ns (620-1000 ns), T0L 1000 ns, T1L 400 ns, bit period of at least
+/// 1.2 us and reset of at least 80 us. The crate's `WS2812B_TIMING` sends a 400 ns T0H, which
+/// decodes as a one bit, so every color would show as white.
 const STATUS_LED_TIMING: Timing = Timing {
-    time_0_high: 300,
-    time_0_low: 950,
-    time_1_high: 800,
-    time_1_low: 800,
-    reset_us: 300,
+    time_0_high: 250,
+    time_0_low: 1000,
+    time_1_high: 850,
+    time_1_low: 400,
+    reset_us: 100,
 };
 const STATUS_LED_LOW_BATTERY_MV: u32 = 3500;
 /// Charge rate, in %/h, above which the battery counts as charging.
@@ -227,24 +228,20 @@ async fn main(spawner: Spawner) -> ! {
 
     // Initialize BLE
     let bluetooth = peripherals.BT;
-    // Each transmission couples into the ADS1220 input and offsets the conversion it overlaps:
-    // with no load and the default calibration, +20 dBm gave single-sample spikes up to 1.4 kg,
-    // +9 dBm up to 0.12 kg, and 0 dBm stayed within the ADC noise. +9 dBm trades those smaller
-    // spikes for BLE range.
+    // On PCB V3, each transmission couples into the ADS1220 input and offsets the conversion it
+    // overlaps: with no load and the default calibration, +20 dBm gave single-sample spikes up to
+    // 1.4 kg, +9 dBm up to 0.12 kg, and 0 dBm stayed within the ADC noise. +9 dBm trades those
+    // smaller spikes for BLE range.
     let ble_config =
         esp_radio::ble::Config::default().with_default_tx_power(esp_radio::ble::TxPower::P9);
     let connector = BleConnector::new(bluetooth, ble_config).unwrap();
     let controller: ExternalController<_, 1> = ExternalController::new(connector);
 
-    // Initialize the revision-3 ADS1220 load-cell front end.
-    // GPIO5=SCLK, GPIO4=DIN/MOSI, GPIO3=/CS, GPIO1=DOUT/DRDY.
-    // GPIO1 is both the SPI MISO and the data ready input. DOUT/DRDY is high impedance while /CS
-    // is high, so the pull-up keeps it from reading as data ready.
+    // Initialize the ADS1220 load-cell front end.
+    // GPIO5=SCLK, GPIO4=DIN/MOSI, GPIO3=/CS, GPIO1=DOUT/MISO, GPIO0=DRDY.
+    // DRDY is a push-pull output, so it needs no pull.
     #[cfg(not(feature = "mock"))]
-    let load_cell_data_ready = Input::new(
-        peripherals.GPIO1,
-        InputConfig::default().with_pull(Pull::Up),
-    );
+    let load_cell_data_ready = Input::new(peripherals.GPIO0, InputConfig::default());
     #[cfg(not(feature = "mock"))]
     let load_cell_spi = Spi::new(
         peripherals.SPI2,
@@ -255,9 +252,9 @@ async fn main(spawner: Spawner) -> ! {
     .expect("Failed to initialize ADS1220 SPI")
     .with_sck(peripherals.GPIO5)
     .with_mosi(peripherals.GPIO4)
-    .with_miso(load_cell_data_ready.peripheral_input());
-    // The mock build keeps /CS high only so that, on revision 3, noise cannot clock in a command,
-    // as /CS has no pull-up. On the Rust board, GPIO3 is a free header pin.
+    .with_miso(peripherals.GPIO1);
+    // The mock build still drives /CS high, next to its 100k pull-up (R23), so the unused ADS1220
+    // stays deselected. On the Rust board, GPIO3 is a free header pin.
     #[cfg_attr(feature = "mock", allow(unused_variables))]
     let load_cell_chip_select =
         Output::new(peripherals.GPIO3, Level::High, OutputConfig::default());
@@ -266,10 +263,9 @@ async fn main(spawner: Spawner) -> ! {
     let low_power = LowPower::new(peripherals.LPWR);
 
     // Initialize MAX17048 fuel gauge over I2C.
-    // GPIO7=SDA (U5.8, IO7_SDA, R21), GPIO6=SCL (U5.7, IO6_SCL, R20),
-    // GPIO10=/ALRT (U5.5, IO10_ALRT, R22). CELL/VDD=+BATT, QSTRT=GND.
-    // Revision-3 R20/R21/R22 provide 10k pull-ups on SCL/SDA/ALRT;
-    // retain the internal ALRT pull-up.
+    // GPIO6=SDA (I2C_SDA, R20), GPIO7=SCL (I2C_SCL, R21), GPIO10=/ALRT (FG_ALRT).
+    // CELL/VDD=VBAT, QSTRT=GND. R20/R21 are 4.7k pull-ups on SDA/SCL. The open-drain /ALRT has no
+    // external pull-up, so the internal one keeps it from floating.
     #[cfg(not(feature = "mock"))]
     let _battery_alert_pin = Input::new(
         peripherals.GPIO10,
@@ -278,11 +274,11 @@ async fn main(spawner: Spawner) -> ! {
     #[cfg(not(feature = "mock"))]
     let battery_i2c = I2c::new(peripherals.I2C0, I2cConfig::default())
         .expect("Failed to initialize battery I2C")
-        .with_sda(peripherals.GPIO7)
-        .with_scl(peripherals.GPIO6)
+        .with_sda(peripherals.GPIO6)
+        .with_scl(peripherals.GPIO7)
         .into_async();
 
-    // Initialize WS2812B-V6 status LED on GPIO2 (U1.5, IO2_LED, R13 0R to D4 DIN) using RMT.
+    // Initialize the XL-2121RGBC-2812B status LED on GPIO2 (LED_DATA, R13 0R to D4 DIN) using RMT.
     // The ESP32-C3 Rust board, which can run the mock build, also has a WS2812 on GPIO2.
     let status_led_rmt_rate = Rate::from_mhz(80);
     let rmt = Rmt::new(peripherals.RMT, status_led_rmt_rate)
@@ -442,7 +438,7 @@ async fn set_status_led(led: &mut StatusLed, color: RGB8) {
         .await
     {
         warn!(
-            "Failed to update WS2812B status LED: {:?}",
+            "Failed to update the status LED: {:?}",
             defmt::Debug2Format(&e)
         );
     }
@@ -600,9 +596,10 @@ async fn deep_sleep_task(mut low_power: LowPower<'static>) {
                     continue;
                 }
                 info!("Entering deep sleep: {:?}", reason);
-                // The WS2812B and the ADS1220 stay on +3V3 while the digital domain is powered
+                // The status LED and the ADS1220 stay on 3V3 while the digital domain is powered
                 // off. Hold the LED data line low so the LED does not latch noise, and the
-                // ADS1220 /CS high, as it has no pull-up, so noise cannot clock in a command.
+                // ADS1220 /CS high, so the pad cannot pull it below its 100k pull-up (R23) and
+                // let noise clock in a command.
                 // SAFETY: the status LED is already off and the ADS1220 powered down, and their
                 // tasks stop driving the pins once sleep is ready. No await follows, so they
                 // cannot run again before `sleep_deep`, which does not return; the holds are
