@@ -6,7 +6,7 @@
 
 Meet [Crimpdeq](https://crimpdeq.com), a portable digital force sensor designed for climbers, coaches, and therapists to measure and train finger strength, pulling power, and endurance.
 
-Crimpdeq is a fully open-source project: an ESP32-C3 [PCB](https://github.com/crimpdeq/crimpdeq-pcb) with an ADS1220 ratiometric load-cell front end and a MAX17048 fuel gauge, a WH-C100 crane scale, a 3D-printable [case](https://github.com/crimpdeq/crimpdeq-case), and firmware fully written in Rust!
+Crimpdeq is a fully open-source project: an ESP32-C3 PCB ([KiCad](https://github.com/crimpdeq/crimpdeq-pcb), [tscircuit](https://github.com/crimpdeq/crimpdeq-tscircuit)) with an ADS1220 ratiometric load-cell front end and a MAX17048 fuel gauge, a WH-C100 crane scale, a 3D-printable [case](https://github.com/crimpdeq/crimpdeq-case), and firmware fully written in Rust!
 
 
 > [!NOTE]
@@ -14,7 +14,7 @@ Crimpdeq is a fully open-source project: an ESP32-C3 [PCB](https://github.com/cr
 
 ## Specs
 
-These specs describe PCB V3 with its matching case and firmware.
+These specs describe PCB V3 with its matching case and firmware. The tscircuit board has the same ADC, fuel gauge and charger, and is not yet validated on hardware.
 
 - Rechargeable battery with USB‑C charging, also while switched off
 - Battery level reporting with a MAX17048 fuel gauge
@@ -47,7 +47,12 @@ Each PCB revision needs its own firmware; use the latest release for your revisi
 | V2           | [`v2.1.0`](https://github.com/crimpdeq/crimpdeq-firmware/releases/tag/v2.1.0) |
 | V3           | [`v3.0.0`](https://github.com/crimpdeq/crimpdeq-firmware/releases/tag/v3.0.0) |
 
-The `main` branch targets PCB V3.
+This firmware targets [crimpdeq-tscircuit `v0.1.0`](https://github.com/crimpdeq/crimpdeq-tscircuit/tree/v0.1.0), which differs from PCB V3 in:
+
+- Load cell E− returns to GND through the ADS1220 low-side switch, so the firmware sets `PSW = 1` and the bridge is only excited while the ADS1220 converts
+- ADS1220 DRDY on GPIO0, which the firmware waits on before each read
+- MAX17048 I2C on GPIO6 (SDA) and GPIO7 (SCL), swapped from PCB V3
+- XL-2121RGBC-2812B status LED, which needs a 0 code high time of at most 300 ns
 
 ## Building and Flashing
 
@@ -61,7 +66,7 @@ cargo run --release                    # Build, flash, and start the firmware
 DEFMT_LOG=info cargo run --release     # Same, and open the log monitor
 ```
 
-To try the firmware without a load cell or battery, build it with simulated readings. The mock build runs on PCB V3 or on an [ESP32-C3 Rust board](https://github.com/esp-rs/esp-rust-board). The load cell repeats pulls that rise from 0 to a peak of up to 30 kg, hold while tiring, and release; calibration reads the weight entered in the app; the battery discharges to 20 % and charges back; and the device logs the idle timeout instead of entering deep sleep:
+To try the firmware without a load cell or battery, build it with simulated readings. The mock build runs on the tscircuit board or on an [ESP32-C3 Rust board](https://github.com/esp-rs/esp-rust-board). The load cell repeats pulls that rise from 0 to a peak of up to 30 kg, hold while tiring, and release; calibration reads the weight entered in the app; the battery discharges to 20 % and charges back; and the device logs the idle timeout instead of entering deep sleep:
 
 ```bash
 cargo run --release --features mock

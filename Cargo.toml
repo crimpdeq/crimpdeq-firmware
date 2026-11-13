@@ -18,9 +18,9 @@ embassy-time = { version = "0.5.1", features = ["defmt"] }
 embedded-hal-async = "1.0.0"
 esp-alloc = { version = "0.11.0", features = ["defmt"] }
 esp-bootloader-esp-idf = { version = "0.6.0", features = ["defmt", "esp32c3"] }
-esp-hal = { version = "1.2.2", features = ["defmt", "esp32c3", "unstable"] }
+esp-hal = { version = "1.2.0", features = ["defmt", "esp32c3", "unstable"] }
 esp-hal-smartled = { version = "0.18.0", features = ["defmt"] }
-esp-radio = { version = "1.0.0-beta.1", features = [
+esp-radio = { version = "1.0.0-beta.2", features = [
     "ble",
     "defmt",
     "esp-alloc",
@@ -34,25 +34,41 @@ esp-rtos = { version = "0.4.0", features = [
     "esp-radio",
     "esp32c3",
 ] }
-esp-storage = { version = "0.10.0", features = ["defmt", "esp32c3"] }
 max170xx = { version = "1.1.0", features = ["async"] }
 rtt-target = { version = "0.6.2", features = ["defmt"] }
 smart-leds = "0.4.0"
 static_cell = "2.1.1"
 trouble-host = { version = "0.8.0", features = ["defmt"] }
 
+# Unreleased esp-hal for BLE modem sleep and automatic light sleep. Remove once they are released.
+[patch.crates-io]
+esp-alloc              = { git = "https://github.com/esp-rs/esp-hal", rev = "3ee7ec0f15a4019a916af602d45fd51831bf4c1f" }
+esp-bootloader-esp-idf = { git = "https://github.com/esp-rs/esp-hal", rev = "3ee7ec0f15a4019a916af602d45fd51831bf4c1f" }
+esp-hal                = { git = "https://github.com/esp-rs/esp-hal", rev = "3ee7ec0f15a4019a916af602d45fd51831bf4c1f" }
+esp-radio              = { git = "https://github.com/esp-rs/esp-hal", rev = "3ee7ec0f15a4019a916af602d45fd51831bf4c1f" }
+esp-rtos               = { git = "https://github.com/esp-rs/esp-hal", rev = "3ee7ec0f15a4019a916af602d45fd51831bf4c1f" }
+
 [workspace]
 members = ["calibration"]
 
 [features]
-# Simulate the load cell and battery and skip idle deep sleep, to run on PCB V3 or on the ESP32-C3
-# Rust board (https://github.com/esp-rs/esp-rust-board) without a load cell or battery.
+# Simulate the load cell and battery and skip idle deep sleep, to run on the crimpdeq-tscircuit board
+# or on the ESP32-C3 Rust board (https://github.com/esp-rs/esp-rust-board) without a load cell or
+# battery.
 mock = []
 
 [profile.dev]
 # Rust debug is too slow.
 # For debug builds always builds with some optimization
 opt-level = "s"
+
+# Light sleep and flash operations suspend the caches, and the code that runs then must not call
+# into flash, which needs esp-hal at opt-level 2 or 3.
+[profile.dev.package.esp-hal]
+opt-level = 2
+
+[profile.release.package.esp-hal]
+opt-level = 2
 
 [profile.release]
 codegen-units    = 1     # LLVM can perform better optimizations using a single thread

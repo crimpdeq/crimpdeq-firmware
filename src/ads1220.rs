@@ -1,9 +1,11 @@
 //! ADS1220 load-cell ADC driver.
 //!
-//! The revision-3 PCB connects the ADS1220 over SPI and uses the bridge
-//! excitation voltage as the ADC reference. The dedicated DRDY pin is not
-//! connected, so the ADC also signals data ready on DOUT/DRDY, which the
-//! driver watches while chip select is low (datasheet section 8.5.6).
+//! The crimpdeq-tscircuit board connects the ADS1220 over SPI and uses the
+//! bridge excitation voltage as the ADC reference. The bridge low side (E−)
+//! returns to AVSS through the ADS1220 low-side switch on AIN3/REFN1, so the
+//! bridge is excited only between START/SYNC and POWERDOWN (datasheet section
+//! 8.3.9). REFN0 senses E− above the switch, so the reference stays
+//! ratiometric. The driver waits on the dedicated DRDY pin before each read.
 
 use crimpdeq_calibration::Calibration;
 use defmt::{Format, debug, info};
@@ -12,6 +14,7 @@ use embedded_hal_async::spi::SpiBus;
 use esp_hal::{
     Async,
     gpio::{Input, Output},
+    rtc_cntl::WakeLock,
     spi::master::Spi,
 };
 
@@ -27,8 +30,8 @@ const fn configuration_registers(sample_rate: SampleRate) -> [u8; REGISTER_COUNT
     [
         0x0E,                                       // AIN0-AIN1, gain 128, PGA enabled
         (sample_rate.data_rate_bits() << 5) | 0x04, // Normal mode, continuous conversion
-        0x40,                                       // External reference on REFP0/REFN0
-        0x02,                                       // IDACs disabled; data ready also on DOUT/DRDY
+        0x48,                                       // External reference on REFP0/REFN0, PSW = 1
+        0x00,                                       // IDACs disabled; data ready only on DRDY
     ]
 }
 
@@ -111,7 +114,7 @@ impl SampleRate {
         clocks_to_duration(self.conversion_clocks().0) + DATA_READY_TIMEOUT_MARGIN
     }
 
-    /// Time from START/SYNC until the first conversion completes. Until then, DOUT/DRDY can still
+    /// Time from START/SYNC until the first conversion completes. Until then, DRDY can still
     /// flag the conversion that completed before POWERDOWN or before the rate changed.
     fn first_conversion_time(self) -> Duration {
         OSCILLATOR_WAKE_UP_TIME
@@ -134,7 +137,7 @@ fn clocks_to_duration(clocks: u32) -> Duration {
 pub enum Ads1220Error {
     /// SPI communication failed.
     Spi,
-    /// No conversion became ready on DOUT/DRDY.
+    /// No conversion became ready on DRDY.
     DataReadyTimeout,
     /// ADS1220 configuration register readback did not match.
     ConfigurationMismatch {
@@ -147,11 +150,14 @@ pub enum Ads1220Error {
 pub struct Ads1220<'d> {
     spi: Spi<'d, Async>,
     chip_select: Output<'d>,
-    /// DOUT/DRDY, which is also the SPI MISO input.
+    /// Dedicated DRDY pin, actively driven also while chip select is high.
     data_ready: Input<'d>,
     tare_value: i32,
     first_conversion_at: Instant,
     powered_down: bool,
+    /// Keeps the chip out of light sleep while the ADC converts. Light sleep stops the SPI clock,
+    /// and its wake on DRDY could miss conversions at high data rates.
+    wake_lock: Option<WakeLock>,
     sample_rate: SampleRate,
 }
 
@@ -167,11 +173,12 @@ impl<'d> Ads1220<'d> {
             tare_value: 0,
             first_conversion_at: Instant::now(),
             powered_down: false,
+            wake_lock: Some(WakeLock::new()),
             sample_rate: SampleRate::DEFAULT,
         }
     }
 
-    /// Reset and configure the ADC for the revision-3 ratiometric load cell.
+    /// Reset and configure the ADC for the switched ratiometric load cell.
     pub async fn initialize(&mut self, sample_rate: SampleRate) -> Result<(), Ads1220Error> {
         self.send_command(COMMAND_RESET).await?;
         Timer::after(RESET_DELAY).await;
@@ -190,6 +197,8 @@ impl<'d> Ads1220<'d> {
     /// Change the data rate. Restarts conversions unless the ADC is powered down, which keeps the
     /// registers until the next START/SYNC.
     pub async fn set_sample_rate(&mut self, sample_rate: SampleRate) -> Result<(), Ads1220Error> {
+        // The SPI transactions need the chip awake also while the ADC is powered down.
+        let _wake_lock = WakeLock::new();
         self.configure(sample_rate).await?;
         if !self.powered_down {
             self.start_conversions().await?;
@@ -264,20 +273,20 @@ impl<'d> Ads1220<'d> {
     async fn read_raw(&mut self) -> Result<i32, Ads1220Error> {
         Timer::at(self.first_conversion_at).await;
 
-        // With chip select low, DOUT/DRDY drives low once a conversion is ready. Clocking out the
-        // three data bytes plus one byte with DIN low leaves DOUT/DRDY high until the next
-        // conversion, so every conversion is read exactly once.
-        let mut transaction = [0; 4];
-        let timeout = self.sample_rate.data_ready_timeout();
+        // DRDY falls once a conversion is ready and rises on the first SCLK of its read, so every
+        // conversion is read exactly once. The data is clocked out directly, with DIN low, without
+        // RDATA (datasheet section 8.5.4).
+        with_timeout(
+            self.sample_rate.data_ready_timeout(),
+            self.data_ready.wait_for_low(),
+        )
+        .await
+        .map_err(|_| Ads1220Error::DataReadyTimeout)?;
+        let mut transaction = [0; 3];
         self.chip_select.set_low();
-        let result = match with_timeout(timeout, self.data_ready.wait_for_low()).await {
-            Ok(()) => SpiBus::transfer_in_place(&mut self.spi, &mut transaction)
-                .await
-                .map_err(|_| Ads1220Error::Spi),
-            Err(_) => Err(Ads1220Error::DataReadyTimeout),
-        };
+        let result = SpiBus::transfer_in_place(&mut self.spi, &mut transaction).await;
         self.chip_select.set_high();
-        result?;
+        result.map_err(|_| Ads1220Error::Spi)?;
 
         // Sign-extend the 24-bit two's complement result.
         Ok(i32::from_be_bytes([transaction[0], transaction[1], transaction[2], 0]) >> 8)
@@ -291,11 +300,13 @@ impl<'d> Ads1220<'d> {
         Ok((total as f64 / num_samples as f64) as f32)
     }
 
-    /// Put the ADC into its low-power mode after the current conversion.
+    /// Put the ADC into its low-power mode after the current conversion. This also opens the
+    /// low-side switch, which turns off the bridge excitation.
     pub async fn power_down(&mut self) -> Result<(), Ads1220Error> {
         debug!("Powering down ADS1220");
         self.send_command(COMMAND_POWERDOWN).await?;
         self.powered_down = true;
+        self.wake_lock = None;
         Ok(())
     }
 
@@ -304,12 +315,15 @@ impl<'d> Ads1220<'d> {
         self.powered_down
     }
 
-    /// Restart continuous conversions if the ADC is powered down.
+    /// Restart continuous conversions, and with them the bridge excitation, if the ADC is powered
+    /// down.
     pub async fn wake(&mut self) -> Result<(), Ads1220Error> {
         if self.powered_down {
             debug!("Powering up ADS1220");
+            let wake_lock = WakeLock::new();
             self.start_conversions().await?;
             self.powered_down = false;
+            self.wake_lock = Some(wake_lock);
         }
         Ok(())
     }
