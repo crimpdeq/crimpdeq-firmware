@@ -38,10 +38,15 @@ use esp_hal::{
     Blocking,
     Config,
     clock::CpuClock,
+    flash::{Config as FlashConfig, Flash},
     gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull},
     i2c::master::{Config as I2cConfig, I2c},
     rmt::Rmt,
-    rtc_cntl::sleep::{LowPower, RtcSleepConfig},
+    rtc_cntl::{
+        CpuRetentionStorage,
+        WakeLock,
+        sleep::{LowPower, RtcSleepConfig},
+    },
     spi::{
         Mode as SpiMode,
         master::{Config as SpiConfig, Spi},
@@ -50,8 +55,7 @@ use esp_hal::{
     timer::timg::TimerGroup,
 };
 use esp_hal_smartled::{RmtSmartLeds, Timing, buffer_size, color_order};
-use esp_radio::ble::controller::BleConnector;
-use esp_storage::FlashStorage;
+use esp_radio::ble::{RetentionStorage, controller::BleConnector, install_retention_memory};
 use max170xx::Max17048;
 use smart_leds::{RGB8, SmartLedsWriteAsync as _, brightness};
 use trouble_host::prelude::*;
@@ -217,12 +221,27 @@ async fn main(spawner: Spawner) -> ! {
     // Allocate 72KB of heap memory
     esp_alloc::heap_allocator!(size: 72 * 1024);
 
-    // Initialize RTOS
+    // The deep sleep task arms its own wakeup deadline right before deep sleep, which replaces the
+    // one that the light sleep idle hook arms on each idle pass.
+    // SAFETY: `LowPower` keeps no state, and the idle hook only uses LPWR while no task runs.
+    let low_power = LowPower::new(unsafe { peripherals.LPWR.clone_unchecked() });
+
+    // Enter light sleep whenever all tasks wait and nothing holds a `WakeLock`. The BLE controller
+    // refuses the sleeps that would overlap its radio events.
+    let mut sleep = esp_rtos::sleep::configure(peripherals.LPWR);
+    // The memory that the bootloader used is otherwise unused after boot.
+    #[esp_hal::ram(reclaimed, unstable(zeroed))]
+    static CPU_RETENTION_MEMORY: CpuRetentionStorage = CpuRetentionStorage::new();
+    sleep
+        .enable_cpu_powerdown(CPU_RETENTION_MEMORY.take())
+        .expect("Failed to install the CPU retention memory");
     let timg0 = TimerGroup::new(peripherals.TIMG0);
-    esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
+    esp_rtos::start_with_idle_hook(timg0.timer0, sleep.light_sleep_hook);
 
     // Read the persisted settings before BLE starts and before any task uses them.
-    let mut storage = Storage::new(FlashStorage::new(peripherals.FLASH));
+    let flash = Flash::new(peripherals.FLASH, FlashConfig::default())
+        .expect("Failed to identify the flash");
+    let mut storage = Storage::new(flash);
     let stored_settings = storage.read();
     update_device_state(|state| state.settings = stored_settings.clone());
 
@@ -232,8 +251,15 @@ async fn main(spawner: Spawner) -> ! {
     // overlaps: with no load and the default calibration, +20 dBm gave single-sample spikes up to
     // 1.4 kg, +9 dBm up to 0.12 kg, and 0 dBm stayed within the ADC noise. +9 dBm trades those
     // smaller spikes for BLE range.
-    let ble_config =
-        esp_radio::ble::Config::default().with_default_tx_power(esp_radio::ble::TxPower::P9);
+    // Modem sleep turns the radio off between BLE events, and lets the chip light-sleep then. With
+    // the retention memory, it also powers the BLE MAC and baseband down.
+    #[esp_hal::ram(reclaimed, unstable(zeroed))]
+    static BLE_RETENTION_MEMORY: RetentionStorage = RetentionStorage::new();
+    install_retention_memory(BLE_RETENTION_MEMORY.take())
+        .expect("Failed to install the BLE retention memory");
+    let ble_config = esp_radio::ble::Config::default()
+        .with_default_tx_power(esp_radio::ble::TxPower::P9)
+        .with_modem_sleep(true);
     let connector = BleConnector::new(bluetooth, ble_config).unwrap();
     let controller: ExternalController<_, 1> = ExternalController::new(connector);
 
@@ -258,9 +284,6 @@ async fn main(spawner: Spawner) -> ! {
     #[cfg_attr(feature = "mock", allow(unused_variables))]
     let load_cell_chip_select =
         Output::new(peripherals.GPIO3, Level::High, OutputConfig::default());
-
-    // Initialize low-power control.
-    let low_power = LowPower::new(peripherals.LPWR);
 
     // Initialize MAX17048 fuel gauge over I2C.
     // GPIO6=SDA (I2C_SDA, R20), GPIO7=SCL (I2C_SCL, R21), GPIO10=/ALRT (FG_ALRT).
@@ -433,6 +456,8 @@ fn status_led_mode() -> StatusLedMode {
 }
 
 async fn set_status_led(led: &mut StatusLed, color: RGB8) {
+    // Light sleep would stop the RMT clock in the middle of the LED data.
+    let _wake_lock = WakeLock::new();
     if let Err(e) = led
         .write(brightness([color].into_iter(), STATUS_LED_BRIGHTNESS))
         .await
