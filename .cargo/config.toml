@@ -1,20 +1,12 @@
 [alias]
+# Runs the calibration tests on the host, as the firmware target has no test harness.
+test-host = "test -p crimpdeq-calibration --target host-tuple"
 bin = "espflash save-image --chip esp32c3 crimpdeq.bin"
 bin-merged = "espflash save-image --chip esp32c3 crimpdeq.bin --merge"
 
 [target.riscv32imc-unknown-none-elf]
 runner = "scripts/run.sh"
-
-[env]
-# Defmt Logging
-DEFMT_LOG = "off" # Use "trace/debug/info/error/off,crimpdeq=debug" to enable defmt logging
-
-# Progressor
-DEVICE_ID             = "AAAAAAAAAAAA"
-DEVICE_NAME           = "Progressor_7125"
-DEVICE_VERSION_NUMBER = "2.0.4"
-
-[build]
+# For the firmware target only, so host builds such as `cargo test-host` link normally.
 rustflags = [
   # Required to obtain backtraces
   "-C",
@@ -27,4 +19,14 @@ rustflags = [
   "link-arg=-Tlinkall.x",
 ]
 
+[env]
+# Defmt Logging
+DEFMT_LOG = "off" # Use "trace/debug/info/error/off,crimpdeq=debug" to enable defmt logging
+
+# Progressor
+DEVICE_ID             = "AAAAAAAAAAAA"
+DEVICE_NAME           = "Progressor_7125"
+DEVICE_VERSION_NUMBER = "2.0.4"
+
+[build]
 target = "riscv32imc-unknown-none-elf"

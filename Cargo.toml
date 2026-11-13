@@ -8,6 +8,7 @@ version = "3.0.0"
 [dependencies]
 arrayvec = { version = "0.7.8", default-features = false }
 bt-hci = { version = "0.10.1", features = ["defmt"] }
+crimpdeq-calibration = { path = "calibration", features = ["defmt"] }
 critical-section = "1.2.0"
 defmt = "1.1.1"
 embassy-executor = { version = "0.10.0", features = ["defmt"] }
@@ -39,6 +40,9 @@ rtt-target = { version = "0.6.2", features = ["defmt"] }
 smart-leds = "0.4.0"
 static_cell = "2.1.1"
 trouble-host = { version = "0.8.0", features = ["defmt"] }
+
+[workspace]
+members = ["calibration"]
 
 [features]
 # Simulate the load cell and battery and skip idle deep sleep, to run on PCB V3 or on the ESP32-C3

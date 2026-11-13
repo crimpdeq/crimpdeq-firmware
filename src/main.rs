@@ -11,6 +11,15 @@ use bt_hci::{
     cmd::le::{LeConnUpdate, LeReadLocalSupportedFeatures, LeSetDataLength, LeSetPhy},
     controller::{ControllerCmdAsync, ControllerCmdSync, ExternalController},
 };
+use crimpdeq_calibration::{
+    CalibrationRecord,
+    DEFAULT_FACTOR,
+    Error as CalibrationError,
+    Model,
+    Outcome,
+    Point,
+    wire::{self, LastCommand},
+};
 use critical_section::Mutex;
 use defmt::{debug, error, info, warn};
 use embassy_executor::Spawner;
@@ -48,12 +57,11 @@ use smart_leds::{RGB8, SmartLedsWriteAsync as _, brightness};
 use trouble_host::prelude::*;
 
 use crate::{
-    ads1220::{Ads1220, DEFAULT_CALIBRATION_FACTOR, fit_calibration_factor},
+    ads1220::Ads1220,
     ble::{CONNECTIONS_MAX, DEVICE_NAME, L2CAP_CHANNELS_MAX, L2CAP_MTU, Server, advertise},
     progressor::{
         BatteryStatus,
         CONTROL_POINT_MAX_PAYLOAD_SIZE,
-        CalibrationPoint,
         ControlOpCode,
         ControlResponseChannel,
         DataPoint,
@@ -61,7 +69,6 @@ use crate::{
         LOAD_CELL_COMMANDS,
         LoadCellCommand,
         MAX_BATCH_DURATION,
-        MAX_CALIBRATION_POINTS,
         MAX_SAMPLES_PER_PACKET,
         MeasurementDataChannel,
         MeasurementTaskStatus,
@@ -216,7 +223,7 @@ async fn main(spawner: Spawner) -> ! {
     // Read the persisted settings before BLE starts and before any task uses them.
     let mut storage = Storage::new(FlashStorage::new(peripherals.FLASH));
     let stored_settings = storage.read();
-    update_device_state(|state| state.settings = stored_settings);
+    update_device_state(|state| state.settings = stored_settings.clone());
 
     // Initialize BLE
     let bluetooth = peripherals.BT;
@@ -691,7 +698,7 @@ async fn storage_task(mut storage: Storage, mut stored: Settings) {
             (
                 state.settings_write_pending,
                 state.measurement_status == MeasurementTaskStatus::Enabled,
-                state.settings,
+                state.settings.clone(),
             )
         });
 
@@ -706,13 +713,13 @@ async fn storage_task(mut storage: Storage, mut stored: Settings) {
                     Err(e) => error!("Failed to store the sample rate: {:?}", e),
                 }
             }
-            if settings.calibration_factor != stored.calibration_factor {
-                match storage.write_calibration_factor(settings.calibration_factor) {
+            if settings.calibration != stored.calibration {
+                match storage.write_calibration(&settings.calibration) {
                     Ok(()) => {
-                        info!("Calibration factor stored: {}", settings.calibration_factor);
-                        stored.calibration_factor = settings.calibration_factor;
+                        info!("Calibration stored: {:?}", settings.calibration.active);
+                        stored.calibration = settings.calibration.clone();
                     }
-                    Err(e) => error!("Failed to store the calibration factor: {:?}", e),
+                    Err(e) => error!("Failed to store the calibration: {:?}", e),
                 }
             }
             if settings != stored {
@@ -920,21 +927,24 @@ async fn measurement_task(
     // Start time of the measurement being sampled. A Start updates the state's start time, so a
     // mismatch is a new measurement, also when Stop and Start both arrive before this task runs.
     let mut streaming_start_time = None;
+    let mut calibration_runtime = CalibrationRuntime::default();
     let mut state_changes = STATE_CHANGED
         .receiver()
         .expect("Missing state change receiver for the measurement task");
 
     loop {
         // Get current device state
-        let (sleep_state, status, start_time, settings) = critical_section::with(|cs| {
-            let state = DEVICE_STATE.borrow_ref(cs);
-            (
-                state.sleep_state,
-                state.measurement_status,
-                state.start_time,
-                state.settings,
-            )
-        });
+        let (sleep_state, status, start_time, sample_rate, calibration) =
+            critical_section::with(|cs| {
+                let state = DEVICE_STATE.borrow_ref(cs);
+                (
+                    state.sleep_state,
+                    state.measurement_status,
+                    state.start_time,
+                    state.settings.sample_rate,
+                    state.settings.calibration.active,
+                )
+            });
 
         match sleep_state {
             SleepState::Requested(reason) => {
@@ -961,7 +971,7 @@ async fn measurement_task(
 
         // Retry inside the loop, so a missing or faulty ADS1220 cannot block sleep requests.
         if !initialized {
-            if let Err(e) = load_cell.initialize(settings.sample_rate).await {
+            if let Err(e) = load_cell.initialize(sample_rate).await {
                 error!("ADS1220 initialization failed: {:?}", e);
                 select(
                     Timer::after(Duration::from_millis(250)),
@@ -977,12 +987,9 @@ async fn measurement_task(
             continue;
         }
 
-        if load_cell.sample_rate() != settings.sample_rate {
-            match load_cell.set_sample_rate(settings.sample_rate).await {
-                Ok(()) => info!(
-                    "ADS1220 sample rate set to {} SPS",
-                    settings.sample_rate.sps()
-                ),
+        if load_cell.sample_rate() != sample_rate {
+            match load_cell.set_sample_rate(sample_rate).await {
+                Ok(()) => info!("ADS1220 sample rate set to {} SPS", sample_rate.sps()),
                 Err(e) => {
                     error!("Failed to set ADS1220 sample rate: {:?}", e);
                     Timer::after(Duration::from_millis(250)).await;
@@ -1007,7 +1014,13 @@ async fn measurement_task(
                     continue;
                 }
             }
-            run_load_cell_command(command, &mut load_cell, control_channel).await;
+            run_load_cell_command(
+                command,
+                &mut load_cell,
+                control_channel,
+                &mut calibration_runtime,
+            )
+            .await;
             continue;
         }
 
@@ -1061,7 +1074,10 @@ async fn measurement_task(
                     continue;
                 }
 
-                let weight = match load_cell.read_calibrated(settings.calibration_factor).await {
+                let weight = match load_cell
+                    .read_calibrated(&calibration, calibration_runtime.zero_shift)
+                    .await
+                {
                     Ok(weight) => weight,
                     Err(e) => {
                         error!("Failed to read weight measurement: {:?}", e);
@@ -1074,7 +1090,7 @@ async fn measurement_task(
                 // Full batches regardless of the ATT MTU, so the ring holds the same samples at
                 // any MTU; data_processing_task splits them into packets.
                 let batch_size =
-                    MAX_SAMPLES_PER_PACKET.min(settings.sample_rate.samples_in(MAX_BATCH_DURATION));
+                    MAX_SAMPLES_PER_PACKET.min(sample_rate.samples_in(MAX_BATCH_DURATION));
                 if measurement_buffer.len() >= batch_size {
                     enqueue_measurement_batch(
                         measurement_channel,
@@ -1087,11 +1103,46 @@ async fn measurement_task(
     }
 }
 
+/// Calibration state of the measurement task that is not persisted.
+#[derive(Default)]
+struct CalibrationRuntime {
+    /// Drift of the unloaded baseline since the calibration, in raw counts, measured by the last
+    /// zero update. A new calibration restarts from its own points, so it resets the shift.
+    zero_shift: f32,
+    /// Last calibration command and its outcome, for the calibration details.
+    last: Option<LastCommand>,
+}
+
+impl CalibrationRuntime {
+    /// Uses an edited calibration and records the outcome of the command that edited it.
+    fn apply(&mut self, op_code: ControlOpCode, record: CalibrationRecord, outcome: Outcome) {
+        update_device_state(|state| {
+            if record.active != state.settings.calibration.active {
+                self.zero_shift = 0.0;
+            }
+            state.set_calibration(record);
+        });
+        self.last = Some(LastCommand {
+            op_code: op_code as u8,
+            outcome,
+        });
+    }
+}
+
+fn calibration_record() -> CalibrationRecord {
+    critical_section::with(|cs| DEVICE_STATE.borrow_ref(cs).settings.calibration.clone())
+}
+
 /// Runs a one-shot load cell command.
+///
+/// Commands of the linear-only protocol keep their replies: the calibration factor, NaN for a
+/// nonlinear model, and the stored points. The calibration model commands reply with the
+/// calibration details, which also report the outcome of the last calibration command.
 async fn run_load_cell_command(
     command: LoadCellCommand,
     load_cell: &mut LoadCell,
     channel: &'static ControlResponseChannel,
+    runtime: &mut CalibrationRuntime,
 ) {
     match command {
         LoadCellCommand::Tare => {
@@ -1100,64 +1151,46 @@ async fn run_load_cell_command(
             }
         }
         LoadCellCommand::Calibrate(weight) => {
-            // Like the other calibration failures, a full buffer sends no reply, so the client
-            // reads the unchanged points back with GetCalibration. Only this task changes the
-            // points, so they are unchanged after sampling.
-            let (mut calibration_points, stored_points) = critical_section::with(|cs| {
-                let state = DEVICE_STATE.borrow_ref(cs);
-                (state.calibration_points, state.calibration_point_count)
-            });
-            if stored_points >= MAX_CALIBRATION_POINTS {
-                warn!(
-                    "Calibration point buffer full (max {}), ignoring new point",
-                    MAX_CALIBRATION_POINTS
-                );
-                return;
-            }
-
-            #[cfg(not(feature = "mock"))]
-            let raw_value = load_cell.perform_calibration().await;
-            #[cfg(feature = "mock")]
-            let raw_value = load_cell.perform_calibration(weight).await;
-            let raw_value = match raw_value {
-                Ok(raw_value) => raw_value,
-                Err(e) => {
-                    error!("Calibration sampling failed: {:?}", e);
-                    return;
+            // Only this task changes the calibration, so it is unchanged after sampling.
+            let mut record = calibration_record();
+            let outcome = if record.points.is_full() {
+                Outcome::Rejected(CalibrationError::PointLimitReached)
+            } else {
+                #[cfg(not(feature = "mock"))]
+                let raw_value = load_cell.perform_calibration().await;
+                #[cfg(feature = "mock")]
+                let raw_value = load_cell.perform_calibration(weight).await;
+                match raw_value {
+                    Ok(raw_value) => record.add_point((raw_value, weight)),
+                    Err(e) => {
+                        error!("Calibration sampling failed: {:?}", e);
+                        Outcome::Rejected(CalibrationError::SamplingFailed)
+                    }
                 }
             };
-
-            calibration_points[stored_points] = (raw_value, weight);
-            let calibration_point_count = stored_points + 1;
-            let points = &calibration_points[..calibration_point_count];
-
-            if calibration_point_count < 2 {
-                update_device_state(|state| {
-                    state.calibration_points = calibration_points;
-                    state.calibration_point_count = calibration_point_count;
-                });
-                info!("Calibration needs at least two points before applying.");
-                return;
+            info!("Calibration point of {} kg: {:?}", weight, outcome);
+            let stored = !matches!(outcome, Outcome::Rejected(_));
+            runtime.apply(ControlOpCode::AddCalibrationPoint, record.clone(), outcome);
+            // A rejected point sends nothing, so linear-only clients read the calibration back.
+            if stored {
+                notify_legacy_calibration(channel, &record).await;
             }
-
-            // A point is stored only with an accepted fit, so a rejected one does not skew later
-            // fits. A stored first point was never validated and may be the wrong one, so it is
-            // dropped too, letting the calibration restart instead of rejecting every new point.
-            let Some(factor) = fit_calibration_factor(points) else {
-                error!("Rejected calibration point {:?}", (raw_value, weight));
-                if stored_points == 1 {
-                    warn!("Dropping the unvalidated first calibration point");
-                    update_device_state(|state| state.calibration_point_count = 0);
-                }
-                return;
-            };
-            info!("Calibration factor applied: {}", factor);
-            store_calibration(channel, calibration_points, calibration_point_count, factor).await;
         }
         LoadCellCommand::RemoveCalibrationPoint(index) => {
+            let mut record = calibration_record();
+            let outcome = record.remove_point(usize::from(index));
+            info!("Removing calibration point {}: {:?}", index, outcome);
+            let removed = !matches!(outcome, Outcome::Rejected(_));
+            runtime.apply(
+                ControlOpCode::RemoveCalibrationPoint,
+                record.clone(),
+                outcome,
+            );
             // Calibration factors also answer other commands, so this reply tells the client
             // whether the point was removed, after the new calibration.
-            let removed = remove_calibration_point(channel, index).await;
+            if removed {
+                notify_legacy_calibration(channel, &record).await;
+            }
             send_load_cell_reply(
                 channel,
                 DataPoint::from(ResponseCode::CalibrationPointRemoved(removed)),
@@ -1165,102 +1198,90 @@ async fn run_load_cell_command(
             .await;
         }
         LoadCellCommand::DefaultCalibration => {
-            debug!("Restoring default calibration factor");
-            update_device_state(|state| {
-                state.set_calibration_factor(DEFAULT_CALIBRATION_FACTOR);
-                state.calibration_point_count = 0;
-            });
-            notify_calibration_factor(channel, DEFAULT_CALIBRATION_FACTOR).await;
+            debug!("Restoring default calibration");
+            runtime.apply(
+                ControlOpCode::DefaultCalibration,
+                CalibrationRecord::DEFAULT,
+                Outcome::Applied,
+            );
+            notify_calibration_factor(channel, DEFAULT_FACTOR).await;
         }
         LoadCellCommand::GetCalibration => {
-            let (calibration_factor, calibration_points, calibration_point_count) =
-                critical_section::with(|cs| {
-                    let state = DEVICE_STATE.borrow_ref(cs);
-                    (
-                        state.settings.calibration_factor,
-                        state.calibration_points,
-                        state.calibration_point_count,
-                    )
-                });
-            notify_calibration_factor(channel, calibration_factor).await;
-
-            notify_calibration_points(channel, &calibration_points[..calibration_point_count])
-                .await;
-            if calibration_point_count > 0 {
-                info!(
-                    "Calibration points: {:?}",
-                    &calibration_points[..calibration_point_count]
-                );
-            } else {
-                info!("Calibration points empty (possibly lost after device reset)");
-            }
+            let record = calibration_record();
+            info!(
+                "Calibration: {:?}, points: {:?}",
+                record.active,
+                record.points.as_slice()
+            );
+            notify_legacy_calibration(channel, &record).await;
+        }
+        LoadCellCommand::GetCalibrationDetails => {
+            notify_calibration_details(channel, load_cell.tare_value(), runtime).await;
+        }
+        LoadCellCommand::SetCalibrationModel(code) => {
+            let mut record = calibration_record();
+            let outcome = match Model::from_code(code) {
+                Some(model) => record.select_model(model),
+                None => Outcome::Rejected(CalibrationError::UnsupportedModel),
+            };
+            info!("Selecting calibration model {}: {:?}", code, outcome);
+            runtime.apply(ControlOpCode::SetCalibrationModel, record, outcome);
+            notify_calibration_details(channel, load_cell.tare_value(), runtime).await;
+        }
+        LoadCellCommand::SetZero => {
+            let calibration = calibration_record().active;
+            // A rejected zero update keeps the previous tare too.
+            let outcome = match load_cell.read_tare_average().await {
+                Ok(unloaded_raw) => match calibration.zero_shift(unloaded_raw as f32) {
+                    Ok(zero_shift) => {
+                        load_cell.set_tare_value(unloaded_raw);
+                        runtime.zero_shift = zero_shift;
+                        Outcome::Applied
+                    }
+                    Err(e) => Outcome::Rejected(e),
+                },
+                Err(e) => {
+                    error!("Zero sampling failed: {:?}", e);
+                    Outcome::Rejected(CalibrationError::SamplingFailed)
+                }
+            };
+            info!("Zero update: {:?}, shift: {}", outcome, runtime.zero_shift);
+            runtime.last = Some(LastCommand {
+                op_code: ControlOpCode::SetZero as u8,
+                outcome,
+            });
+            notify_calibration_details(channel, load_cell.tare_value(), runtime).await;
         }
     }
 }
 
-/// Removes the calibration point at the index and refits the factor to the remaining points.
-/// Returns false, keeping the calibration, for a missing point or remaining points whose fit is
-/// rejected.
-async fn remove_calibration_point(channel: &'static ControlResponseChannel, index: u8) -> bool {
-    let (mut calibration_points, stored_points, factor) = critical_section::with(|cs| {
-        let state = DEVICE_STATE.borrow_ref(cs);
-        (
-            state.calibration_points,
-            state.calibration_point_count,
-            state.settings.calibration_factor,
-        )
-    });
-    let index = usize::from(index);
-    if index >= stored_points {
-        warn!(
-            "No calibration point {} to remove ({} stored)",
-            index, stored_points
-        );
-        return false;
-    }
-
-    calibration_points.copy_within(index + 1..stored_points, index);
-    let calibration_point_count = stored_points - 1;
-    // Fewer than two points do not define a factor, so the current one stays until the next
-    // point is added.
-    let factor = if calibration_point_count < 2 {
-        factor
-    } else {
-        match fit_calibration_factor(&calibration_points[..calibration_point_count]) {
-            Some(factor) => factor,
-            None => {
-                error!(
-                    "Keeping calibration point {}: the remaining points do not fit",
-                    index
-                );
-                return false;
-            }
-        }
-    };
-    info!("Removed calibration point {}, factor: {}", index, factor);
-    store_calibration(channel, calibration_points, calibration_point_count, factor).await;
-    true
-}
-
-/// Stores the calibration points with their factor and notifies the client of both.
-async fn store_calibration(
+/// Sends the calibration factor and points of the linear-only protocol.
+async fn notify_legacy_calibration(
     channel: &'static ControlResponseChannel,
-    calibration_points: [CalibrationPoint; MAX_CALIBRATION_POINTS],
-    calibration_point_count: usize,
-    factor: f32,
+    record: &CalibrationRecord,
 ) {
-    update_device_state(|state| {
-        state.calibration_points = calibration_points;
-        state.calibration_point_count = calibration_point_count;
-        state.set_calibration_factor(factor);
-    });
-    notify_calibration_factor(channel, factor).await;
-    notify_calibration_points(channel, &calibration_points[..calibration_point_count]).await;
+    notify_calibration_factor(channel, record.active.legacy_factor()).await;
+    notify_calibration_points(channel, &record.points).await;
+}
+
+async fn notify_calibration_details(
+    channel: &'static ControlResponseChannel,
+    tare_raw: i32,
+    runtime: &CalibrationRuntime,
+) {
+    let record = calibration_record();
+    for detail in wire::details(&record, tare_raw, runtime.zero_shift, runtime.last) {
+        send_load_cell_reply(
+            channel,
+            DataPoint::from(ResponseCode::CalibrationDetail(detail.payload())),
+        )
+        .await;
+    }
 }
 
 async fn notify_calibration_points(
     channel: &'static ControlResponseChannel,
-    calibration_points: &[CalibrationPoint],
+    calibration_points: &[Point],
 ) {
     for (raw_value, weight) in calibration_points {
         debug!("Notifying calibration point: {:?}", (raw_value, weight));
