@@ -28,6 +28,7 @@ These specs describe PCB V3 with its matching case and firmware.
 - Compatible with Tindeq Progressor app ([Android](https://play.google.com/store/apps/details?id=com.progressor&hl=es_419) | [iOS](https://apps.apple.com/es/app/tindeq-progressor/id1380412428))
 - Compatible with Frez app (formerly ClimbHarder) ([Android](https://play.google.com/store/apps/details?id=com.holdtight.climbharder&pcampaignid=web_share) | [iOS](https://apps.apple.com/us/app/climbharder-no-hang-training/id6730120024))
 - Sampling frequency: 175 Hz by default, selectable from 20 to 1000 Hz with the Crimpdeq app and kept across reboots
+- Linear, quadratic, or two-segment piecewise linear calibration, fitted on the device and selected with the Crimpdeq app (see [Calibration models](calibration/README.md))
 - Design load: 1500 N (≈150 kg), full scale
 - Precision:
     - 0.05 kg between 0 and 99 kg
@@ -66,7 +67,13 @@ To try the firmware without a load cell or battery, build it with simulated read
 cargo run --release --features mock
 ```
 
-The advertised name, the Progressor ID, and the reported app version come from `DEVICE_NAME`, `DEVICE_ID`, and `DEVICE_VERSION_NUMBER` in [`.cargo/config.toml`](.cargo/config.toml). The calibration factor and sampling rate are stored in the `calib` and `settings` partitions of [`partitions.csv`](partitions.csv), so erasing the flash also erases the calibration.
+The advertised name, the Progressor ID, and the reported app version come from `DEVICE_NAME`, `DEVICE_ID`, and `DEVICE_VERSION_NUMBER` in [`.cargo/config.toml`](.cargo/config.toml). The calibration (model, curve and points) and the sampling rate are stored in the `calib` and `settings` partitions of [`partitions.csv`](partitions.csv), so erasing the flash also erases the calibration.
+
+The calibration models, their fitting, the flash record and their BLE commands live in the [`calibration`](calibration/README.md) crate, which has no hardware dependencies. Run its tests on the host with:
+
+```bash
+cargo test-host
+```
 
 ## Contributing
 Contributions are welcome! Feel free to:
