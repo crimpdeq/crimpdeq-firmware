@@ -4,12 +4,10 @@
 
 use core::convert::Infallible;
 
+use crimpdeq_calibration::{Calibration, DEFAULT_FACTOR};
 use embassy_time::{Duration, Instant, Timer};
 
-use crate::{
-    ads1220::{DEFAULT_CALIBRATION_FACTOR, SampleRate},
-    progressor::BatteryStatus,
-};
+use crate::{ads1220::SampleRate, progressor::BatteryStatus};
 
 /// Peak of each simulated pull, in kg, repeated in order.
 const PULL_PEAKS_KG: [f32; 5] = [18.0, 30.0, 24.0, 12.0, 27.0];
@@ -49,7 +47,7 @@ fn smoothstep(x: f32) -> f32 {
 }
 
 /// Load cell with the [`crate::ads1220::Ads1220`] interface that converts simulated pulls to ADC
-/// codes, so taring and the calibration factor apply as on the ADS1220. With the default
+/// codes, so taring and the calibration apply as on the ADS1220. With the default
 /// calibration the readings span 0 to 30 kg.
 pub struct MockLoadCell {
     woke_at: Instant,
@@ -117,18 +115,34 @@ impl MockLoadCell {
     }
 
     pub async fn tare(&mut self) -> Result<(), Infallible> {
-        self.tare_value = self.read_raw().await;
+        self.tare_value = self.read_tare_average().await?;
         Ok(())
     }
 
-    pub async fn read_calibrated(&mut self, calibration_factor: f32) -> Result<f32, Infallible> {
-        let raw_tared = self.read_raw().await - self.tare_value;
-        Ok((raw_tared as f32) * calibration_factor / 1000.0)
+    pub async fn read_tare_average(&mut self) -> Result<i32, Infallible> {
+        Ok(self.read_raw().await)
+    }
+
+    pub fn tare_value(&self) -> i32 {
+        self.tare_value
+    }
+
+    pub fn set_tare_value(&mut self, tare_value: i32) {
+        self.tare_value = tare_value;
+    }
+
+    pub async fn read_calibrated(
+        &mut self,
+        calibration: &Calibration,
+        zero_shift: f32,
+    ) -> Result<f32, Infallible> {
+        let raw = self.read_raw().await;
+        Ok(calibration.net_kg(raw, self.tare_value, zero_shift))
     }
 
     /// Returns the ADC code of the weight that the client says hangs from the load cell, as a
     /// calibration while not measuring would otherwise sample the rest before the first pull.
-    /// The fit of these points is the default calibration factor.
+    /// A linear fit of these points is the default calibration factor.
     pub async fn perform_calibration(&mut self, weight_kg: f32) -> Result<f32, Infallible> {
         Ok(adc_code(weight_kg))
     }
@@ -136,7 +150,7 @@ impl MockLoadCell {
 
 /// ADC code that the default calibration converts to `weight_kg`.
 fn adc_code(weight_kg: f32) -> f32 {
-    weight_kg * 1000.0 / DEFAULT_CALIBRATION_FACTOR
+    weight_kg * 1000.0 / DEFAULT_FACTOR
 }
 
 /// Lowest simulated charge, where the battery starts charging again. Stays above the low battery

@@ -37,6 +37,10 @@ jobs:
           - command: clippy
             args: --all-features --workspace -- -D warnings
             toolchain: stable
+          # The calibration crate's tests, on the host.
+          - command: test-host
+            args: ""
+            toolchain: stable
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

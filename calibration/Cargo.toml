@@ -1,0 +1,14 @@
+[package]
+authors     = ["Sergio Gasquez <sergio.gasquez@gmail.com>"]
+description = "Crimpdeq calibration models, fitting, flash record and BLE payloads, testable on the host"
+edition     = "2024"
+license     = "MIT OR Apache-2.0"
+name        = "crimpdeq-calibration"
+version     = "0.1.0"
+
+[dependencies]
+arrayvec = { version = "0.7.8", default-features = false }
+defmt    = { version = "1.1.1", optional = true }
+
+[features]
+defmt = ["dep:defmt"]

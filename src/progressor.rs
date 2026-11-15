@@ -4,6 +4,7 @@
 //!
 //! [Tindeq API documentation]: https://tindeq.com/progressor_api/
 use arrayvec::ArrayVec;
+use crimpdeq_calibration::{CalibrationRecord, wire};
 use defmt::{Format, error, info, warn};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
 use esp_hal::time;
@@ -94,12 +95,6 @@ const fn hex_digit(digit: u8) -> u8 {
     }
 }
 
-/// Maximum number of calibration points to store
-pub const MAX_CALIBRATION_POINTS: usize = 20;
-
-/// Calibration point storing raw value and known weight
-pub type CalibrationPoint = (f32, f32);
-
 /// Fuel gauge reading reported to clients.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct BatteryStatus {
@@ -130,12 +125,18 @@ pub enum LoadCellCommand {
     DefaultCalibration,
     /// Get the calibration values
     GetCalibration,
+    /// Sends the calibration details
+    GetCalibrationDetails,
+    /// Fits and selects the calibration model with the code, then sends the calibration details
+    SetCalibrationModel(u8),
+    /// Takes the unloaded reading as the calibration zero, then sends the calibration details
+    SetZero,
 }
 
 impl LoadCellCommand {
     /// Returns whether this command needs readings from the load cell.
     pub fn uses_load_cell(self) -> bool {
-        matches!(self, Self::Tare | Self::Calibrate(_))
+        matches!(self, Self::Tare | Self::Calibrate(_) | Self::SetZero)
     }
 }
 
@@ -173,10 +174,6 @@ pub struct DeviceState {
     pub measurement_status: MeasurementTaskStatus,
     /// Start time of the measurement in microseconds
     pub start_time: u32,
-    /// Calibration points (raw value, weight)
-    pub calibration_points: [CalibrationPoint; MAX_CALIBRATION_POINTS],
-    /// Number of calibration points currently stored
-    pub calibration_point_count: usize,
     /// Battery voltage in millivolts
     pub battery_voltage: u32,
     /// Fuel gauge reading, `None` until the first successful read.
@@ -213,8 +210,6 @@ impl DeviceState {
         Self {
             measurement_status: MeasurementTaskStatus::Disabled,
             start_time: 0,
-            calibration_points: [(0.0, 0.0); MAX_CALIBRATION_POINTS],
-            calibration_point_count: 0,
             battery_voltage: 4300,
             battery_status: None,
             last_activity_time_ms: 0,
@@ -298,6 +293,20 @@ impl DeviceState {
         self.queue_load_cell_command(LoadCellCommand::DefaultCalibration);
     }
 
+    pub fn get_calibration_details(&mut self) {
+        self.queue_load_cell_command(LoadCellCommand::GetCalibrationDetails);
+    }
+
+    /// Select the calibration model with the code, if it fits the points
+    pub fn set_calibration_model(&mut self, model: u8) {
+        self.queue_load_cell_command(LoadCellCommand::SetCalibrationModel(model));
+    }
+
+    /// Take the unloaded reading as the calibration zero
+    pub fn set_zero(&mut self) {
+        self.queue_load_cell_command(LoadCellCommand::SetZero);
+    }
+
     /// Mark BLE as connected.
     pub fn on_ble_connected(&mut self) {
         self.ble_connected = true;
@@ -370,23 +379,16 @@ impl DeviceState {
 
     /// Apply a sample rate now and persist it later.
     pub fn set_sample_rate(&mut self, sample_rate: SampleRate) {
-        self.update_settings(Settings {
-            sample_rate,
-            ..self.settings
-        });
+        if sample_rate != self.settings.sample_rate {
+            self.settings.sample_rate = sample_rate;
+            self.settings_write_pending = true;
+        }
     }
 
-    /// Apply a calibration factor now and persist it later.
-    pub fn set_calibration_factor(&mut self, calibration_factor: f32) {
-        self.update_settings(Settings {
-            calibration_factor,
-            ..self.settings
-        });
-    }
-
-    fn update_settings(&mut self, settings: Settings) {
-        if settings != self.settings {
-            self.settings = settings;
+    /// Apply a calibration now and persist it later.
+    pub fn set_calibration(&mut self, calibration: CalibrationRecord) {
+        if calibration != self.settings.calibration {
+            self.settings.calibration = calibration;
             self.settings_write_pending = true;
         }
     }
@@ -468,10 +470,21 @@ pub enum ControlOpCode {
     /// Reply with the fuel gauge state of charge and whether the battery is charging
     // Custom command, no part of Tindeq API
     GetBatteryStatus = 0x77,
-    /// Remove the calibration point at an index (u8), refit the factor to the remaining points,
+    /// Remove the calibration point at an index (u8), refit the model to the remaining points,
     /// and reply whether the point was removed
     // Custom command, no part of Tindeq API
     RemoveCalibrationPoint = 0x78,
+    /// Reply with the calibration details: model, curve, range, fit residuals, tare and points
+    // Custom command, no part of Tindeq API
+    GetCalibrationDetails = 0x79,
+    /// Fit the calibration model with the code (u8) to the stored points and use it if it fits,
+    /// then reply with the calibration details
+    // Custom command, no part of Tindeq API
+    SetCalibrationModel = 0x7A,
+    /// Tare, and take the unloaded reading as the zero of the calibration curve, then reply with
+    /// the calibration details
+    // Custom command, no part of Tindeq API
+    SetZero = 0x7B,
 }
 
 impl ControlOpCode {
@@ -546,6 +559,21 @@ impl ControlOpCode {
             }
             ControlOpCode::DefaultCalibration => {
                 device_state.reset_calibration();
+                None
+            }
+            ControlOpCode::GetCalibrationDetails => {
+                device_state.get_calibration_details();
+                None
+            }
+            ControlOpCode::SetCalibrationModel => {
+                // A missing code is an unsupported model, which the details report.
+                let model = data.get(1).copied().unwrap_or(u8::MAX);
+                info!("Received SetCalibrationModel command for model {}", model);
+                device_state.set_calibration_model(model);
+                None
+            }
+            ControlOpCode::SetZero => {
+                device_state.set_zero();
                 None
             }
             ControlOpCode::RemoveCalibrationPoint => {
@@ -626,6 +654,9 @@ impl TryFrom<u8> for ControlOpCode {
             0x76 => Ok(ControlOpCode::GetSampleRate),
             0x77 => Ok(ControlOpCode::GetBatteryStatus),
             0x78 => Ok(ControlOpCode::RemoveCalibrationPoint),
+            0x79 => Ok(ControlOpCode::GetCalibrationDetails),
+            0x7A => Ok(ControlOpCode::SetCalibrationModel),
+            0x7B => Ok(ControlOpCode::SetZero),
             0x6C => Ok(ControlOpCode::GetErrorInformation),
             0x6D => Ok(ControlOpCode::ClearErrorInformation),
             0x67 => Ok(ControlOpCode::StartPeakRFDMeasurement),
@@ -702,7 +733,7 @@ pub enum ResponseCode {
     SampleBatteryVoltage(u32),
     /// Each measurement is sent together with a timestamp where the timestamp is the number of microseconds since the measurement was started
     WeightMeasurement(WeightMeasurementBatch),
-    /// Calibration factor response
+    /// Calibration factor response, NaN for a nonlinear calibration
     CalibrationFactor(f32),
     /// Calibration point response (raw value, weight)
     CalibrationPoint(f32, f32),
@@ -712,6 +743,8 @@ pub enum ResponseCode {
     BatteryStatus(BatteryStatus),
     /// Whether a calibration point was removed (u8), sent after the new calibration
     CalibrationPointRemoved(bool),
+    /// One detail of the calibration, its kind first
+    CalibrationDetail(wire::Payload),
     /// Low power warning indicating that the battery is empty. The Progressor will turn itself off after sending this warning
     LowPowerWarning,
     /// Response to app version request command
@@ -745,6 +778,9 @@ impl Format for ResponseCode {
             ResponseCode::CalibrationPointRemoved(removed) => {
                 defmt::write!(fmt, "CalibrationPointRemoved: {}", removed)
             }
+            ResponseCode::CalibrationDetail(payload) => {
+                defmt::write!(fmt, "CalibrationDetail: {:x}", payload.as_slice())
+            }
             ResponseCode::LowPowerWarning => defmt::write!(fmt, "LowPowerWarning"),
             ResponseCode::AppVersion(version) => defmt::write!(fmt, "AppVersion: {:x}", version),
             ResponseCode::ProgressorId(id) => defmt::write!(fmt, "ProgressorId: {:x}", id),
@@ -766,6 +802,7 @@ impl ResponseCode {
             ResponseCode::SampleRate(..) => 0x07,
             ResponseCode::BatteryStatus(..) => 0x08,
             ResponseCode::CalibrationPointRemoved(..) => 0x09,
+            ResponseCode::CalibrationDetail(..) => wire::RESPONSE_CODE,
         }
     }
 
@@ -791,6 +828,7 @@ impl ResponseCode {
                 payload.extend([status.soc_percent, u8::from(status.charging)]);
             }
             ResponseCode::CalibrationPointRemoved(removed) => payload.push(u8::from(*removed)),
+            ResponseCode::CalibrationDetail(detail) => payload.extend(detail.iter().copied()),
             ResponseCode::LowPowerWarning => (),
             // Reverse the bytes as they are LE
             ResponseCode::ProgressorId(id) => payload.extend(id.iter().rev().copied()),

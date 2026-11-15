@@ -1,23 +1,23 @@
 //! Flash storage of the settings that persist across reboots.
 //!
-//! Writing a record erases its whole sector, so each setting has its own partition: a power cut
-//! while one setting is written cannot lose the other.
+//! Each setting has its own partition, so writing one cannot lose the other. The sample rate is a
+//! 16-byte record, rewritten in place. The calibration is a log of records in its sector (see
+//! [`crimpdeq_calibration::persist`]), so an interrupted write keeps the previous calibration.
 
-use defmt::{Format, error, info};
+use crimpdeq_calibration::{
+    CalibrationRecord,
+    persist::{self, SECTOR_SIZE, SLOT_SIZE, Sector},
+};
+use defmt::{Format, error, info, warn};
 use esp_bootloader_esp_idf::partitions::{PARTITION_TABLE_MAX_LEN, read_partition_table};
 use esp_storage::FlashStorage;
 
-use crate::ads1220::{DEFAULT_CALIBRATION_FACTOR, SampleRate, is_valid_calibration_factor};
+use crate::ads1220::SampleRate;
 
-/// Size of a record: magic, version, value and checksum, as little-endian u32 words.
+/// Size of the sample rate record: magic, version, value and checksum, as little-endian u32 words.
 const RECORD_SIZE: usize = 16;
-const CALIBRATION_RECORD: Record = Record {
-    // The last 4 KiB sector of the 4 MiB flash, where earlier firmware stored the calibration.
-    partition: "calib",
-    magic: 0x4344_5146,
-    // Version 2 invalidates calibration factors saved for the old HX711 front end.
-    version: 2,
-};
+/// The last 4 KiB sector of the 4 MiB flash, where earlier firmware stored the calibration.
+const CALIBRATION_PARTITION: &str = "calib";
 const SAMPLE_RATE_RECORD: Record = Record {
     partition: "settings",
     magic: 0x4344_5352,
@@ -25,16 +25,16 @@ const SAMPLE_RATE_RECORD: Record = Record {
 };
 
 /// Settings that the device applies in RAM and persists to flash.
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
     pub sample_rate: SampleRate,
-    pub calibration_factor: f32,
+    pub calibration: CalibrationRecord,
 }
 
 impl Settings {
     pub const DEFAULT: Self = Self {
         sample_rate: SampleRate::DEFAULT,
-        calibration_factor: DEFAULT_CALIBRATION_FACTOR,
+        calibration: CalibrationRecord::DEFAULT,
     };
 }
 
@@ -44,6 +44,8 @@ pub enum StorageError {
     MissingPartition,
     /// Flash access failed.
     Flash,
+    /// The written calibration record reads back different.
+    Verify,
 }
 
 /// A setting stored at the start of its own partition.
@@ -64,6 +66,8 @@ pub struct Storage {
     /// Flash offsets of the records, `None` when the partition table lacks their partition.
     calibration_offset: Option<u32>,
     sample_rate_offset: Option<u32>,
+    /// Image of the calibration sector, kept here rather than on the task stack.
+    sector: Sector,
 }
 
 impl Storage {
@@ -73,51 +77,58 @@ impl Storage {
         let table = read_partition_table(&mut flash, &mut table_buffer)
             .inspect_err(|e| error!("Failed to read the partition table: {:?}", e))
             .ok();
-        let offset = |record: &Record| {
+        let offset = |label: &str, size: usize| {
             let partition = table
                 .as_ref()?
                 .iter()
-                .find(|partition| partition.label_as_str() == record.partition);
+                .find(|partition| partition.label_as_str() == label);
             match partition {
-                Some(partition) if partition.len() as usize >= RECORD_SIZE => {
-                    Some(partition.offset())
-                }
+                Some(partition) if partition.len() as usize >= size => Some(partition.offset()),
                 Some(_) => {
-                    error!("Partition {} is too small", record.partition);
+                    error!("Partition {} is too small", label);
                     None
                 }
                 None => {
                     error!(
                         "Partition {} is missing, flash the partition table in partitions.csv",
-                        record.partition
+                        label
                     );
                     None
                 }
             }
         };
-        let calibration_offset = offset(&CALIBRATION_RECORD);
-        let sample_rate_offset = offset(&SAMPLE_RATE_RECORD);
+        let calibration_offset = offset(CALIBRATION_PARTITION, SECTOR_SIZE);
+        let sample_rate_offset = offset(SAMPLE_RATE_RECORD.partition, RECORD_SIZE);
 
         Self {
             flash,
             calibration_offset,
             sample_rate_offset,
+            sector: Sector([0xFF; SECTOR_SIZE]),
         }
     }
 
     /// Reads the stored settings, with the default for each one that is missing or invalid.
     pub fn read(&mut self) -> Settings {
-        let calibration_factor = match self
-            .read_record(self.calibration_offset, &CALIBRATION_RECORD)
-            .map(f32::from_bits)
-        {
-            Some(factor) if is_valid_calibration_factor(factor) => {
-                info!("Calibration factor read from flash: {}", factor);
-                factor
+        let calibration = match self.read_calibration_sector() {
+            Ok(()) => {
+                let (record, source) = persist::load(&self.sector);
+                match source {
+                    persist::Source::Invalid => {
+                        warn!("No valid calibration record, using the default calibration")
+                    }
+                    source => info!(
+                        "Calibration read from flash ({:?}): {:?}, {} points",
+                        source,
+                        record.active,
+                        record.points.len()
+                    ),
+                }
+                record
             }
-            _ => {
-                info!("Using default calibration factor");
-                DEFAULT_CALIBRATION_FACTOR
+            Err(e) => {
+                error!("Using the default calibration: {:?}", e);
+                CalibrationRecord::DEFAULT
             }
         };
         let sample_rate = match self
@@ -133,16 +144,50 @@ impl Storage {
 
         Settings {
             sample_rate,
-            calibration_factor,
+            calibration,
         }
     }
 
-    pub fn write_calibration_factor(&mut self, factor: f32) -> Result<(), StorageError> {
-        self.write_record(
-            self.calibration_offset,
-            &CALIBRATION_RECORD,
-            factor.to_bits(),
-        )
+    /// Appends the calibration to its log, and reads it back.
+    pub fn write_calibration(&mut self, record: &CalibrationRecord) -> Result<(), StorageError> {
+        let offset = self
+            .calibration_offset
+            .ok_or(StorageError::MissingPartition)?;
+        self.read_calibration_sector()?;
+        let write = persist::plan_write(&self.sector, record);
+        let flash_error = |e| {
+            error!("Failed to write the calibration to flash: {:?}", e);
+            StorageError::Flash
+        };
+        if write.erase {
+            info!("Calibration log full, erasing its sector");
+            self.flash
+                .erase(offset, offset + SECTOR_SIZE as u32)
+                .map_err(flash_error)?;
+        }
+        let slot_offset = offset + write.offset as u32;
+        self.flash
+            .write_nor(slot_offset, &write.slot.0)
+            .map_err(flash_error)?;
+
+        self.read_calibration_sector()?;
+        let written = &self.sector.0[write.offset..write.offset + SLOT_SIZE];
+        if persist::decode(written).is_none_or(|(_, read)| read != *record) {
+            return Err(StorageError::Verify);
+        }
+        Ok(())
+    }
+
+    fn read_calibration_sector(&mut self) -> Result<(), StorageError> {
+        let offset = self
+            .calibration_offset
+            .ok_or(StorageError::MissingPartition)?;
+        self.flash
+            .read_nor(offset, &mut self.sector.0)
+            .map_err(|e| {
+                error!("Failed to read the calibration from flash: {:?}", e);
+                StorageError::Flash
+            })
     }
 
     pub fn write_sample_rate(&mut self, sample_rate: SampleRate) -> Result<(), StorageError> {

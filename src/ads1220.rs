@@ -5,7 +5,8 @@
 //! connected, so the ADC also signals data ready on DOUT/DRDY, which the
 //! driver watches while chip select is low (datasheet section 8.5.6).
 
-use defmt::{Format, debug, error, info};
+use crimpdeq_calibration::Calibration;
+use defmt::{Format, debug, info};
 use embassy_time::{Duration, Instant, Timer, with_timeout};
 use embedded_hal_async::spi::SpiBus;
 use esp_hal::{
@@ -46,7 +47,6 @@ const TARING_TIME: Duration = Duration::from_millis(200);
 const CALIBRATION_TIME: Duration = Duration::from_millis(1250);
 /// Calibration points are averaged at a low rate, which has less noise per conversion.
 const CALIBRATION_SAMPLE_RATE: SampleRate = SampleRate::Sps90;
-pub const DEFAULT_CALIBRATION_FACTOR: f32 = 0.109;
 
 /// Normal-mode data rates (datasheet table 8-12). The discriminant is the DR[2:0] value.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Format)]
@@ -317,23 +317,35 @@ impl<'d> Ads1220<'d> {
     /// Tare the load cell with an average of multiple readings.
     pub async fn tare(&mut self) -> Result<(), Ads1220Error> {
         debug!("Taring the scale");
-        let average = self
-            .take_samples(self.sample_rate.samples_in(TARING_TIME))
-            .await?;
-        self.tare_value = average as i32;
+        self.tare_value = self.read_tare_average().await?;
         debug!("Tare value set to: {}", self.tare_value);
         Ok(())
     }
 
-    /// Read an ADC code with the tare offset removed.
-    pub async fn read_tared(&mut self) -> Result<i32, Ads1220Error> {
-        Ok(self.read_raw().await? - self.tare_value)
+    /// Average ADC code over the tare time, without taring.
+    pub async fn read_tare_average(&mut self) -> Result<i32, Ads1220Error> {
+        let average = self
+            .take_samples(self.sample_rate.samples_in(TARING_TIME))
+            .await?;
+        Ok(average as i32)
     }
 
-    /// Read a calibrated load-cell value in kilograms.
-    pub async fn read_calibrated(&mut self, calibration_factor: f32) -> Result<f32, Ads1220Error> {
-        let raw_tared = self.read_tared().await?;
-        Ok((raw_tared as f32) * calibration_factor / 1000.0)
+    pub fn tare_value(&self) -> i32 {
+        self.tare_value
+    }
+
+    pub fn set_tare_value(&mut self, tare_value: i32) {
+        self.tare_value = tare_value;
+    }
+
+    /// Read the load in kilograms on top of the tare.
+    pub async fn read_calibrated(
+        &mut self,
+        calibration: &Calibration,
+        zero_shift: f32,
+    ) -> Result<f32, Ads1220Error> {
+        let raw = self.read_raw().await?;
+        Ok(calibration.net_kg(raw, self.tare_value, zero_shift))
     }
 
     /// Collect an averaged raw calibration point at the calibration sample rate.
@@ -348,78 +360,4 @@ impl<'d> Ads1220<'d> {
         debug!("Calibration point collected: {}", average);
         Ok(average)
     }
-}
-
-/// How many times above or below DEFAULT_CALIBRATION_FACTOR a factor can be before it is rejected
-/// as implausible for the hardware, such as a fit of points whose load did not change.
-const CALIBRATION_FACTOR_TOLERANCE: f32 = 10.0;
-
-/// Check whether a calibration factor is plausible for the hardware. Either sign is accepted, so a
-/// load cell wired in reverse can still be calibrated.
-pub fn is_valid_calibration_factor(factor: f32) -> bool {
-    (DEFAULT_CALIBRATION_FACTOR / CALIBRATION_FACTOR_TOLERANCE
-        ..=DEFAULT_CALIBRATION_FACTOR * CALIBRATION_FACTOR_TOLERANCE)
-        .contains(&factor.abs())
-}
-
-/// Returns the best-fit factor for raw-code/weight calibration points, or `None` when the points
-/// do not define one. The raw codes are averages of ADC codes and the weights were validated when
-/// received, so every point is finite.
-///
-/// Measurements are tared with no load, so the applied line passes through the no-load
-/// reading. To match, the fit passes through the average of the zero-weight points, or through
-/// the mean point, the least-squares estimate of that reading, when there is none.
-pub fn fit_calibration_factor(calibration_points: &[(f32, f32)]) -> Option<f32> {
-    if calibration_points.len() < 2 {
-        error!("Calibration requires at least two points");
-        return None;
-    }
-
-    // Incoming calibration weights are expressed in kg, while calibration_factor operates on
-    // grams before read_calibrated() converts back to kg.
-    let points = || {
-        calibration_points
-            .iter()
-            .map(|(raw_value, weight)| (f64::from(*raw_value), f64::from(*weight) * 1000.0))
-    };
-    let (anchor_raw, anchor_weight) =
-        match mean_point(points().filter(|&(_, weight)| weight == 0.0)) {
-            Some(zero_point) => zero_point,
-            None => mean_point(points()).expect("checked that there are at least two points"),
-        };
-
-    // Least-squares slope of a line through the anchor.
-    let (sum_delta_raw_weight, sum_delta_raw_sq) = points().fold(
-        (0.0, 0.0),
-        |(sum_delta_raw_weight, sum_delta_raw_sq), (raw, weight)| {
-            let delta_raw = raw - anchor_raw;
-            (
-                sum_delta_raw_weight + delta_raw * (weight - anchor_weight),
-                sum_delta_raw_sq + delta_raw * delta_raw,
-            )
-        },
-    );
-
-    if sum_delta_raw_sq < f64::EPSILON {
-        error!("Invalid calibration - points are too close together");
-        return None;
-    }
-
-    let factor = (sum_delta_raw_weight / sum_delta_raw_sq) as f32;
-    if !is_valid_calibration_factor(factor) {
-        error!("Invalid calibration factor: {}", factor);
-        return None;
-    }
-    Some(factor)
-}
-
-/// Average of (raw code, weight) points, or `None` without points.
-fn mean_point(points: impl Iterator<Item = (f64, f64)>) -> Option<(f64, f64)> {
-    let (count, sum_raw, sum_weight) = points.fold(
-        (0usize, 0.0, 0.0),
-        |(count, sum_raw, sum_weight), (raw, weight)| {
-            (count + 1, sum_raw + raw, sum_weight + weight)
-        },
-    );
-    (count > 0).then(|| (sum_raw / count as f64, sum_weight / count as f64))
 }

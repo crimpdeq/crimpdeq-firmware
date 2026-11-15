@@ -241,6 +241,7 @@ version = "3.0.0"
 dependencies = [
  "arrayvec",
  "bt-hci 0.10.1",
+ "crimpdeq-calibration",
  "critical-section",
  "defmt 1.1.1",
  "embassy-executor",
@@ -260,6 +261,14 @@ dependencies = [
  "smart-leds",
  "static_cell",
  "trouble-host",
+]
+
+[[package]]
+name = "crimpdeq-calibration"
+version = "0.1.0"
+dependencies = [
+ "arrayvec",
+ "defmt 1.1.1",
 ]
 
 [[package]]
