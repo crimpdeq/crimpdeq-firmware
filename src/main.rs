@@ -38,10 +38,16 @@ use esp_hal::{
     Blocking,
     Config,
     clock::CpuClock,
+    flash::{Config as FlashConfig, Flash},
     gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull},
     i2c::master::{Config as I2cConfig, I2c},
+    peripherals::{GPIO2, RMT, USB_DEVICE},
     rmt::Rmt,
-    rtc_cntl::sleep::{LowPower, RtcSleepConfig},
+    rtc_cntl::{
+        CpuRetentionStorage,
+        WakeLock,
+        sleep::{LowPower, RtcSleepConfig},
+    },
     spi::{
         Mode as SpiMode,
         master::{Config as SpiConfig, Spi},
@@ -51,7 +57,6 @@ use esp_hal::{
 };
 use esp_hal_smartled::{RmtSmartLeds, Timing, buffer_size, color_order};
 use esp_radio::ble::controller::BleConnector;
-use esp_storage::FlashStorage;
 use max170xx::Max17048;
 use smart_leds::{RGB8, SmartLedsWriteAsync as _, brightness};
 use trouble_host::prelude::*;
@@ -97,15 +102,16 @@ type LoadCell = mock::MockLoadCell;
 const STATUS_LED_COUNT: usize = 1;
 const STATUS_LED_RMT_BUFFER_SIZE: usize = buffer_size::<RGB8>(STATUS_LED_COUNT);
 const STATUS_LED_BRIGHTNESS: u8 = 24;
-/// Revision-3 D4 is a Worldsemi WS2812B-V6: T0H 220-380 ns, T1H/T0L/T1L 580-1000 ns,
-/// bit period >= 1.25 us, reset > 280 us. The crate's `WS2812B_TIMING` sends a 400 ns T0H, which
-/// the V6 decodes as a one bit, so every color shows as white.
+/// D4 is a Xinglight XL-2121RGBC-2812B (LCSC C5349957), sent its typical timing: T0H 250 ns
+/// (at most 300 ns), T1H 850 ns (620-1000 ns), T0L 1000 ns, T1L 400 ns, bit period of at least
+/// 1.2 us and reset of at least 80 us. The crate's `WS2812B_TIMING` sends a 400 ns T0H, which
+/// decodes as a one bit, so every color would show as white.
 const STATUS_LED_TIMING: Timing = Timing {
-    time_0_high: 300,
-    time_0_low: 950,
-    time_1_high: 800,
-    time_1_low: 800,
-    reset_us: 300,
+    time_0_high: 250,
+    time_0_low: 1000,
+    time_1_high: 850,
+    time_1_low: 400,
+    reset_us: 100,
 };
 const STATUS_LED_LOW_BATTERY_MV: u32 = 3500;
 /// Charge rate, in %/h, above which the battery counts as charging.
@@ -140,7 +146,17 @@ const BLE_RETRY_DELAY: Duration = Duration::from_secs(1);
 const SETTINGS_WRITE_ATTEMPTS: u32 = 3;
 /// Delay before retrying a failed settings write.
 const SETTINGS_WRITE_RETRY_DELAY: Duration = Duration::from_secs(1);
-type StatusLed = RmtSmartLeds<'static, STATUS_LED_RMT_BUFFER_SIZE, Async, RGB8, color_order::Grb>;
+const STATUS_LED_RMT_RATE: Rate = Rate::from_mhz(80);
+type StatusLed<'d> = RmtSmartLeds<'d, STATUS_LED_RMT_BUFFER_SIZE, Async, RGB8, color_order::Grb>;
+
+/// RMT peripheral and data pin of the status LED.
+///
+/// The RMT driver holds its clock, which keeps the chip out of light sleep, so each write creates
+/// the driver and drops it afterwards. The pin then stays a low output.
+struct StatusLedPort {
+    rmt: RMT<'static>,
+    pin: GPIO2<'static>,
+}
 
 #[derive(Clone, Copy, PartialEq)]
 enum StatusLedMode {
@@ -216,35 +232,52 @@ async fn main(spawner: Spawner) -> ! {
     // Allocate 72KB of heap memory
     esp_alloc::heap_allocator!(size: 72 * 1024);
 
-    // Initialize RTOS
+    // The deep sleep task arms its own wakeup deadline right before deep sleep, which replaces the
+    // one that the light sleep idle hook arms on each idle pass.
+    // SAFETY: `LowPower` keeps no state, and the idle hook only uses LPWR while no task runs.
+    let low_power = LowPower::new(unsafe { peripherals.LPWR.clone_unchecked() });
+
+    // Taken before the first idle pass, so the chip stays awake until the USB host check runs.
+    let usb_host_wake_lock = WakeLock::new();
+    // Enter light sleep whenever all tasks wait and nothing holds a `WakeLock`. The BLE controller
+    // refuses the sleeps that would overlap its radio events.
+    let mut sleep = esp_rtos::sleep::configure(peripherals.LPWR);
+    // The memory that the bootloader used is otherwise unused after boot.
+    #[esp_hal::ram(reclaimed, unstable(zeroed))]
+    static CPU_RETENTION_MEMORY: CpuRetentionStorage = CpuRetentionStorage::new();
+    sleep
+        .enable_cpu_powerdown(CPU_RETENTION_MEMORY.take())
+        .expect("Failed to install the CPU retention memory");
     let timg0 = TimerGroup::new(peripherals.TIMG0);
-    esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
+    esp_rtos::start_with_idle_hook(timg0.timer0, sleep.light_sleep_hook);
 
     // Read the persisted settings before BLE starts and before any task uses them.
-    let mut storage = Storage::new(FlashStorage::new(peripherals.FLASH));
+    let flash = Flash::new(peripherals.FLASH, FlashConfig::default())
+        .expect("Failed to identify the flash");
+    let mut storage = Storage::new(flash);
     let stored_settings = storage.read();
     update_device_state(|state| state.settings = stored_settings.clone());
 
     // Initialize BLE
     let bluetooth = peripherals.BT;
-    // Each transmission couples into the ADS1220 input and offsets the conversion it overlaps:
-    // with no load and the default calibration, +20 dBm gave single-sample spikes up to 1.4 kg,
-    // +9 dBm up to 0.12 kg, and 0 dBm stayed within the ADC noise. +9 dBm trades those smaller
-    // spikes for BLE range.
-    let ble_config =
-        esp_radio::ble::Config::default().with_default_tx_power(esp_radio::ble::TxPower::P9);
+    // On PCB V3, each transmission couples into the ADS1220 input and offsets the conversion it
+    // overlaps: with no load and the default calibration, +20 dBm gave single-sample spikes up to
+    // 1.4 kg, +9 dBm up to 0.12 kg, and 0 dBm stayed within the ADC noise. +9 dBm trades those
+    // smaller spikes for BLE range.
+    // Modem sleep turns the radio off between BLE events, and lets the chip light-sleep then. The
+    // BLE MAC and baseband stay powered: their power-down, with `install_retention_memory`, made
+    // 1000 SPS streaming miss conversions for up to 22 ms.
+    let ble_config = esp_radio::ble::Config::default()
+        .with_default_tx_power(esp_radio::ble::TxPower::P9)
+        .with_modem_sleep(true);
     let connector = BleConnector::new(bluetooth, ble_config).unwrap();
     let controller: ExternalController<_, 1> = ExternalController::new(connector);
 
-    // Initialize the revision-3 ADS1220 load-cell front end.
-    // GPIO5=SCLK, GPIO4=DIN/MOSI, GPIO3=/CS, GPIO1=DOUT/DRDY.
-    // GPIO1 is both the SPI MISO and the data ready input. DOUT/DRDY is high impedance while /CS
-    // is high, so the pull-up keeps it from reading as data ready.
+    // Initialize the ADS1220 load-cell front end.
+    // GPIO5=SCLK, GPIO4=DIN/MOSI, GPIO3=/CS, GPIO1=DOUT/MISO, GPIO0=DRDY.
+    // DRDY is a push-pull output, so it needs no pull.
     #[cfg(not(feature = "mock"))]
-    let load_cell_data_ready = Input::new(
-        peripherals.GPIO1,
-        InputConfig::default().with_pull(Pull::Up),
-    );
+    let load_cell_data_ready = Input::new(peripherals.GPIO0, InputConfig::default());
     #[cfg(not(feature = "mock"))]
     let load_cell_spi = Spi::new(
         peripherals.SPI2,
@@ -255,21 +288,17 @@ async fn main(spawner: Spawner) -> ! {
     .expect("Failed to initialize ADS1220 SPI")
     .with_sck(peripherals.GPIO5)
     .with_mosi(peripherals.GPIO4)
-    .with_miso(load_cell_data_ready.peripheral_input());
-    // The mock build keeps /CS high only so that, on revision 3, noise cannot clock in a command,
-    // as /CS has no pull-up. On the Rust board, GPIO3 is a free header pin.
+    .with_miso(peripherals.GPIO1);
+    // The mock build still drives /CS high, next to its 100k pull-up (R23), so the unused ADS1220
+    // stays deselected. On the Rust board, GPIO3 is a free header pin.
     #[cfg_attr(feature = "mock", allow(unused_variables))]
     let load_cell_chip_select =
         Output::new(peripherals.GPIO3, Level::High, OutputConfig::default());
 
-    // Initialize low-power control.
-    let low_power = LowPower::new(peripherals.LPWR);
-
     // Initialize MAX17048 fuel gauge over I2C.
-    // GPIO7=SDA (U5.8, IO7_SDA, R21), GPIO6=SCL (U5.7, IO6_SCL, R20),
-    // GPIO10=/ALRT (U5.5, IO10_ALRT, R22). CELL/VDD=+BATT, QSTRT=GND.
-    // Revision-3 R20/R21/R22 provide 10k pull-ups on SCL/SDA/ALRT;
-    // retain the internal ALRT pull-up.
+    // GPIO6=SDA (I2C_SDA, R20), GPIO7=SCL (I2C_SCL, R21), GPIO10=/ALRT (FG_ALRT).
+    // CELL/VDD=VBAT, QSTRT=GND. R20/R21 are 4.7k pull-ups on SDA/SCL. The open-drain /ALRT has no
+    // external pull-up, so the internal one keeps it from floating.
     #[cfg(not(feature = "mock"))]
     let _battery_alert_pin = Input::new(
         peripherals.GPIO10,
@@ -278,23 +307,16 @@ async fn main(spawner: Spawner) -> ! {
     #[cfg(not(feature = "mock"))]
     let battery_i2c = I2c::new(peripherals.I2C0, I2cConfig::default())
         .expect("Failed to initialize battery I2C")
-        .with_sda(peripherals.GPIO7)
-        .with_scl(peripherals.GPIO6)
+        .with_sda(peripherals.GPIO6)
+        .with_scl(peripherals.GPIO7)
         .into_async();
 
-    // Initialize WS2812B-V6 status LED on GPIO2 (U1.5, IO2_LED, R13 0R to D4 DIN) using RMT.
+    // Initialize the XL-2121RGBC-2812B status LED on GPIO2 (LED_DATA, R13 0R to D4 DIN) using RMT.
     // The ESP32-C3 Rust board, which can run the mock build, also has a WS2812 on GPIO2.
-    let status_led_rmt_rate = Rate::from_mhz(80);
-    let rmt = Rmt::new(peripherals.RMT, status_led_rmt_rate)
-        .expect("Failed to initialize RMT")
-        .into_async();
-    let status_led = StatusLed::new(
-        STATUS_LED_TIMING,
-        rmt.channel0,
-        peripherals.GPIO2,
-        status_led_rmt_rate,
-    )
-    .expect("Failed to initialize status LED");
+    let status_led = StatusLedPort {
+        rmt: peripherals.RMT,
+        pin: peripherals.GPIO2,
+    };
 
     // Use the last 6 bytes of the DEVICE_NAME for the address
     let name_bytes = DEVICE_NAME.as_bytes();
@@ -362,6 +384,7 @@ async fn main(spawner: Spawner) -> ! {
     spawner.spawn(mock_battery_task().unwrap());
     spawner.spawn(status_led_task(status_led).unwrap());
     spawner.spawn(deep_sleep_task(low_power).unwrap());
+    spawner.spawn(usb_host_task(peripherals.USB_DEVICE, usb_host_wake_lock).unwrap());
 
     join(ble_task(runner), async {
         loop {
@@ -436,20 +459,42 @@ fn status_led_mode() -> StatusLedMode {
     })
 }
 
-async fn set_status_led(led: &mut StatusLed, color: RGB8) {
-    if let Err(e) = led
+async fn set_status_led(led: &mut StatusLedPort, color: RGB8) {
+    let rmt = match Rmt::new(led.rmt.reborrow(), STATUS_LED_RMT_RATE) {
+        Ok(rmt) => rmt.into_async(),
+        Err(e) => {
+            warn!("Failed to initialize RMT: {:?}", e);
+            return;
+        }
+    };
+    let mut driver = match StatusLed::new(
+        STATUS_LED_TIMING,
+        rmt.channel0,
+        led.pin.reborrow(),
+        STATUS_LED_RMT_RATE,
+    ) {
+        Ok(driver) => driver,
+        Err(e) => {
+            warn!(
+                "Failed to configure the status LED: {:?}",
+                defmt::Debug2Format(&e)
+            );
+            return;
+        }
+    };
+    if let Err(e) = driver
         .write(brightness([color].into_iter(), STATUS_LED_BRIGHTNESS))
         .await
     {
         warn!(
-            "Failed to update WS2812B status LED: {:?}",
+            "Failed to update the status LED: {:?}",
             defmt::Debug2Format(&e)
         );
     }
 }
 
 #[embassy_executor::task]
-async fn status_led_task(mut led: StatusLed) {
+async fn status_led_task(mut led: StatusLedPort) {
     let mut state_changes = STATE_CHANGED
         .receiver()
         .expect("Missing state change receiver for the status LED task");
@@ -514,6 +559,39 @@ async fn status_led_task(mut led: StatusLed) {
             current_mode = mode;
         }
         state_changes.changed().await;
+    }
+}
+
+/// Keeps the chip out of light sleep while a USB host is connected.
+///
+/// Light sleep powers the USB Serial/JTAG down, so the host would lose the port that flashing and
+/// logging use. A connected host sends a start-of-frame every millisecond, so the frame number
+/// changes between checks, as in ESP-IDF's USB Serial/JTAG connection monitor.
+#[embassy_executor::task]
+async fn usb_host_task(usb: USB_DEVICE<'static>, wake_lock: WakeLock) {
+    const CHECK_PERIOD: Duration = Duration::from_secs(1);
+    let frame = || {
+        usb.register_block()
+            .fram_num()
+            .read()
+            .sof_frame_index()
+            .bits()
+    };
+
+    let mut wake_lock = Some(wake_lock);
+    let mut last_frame = frame();
+    loop {
+        Timer::after(CHECK_PERIOD).await;
+        let current_frame = frame();
+        let connected = current_frame != last_frame;
+        last_frame = current_frame;
+        if connected != wake_lock.is_some() {
+            info!(
+                "USB host connected: {}, light sleep allowed: {}",
+                connected, !connected
+            );
+            wake_lock = connected.then(WakeLock::new);
+        }
     }
 }
 
@@ -600,9 +678,10 @@ async fn deep_sleep_task(mut low_power: LowPower<'static>) {
                     continue;
                 }
                 info!("Entering deep sleep: {:?}", reason);
-                // The WS2812B and the ADS1220 stay on +3V3 while the digital domain is powered
+                // The status LED and the ADS1220 stay on 3V3 while the digital domain is powered
                 // off. Hold the LED data line low so the LED does not latch noise, and the
-                // ADS1220 /CS high, as it has no pull-up, so noise cannot clock in a command.
+                // ADS1220 /CS high, so the pad cannot pull it below its 100k pull-up (R23) and
+                // let noise clock in a command.
                 // SAFETY: the status LED is already off and the ADS1220 powered down, and their
                 // tasks stop driving the pins once sleep is ready. No await follows, so they
                 // cannot run again before `sleep_deep`, which does not return; the holds are

@@ -1,6 +1,6 @@
-//! Simulated load cell and battery, so the firmware runs without a load cell or battery on PCB
-//! revision 3 or on the ESP32-C3 Rust board (https://github.com/esp-rs/esp-rust-board), which
-//! has neither an ADS1220 nor a MAX17048.
+//! Simulated load cell and battery, so the firmware runs without a load cell or battery on the
+//! crimpdeq-tscircuit board or on the ESP32-C3 Rust board
+//! (https://github.com/esp-rs/esp-rust-board), which has neither an ADS1220 nor a MAX17048.
 
 use core::convert::Infallible;
 
